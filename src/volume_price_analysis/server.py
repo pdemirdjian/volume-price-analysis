@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 
 import pandas as pd
 from mcp.server import NotificationOptions, Server
@@ -40,8 +41,113 @@ from .indicators import (
     detect_volume_breakout,
 )
 
+logger = logging.getLogger(__name__)
+
 # Initialize MCP server
 server = Server("volume-price-analysis")
+
+# Concurrency limit for parallel scanning
+MAX_CONCURRENT_SCANS = 10
+
+
+def _analyze_single_symbol(
+    symbol: str,
+    period: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+) -> dict | None:
+    """
+    Analyze a single symbol for scan_candidates.
+
+    Returns a candidate dict if it passes filters, None otherwise.
+    Raises exception on error.
+    """
+    sym_data = fetch_stock_data(symbol, None, None, period)
+    if len(sym_data) < 30:
+        return None
+
+    # Calculate composite score and key indicators
+    composite = calculate_composite_score(sym_data, holding_period)
+    adx_data = calculate_adx(sym_data, 14)
+    iv_pct_data = calculate_iv_percentile(sym_data, 20)
+    expected_move = calculate_expected_move(sym_data, holding_period, 20)
+    rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
+    rvol = calculate_relative_volume(sym_data, 20)
+
+    score = composite["composite_score"]
+    adx = adx_data["adx"]
+    iv_pct = iv_pct_data["iv_percentile"]
+
+    # Apply filters
+    passes_score = abs(score) >= min_score
+    passes_adx = adx >= min_adx
+    passes_iv = iv_pct <= max_iv
+
+    if direction == "bullish":
+        passes_direction = score > 0
+    elif direction == "bearish":
+        passes_direction = score < 0
+    else:
+        passes_direction = True
+
+    if not (passes_score and passes_adx and passes_direction and passes_iv):
+        return None
+
+    return {
+        "symbol": symbol,
+        "composite_score": round(score, 2),
+        "recommendation": composite["recommendation"],
+        "signal_quality": composite["signal_quality"],
+        "adx": round(adx, 1),
+        "trend_strength": adx_data["trend_strength"],
+        "trend_direction": adx_data["trend_direction"],
+        "rsi": round(rsi_data["rsi"], 1),
+        "rsi_divergence": rsi_data["divergence_type"],
+        "iv_percentile": round(iv_pct, 1),
+        "iv_implication": iv_pct_data["options_implication"],
+        "expected_move_pct": round(expected_move["expected_move_percent"], 2),
+        "rvol": round(rvol["current_rvol"], 2),
+        "latest_price": round(float(sym_data["Close"].iloc[-1]), 2),
+        "key_levels": {
+            "upper_target": round(expected_move["upper_target_1std"], 2),
+            "lower_target": round(expected_move["lower_target_1std"], 2),
+        },
+    }
+
+
+async def _analyze_symbol_async(
+    symbol: str,
+    period: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[str, dict | None, str | None]:
+    """
+    Async wrapper for symbol analysis with concurrency limiting.
+
+    Returns (symbol, candidate_or_none, error_or_none).
+    """
+    async with semaphore:
+        try:
+            result = await asyncio.to_thread(
+                _analyze_single_symbol,
+                symbol,
+                period,
+                holding_period,
+                min_score,
+                min_adx,
+                max_iv,
+                direction,
+            )
+            return (symbol, result, None)
+        except Exception as e:
+            return (symbol, None, str(e))
 
 
 @server.list_tools()
@@ -398,6 +504,8 @@ async def handle_list_tools() -> list[Tool]:
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool execution requests."""
+    logger.info("Tool called: %s", name)
+    logger.debug("Tool arguments: %s", arguments)
 
     try:
         # Extract common parameters
@@ -408,6 +516,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # Fetch stock data
         data = fetch_stock_data(symbol, start_date, end_date, period)
+        logger.debug("Data fetched for %s: %d rows", symbol, len(data))
 
         if name == "get_stock_data":
             start_dt = data["Date"].iloc[0].strftime("%Y-%m-%d")
@@ -744,11 +853,21 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             start_dt = data["Date"].iloc[0].strftime("%Y-%m-%d")
             end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
 
-            # Pre-calculate values for options analysis
-            obv_up = obv.iloc[-1] > obv.iloc[-3]
-            ad_up = ad_line.iloc[-1] > ad_line.iloc[-3]
-            vpt_diff = abs(vpt.iloc[-1] - vpt.iloc[-3])
-            vpt_conviction = vpt_diff > abs(vpt.iloc[-3] * 0.1) if vpt.iloc[-3] != 0 else False
+            # Pre-calculate values for options analysis (with bounds checking)
+            if len(obv) >= 4:
+                obv_up = obv.iloc[-1] > obv.iloc[-3]
+            else:
+                obv_up = False
+            if len(ad_line) >= 4:
+                ad_up = ad_line.iloc[-1] > ad_line.iloc[-3]
+            else:
+                ad_up = False
+            if len(vpt) >= 4:
+                vpt_diff = abs(vpt.iloc[-1] - vpt.iloc[-3])
+                vpt_conviction = vpt_diff > abs(vpt.iloc[-3] * 0.1) if vpt.iloc[-3] != 0 else False
+            else:
+                vpt_diff = 0.0
+                vpt_conviction = False
             mfi_val = mfi.iloc[-1] if not pd.isna(mfi.iloc[-1]) else 50.0
             cmf_val = cmf.iloc[-1] if not pd.isna(cmf.iloc[-1]) else 0.0
 
@@ -782,7 +901,11 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             atr_val = atr.iloc[-1]
 
             if not pd.isna(bb_bw):
-                bb_mean = bbands["bandwidth"].iloc[-volume_window:].mean()
+                bw_series = bbands["bandwidth"]
+                if len(bw_series) >= volume_window:
+                    bb_mean = bw_series.iloc[-volume_window:].mean()
+                else:
+                    bb_mean = bw_series.mean()
                 is_squeeze = bb_bw < bb_mean * 0.7
             else:
                 is_squeeze = False
@@ -1259,70 +1382,46 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 symbols = universes["full_market"]
                 universe_used = "full_market"
 
+            # Parallel scanning with concurrency limit
+            logger.info(
+                "Starting parallel scan of %d symbols (max concurrent: %d)",
+                len(symbols),
+                MAX_CONCURRENT_SCANS,
+            )
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCANS)
+
+            tasks = [
+                _analyze_symbol_async(
+                    sym,
+                    scan_period,
+                    holding_period,
+                    min_score,
+                    min_adx,
+                    max_iv,
+                    direction,
+                    semaphore,
+                )
+                for sym in symbols
+            ]
+
+            results = await asyncio.gather(*tasks)
+
+            # Process results
             candidates = []
             errors = []
             scanned = 0
 
-            for sym in symbols:
-                try:
-                    sym_data = fetch_stock_data(sym, None, None, scan_period)
-                    if len(sym_data) < 30:
-                        continue
-
+            for sym, candidate, error in results:
+                if error:
+                    errors.append({"symbol": sym, "error": error})
+                elif candidate is not None:
+                    candidates.append(candidate)
+                    scanned += 1
+                else:
+                    # Symbol was analyzed but filtered out or had insufficient data
                     scanned += 1
 
-                    # Calculate composite score and key indicators
-                    composite = calculate_composite_score(sym_data, holding_period)
-                    adx_data = calculate_adx(sym_data, 14)
-                    iv_pct_data = calculate_iv_percentile(sym_data, 20)
-                    expected_move = calculate_expected_move(sym_data, holding_period, 20)
-                    rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
-                    rvol = calculate_relative_volume(sym_data, 20)
-
-                    score = composite["composite_score"]
-                    adx = adx_data["adx"]
-                    iv_pct = iv_pct_data["iv_percentile"]
-
-                    # Apply filters
-                    passes_score = abs(score) >= min_score
-                    passes_adx = adx >= min_adx
-                    passes_iv = iv_pct <= max_iv
-
-                    if direction == "bullish":
-                        passes_direction = score > 0
-                    elif direction == "bearish":
-                        passes_direction = score < 0
-                    else:
-                        passes_direction = True
-
-                    if passes_score and passes_adx and passes_direction and passes_iv:
-                        candidates.append(
-                            {
-                                "symbol": sym,
-                                "composite_score": round(score, 2),
-                                "recommendation": composite["recommendation"],
-                                "signal_quality": composite["signal_quality"],
-                                "adx": round(adx, 1),
-                                "trend_strength": adx_data["trend_strength"],
-                                "trend_direction": adx_data["trend_direction"],
-                                "rsi": round(rsi_data["rsi"], 1),
-                                "rsi_divergence": rsi_data["divergence_type"],
-                                "iv_percentile": round(iv_pct, 1),
-                                "iv_implication": iv_pct_data["options_implication"],
-                                "expected_move_pct": round(
-                                    expected_move["expected_move_percent"], 2
-                                ),
-                                "rvol": round(rvol["current_rvol"], 2),
-                                "latest_price": round(float(sym_data["Close"].iloc[-1]), 2),
-                                "key_levels": {
-                                    "upper_target": round(expected_move["upper_target_1std"], 2),
-                                    "lower_target": round(expected_move["lower_target_1std"], 2),
-                                },
-                            }
-                        )
-
-                except Exception as e:
-                    errors.append({"symbol": sym, "error": str(e)})
+            logger.info("Scan complete: %d candidates from %d scanned", len(candidates), scanned)
 
             # Sort by absolute composite score (highest first)
             candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
@@ -1368,6 +1467,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             raise ValueError(f"Unknown tool: {name}")
 
     except Exception as e:
+        logger.error("Tool %s failed: %s", name, str(e), exc_info=True)
         return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
 

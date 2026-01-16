@@ -71,20 +71,38 @@ def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str
     bins = np.linspace(min_price, max_price, num_bins + 1)
     price_levels = (bins[:-1] + bins[1:]) / 2  # Midpoint of each bin
 
-    # Aggregate volume for each price bin
+    # Vectorized volume profile calculation
+    lows = data["Low"].values
+    highs = data["High"].values
+    vols = data["Volume"].values
+
+    # Get bin indices for lows and highs (clip to valid range)
+    low_bins = np.clip(np.digitize(lows, bins) - 1, 0, num_bins - 1)
+    high_bins = np.clip(np.digitize(highs, bins) - 1, 0, num_bins - 1)
+
+    # Calculate bins covered and volume per bin for each candle
+    bins_covered = np.maximum(1, high_bins - low_bins + 1)
+    volume_per_bin = vols / bins_covered
+
+    # Aggregate volume for each price bin using vectorized accumulation
     volumes = np.zeros(num_bins)
 
-    for _, row in data.iterrows():
-        # Find which bin(s) this candle's price range covers
-        low_bin = np.digitize(row["Low"], bins) - 1
-        high_bin = np.digitize(row["High"], bins) - 1
+    # For candles spanning single bins (most common case), use bincount
+    single_bin_mask = low_bins == high_bins
+    if np.any(single_bin_mask):
+        single_volumes = np.bincount(
+            low_bins[single_bin_mask],
+            weights=volume_per_bin[single_bin_mask],
+            minlength=num_bins,
+        )
+        volumes += single_volumes[:num_bins]
 
-        # Distribute volume across bins
-        bins_covered = max(1, high_bin - low_bin + 1)
-        volume_per_bin = row["Volume"] / bins_covered
-
-        for bin_idx in range(max(0, low_bin), min(num_bins, high_bin + 1)):
-            volumes[bin_idx] += volume_per_bin
+    # For candles spanning multiple bins, use loop (typically fewer iterations)
+    multi_bin_indices = np.where(~single_bin_mask)[0]
+    for idx in multi_bin_indices:
+        start_bin = low_bins[idx]
+        end_bin = high_bins[idx]
+        volumes[start_bin : end_bin + 1] += volume_per_bin[idx]
 
     return {"price_levels": price_levels.tolist(), "volumes": volumes.tolist()}
 
@@ -681,7 +699,10 @@ def calculate_adx(data: pd.DataFrame, period: int = 14) -> dict[str, Any]:
         trend_direction = "neutral"
 
     # ADX trend (is the trend strengthening or weakening?)
-    adx_slope = "strengthening" if adx.iloc[-1] > adx.iloc[-3] else "weakening"
+    if len(adx) >= 4:
+        adx_slope = "strengthening" if adx.iloc[-1] > adx.iloc[-3] else "weakening"
+    else:
+        adx_slope = "unknown"
 
     return {
         "adx": float(current_adx),
@@ -1094,20 +1115,27 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
     score_breakdown["price_vs_vwma"] = 1 if latest_close > latest_vwma else -1
 
     # 3. OBV momentum (+2/-2)
-    obv_momentum = obv.iloc[-1] > obv.iloc[-3]
-    obv_strong = obv.iloc[-1] > obv.iloc[-5]
-    if obv_momentum and obv_strong:
-        score_breakdown["obv_momentum"] = 2
-    elif obv_momentum:
-        score_breakdown["obv_momentum"] = 1
-    elif not obv_momentum and not obv_strong:
-        score_breakdown["obv_momentum"] = -2
+    if len(obv) >= 6:
+        obv_momentum = obv.iloc[-1] > obv.iloc[-3]
+        obv_strong = obv.iloc[-1] > obv.iloc[-5]
+        if obv_momentum and obv_strong:
+            score_breakdown["obv_momentum"] = 2
+        elif obv_momentum:
+            score_breakdown["obv_momentum"] = 1
+        elif not obv_momentum and not obv_strong:
+            score_breakdown["obv_momentum"] = -2
+        else:
+            score_breakdown["obv_momentum"] = -1
     else:
-        score_breakdown["obv_momentum"] = -1
+        score_breakdown["obv_momentum"] = 0
 
     # 4. A/D Line momentum (+1/-1)
-    ad_momentum = ad_line.iloc[-1] > ad_line.iloc[-3]
-    score_breakdown["ad_momentum"] = 1 if ad_momentum else -1
+    if len(ad_line) >= 4:
+        ad_momentum = ad_line.iloc[-1] > ad_line.iloc[-3]
+        score_breakdown["ad_momentum"] = 1 if ad_momentum else -1
+    else:
+        ad_momentum = False
+        score_breakdown["ad_momentum"] = 0
 
     # 5. MFI condition (+2/-2)
     if latest_mfi < 25:

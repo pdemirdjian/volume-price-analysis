@@ -5,7 +5,12 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import pytest
 
-from volume_price_analysis.data_fetcher import fetch_stock_data, validate_symbol
+from volume_price_analysis.data_fetcher import (
+    DEFAULT_TIMEOUT,
+    fetch_stock_data,
+    validate_symbol,
+    validate_symbol_format,
+)
 
 
 class TestFetchStockData:
@@ -43,7 +48,7 @@ class TestFetchStockData:
         assert "Low" in result.columns
         assert "Close" in result.columns
         assert "Volume" in result.columns
-        mock_ticker_instance.history.assert_called_once_with(period="1mo")
+        mock_ticker_instance.history.assert_called_once_with(period="1mo", timeout=DEFAULT_TIMEOUT)
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_fetch_stock_data_with_dates(self, mock_ticker):
@@ -71,7 +76,9 @@ class TestFetchStockData:
 
         # Assertions
         assert len(result) == 2
-        mock_ticker_instance.history.assert_called_once_with(start="2024-01-01", end="2024-01-02")
+        mock_ticker_instance.history.assert_called_once_with(
+            start="2024-01-01", end="2024-01-02", timeout=DEFAULT_TIMEOUT
+        )
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_fetch_stock_data_empty_result(self, mock_ticker):
@@ -148,7 +155,9 @@ class TestValidateSymbol:
     def test_validate_symbol_valid(self, mock_ticker):
         """Test validation of a valid symbol."""
         mock_ticker_instance = Mock()
-        mock_ticker_instance.info = {"symbol": "AAPL", "shortName": "Apple Inc."}
+        mock_fast_info = Mock()
+        mock_fast_info.last_price = 150.0
+        mock_ticker_instance.fast_info = mock_fast_info
         mock_ticker.return_value = mock_ticker_instance
 
         result = validate_symbol("AAPL")
@@ -156,9 +165,11 @@ class TestValidateSymbol:
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_validate_symbol_with_shortname_only(self, mock_ticker):
-        """Test validation when only shortName is present."""
+        """Test validation when fast_info has last_price."""
         mock_ticker_instance = Mock()
-        mock_ticker_instance.info = {"shortName": "Apple Inc."}
+        mock_fast_info = Mock()
+        mock_fast_info.last_price = 175.5
+        mock_ticker_instance.fast_info = mock_fast_info
         mock_ticker.return_value = mock_ticker_instance
 
         result = validate_symbol("AAPL")
@@ -166,13 +177,24 @@ class TestValidateSymbol:
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_validate_symbol_invalid(self, mock_ticker):
-        """Test validation of an invalid symbol."""
+        """Test validation of an invalid symbol (no price data)."""
         mock_ticker_instance = Mock()
-        mock_ticker_instance.info = {}
+        mock_fast_info = Mock()
+        mock_fast_info.last_price = None
+        mock_ticker_instance.fast_info = mock_fast_info
         mock_ticker.return_value = mock_ticker_instance
 
-        result = validate_symbol("INVALID123")
+        result = validate_symbol("INVALID")
         assert result is False
+
+    def test_validate_symbol_invalid_format(self):
+        """Test validation of symbol with invalid format."""
+        # Too long
+        assert validate_symbol("VERYLONGSYMBOL") is False
+        # Invalid characters
+        assert validate_symbol("AAPL!@#") is False
+        # Empty
+        assert validate_symbol("") is False
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_validate_symbol_exception(self, mock_ticker):
@@ -181,6 +203,29 @@ class TestValidateSymbol:
 
         result = validate_symbol("AAPL")
         assert result is False
+
+
+class TestValidateSymbolFormat:
+    """Tests for validate_symbol_format function."""
+
+    def test_valid_formats(self):
+        """Test valid symbol formats."""
+        assert validate_symbol_format("AAPL") is True
+        assert validate_symbol_format("MSFT") is True
+        assert validate_symbol_format("BRK.A") is True  # Berkshire A shares
+        assert validate_symbol_format("BRK.B") is True  # Berkshire B shares
+        assert validate_symbol_format("SPY") is True
+        assert validate_symbol_format("VIX") is True
+        assert validate_symbol_format("^GSPC") is True  # S&P 500 index
+        assert validate_symbol_format("^DJI") is True  # Dow Jones
+
+    def test_invalid_formats(self):
+        """Test invalid symbol formats."""
+        assert validate_symbol_format("") is False
+        assert validate_symbol_format("VERYLONGSYMBOL") is False  # Too long
+        assert validate_symbol_format("AAPL!@#") is False  # Invalid chars
+        assert validate_symbol_format("AAPL ") is False  # Contains space
+        assert validate_symbol_format(None) is False  # type: ignore[arg-type]
 
 
 class TestIntegration:
