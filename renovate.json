@@ -24,6 +24,7 @@
   "platformAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,
+    "automerge": true,
     "schedule": [
       "before 6am on monday"
     ]
@@ -70,6 +71,17 @@
         "mypy"
       ],
       "groupName": "linting tools"
+    },
+    {
+      "description": "Automerge GitHub Actions patches",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
     }
   ],
   "vulnerabilityAlerts": {
