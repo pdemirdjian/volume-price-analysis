@@ -28,7 +28,7 @@ jobs:
             chore
             revert
           requireScope: false
-          subjectPattern: ^[A-Z].+$
+          subjectPattern: ^[a-z].+$
           subjectPatternError: |
-            The subject "{subject}" must start with a capital letter.
-            Example: "feat: Add new indicator"
+            The subject "{subject}" must start with a lowercase letter.
+            Example: "feat: add new indicator"
