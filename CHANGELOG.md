@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.0.1...v1.0.2) (2026-01-16)
+
+
+### Documentation
+
+* fix indicator count in CLAUDE.md ([#20](https://github.com/pdemirdjian/volume-price-analysis/issues/20)) ([339cad7](https://github.com/pdemirdjian/volume-price-analysis/commit/339cad73bc65a62d30a9fd6ff548b1db572df476))
+
 ## [1.0.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.0.0...v1.0.1) (2026-01-16)
 
 
