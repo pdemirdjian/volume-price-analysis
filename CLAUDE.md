@@ -1,12 +1,52 @@
-# CLAUDE.md
+# AI Context & Developer Guide
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides context and guidance for AI assistants (Claude Code, Gemini, etc.) and developers working on this repository.
 
 ## Project Overview
 
-This is an MCP (Model Context Protocol) server that provides volume-price technical analysis tools for stock market data. It fetches data via Yahoo Finance (yfinance) and exposes analysis capabilities to AI assistants like Claude Code.
+This is an MCP (Model Context Protocol) server that provides volume-price technical analysis tools for stock market data. It fetches data via Yahoo Finance (yfinance) and exposes analysis capabilities to AI assistants.
 
-## Commands
+## Tech Stack
+
+*   **Language**: Python 3.14+
+*   **Core Libraries**:
+    *   `mcp`: Model Context Protocol SDK (>=1.25.0)
+    *   `yfinance`: Stock data fetching (>=1.0)
+    *   `pandas` (>=2.3.3) & `numpy` (>=2.4.1)
+*   **Package Management**: `uv` (recommended) or `pip`
+
+## Architecture
+
+```
+src/volume_price_analysis/
+├── server.py        # MCP server - tool definitions & handlers
+├── indicators.py    # Pure calculation functions (23 indicators)
+└── data_fetcher.py  # Yahoo Finance data retrieval
+```
+
+### Data Flow
+
+1. **MCP Client** calls a tool (e.g., `comprehensive_analysis`)
+2. **server.py** `handle_call_tool()` receives the request
+3. **data_fetcher.py** `fetch_stock_data()` retrieves OHLCV data from Yahoo Finance
+4. **indicators.py** functions compute the requested indicators
+5. **server.py** formats results as JSON and returns via MCP protocol
+
+## Key Features & Tools
+
+The server exposes the following MCP tools:
+
+*   **`get_stock_data`**: Fetch historical stock data for any symbol.
+*   **`calculate_obv`**: Calculate On-Balance Volume (OBV).
+*   **`calculate_vwap`**: Calculate Volume Weighted Average Price (VWAP).
+*   **`calculate_volume_profile`**: Analyze volume distribution across price levels.
+*   **`calculate_mfi`**: Calculate Money Flow Index (MFI).
+*   **`analyze_volume_trends`**: Analyze volume trends and detect price-volume divergences.
+*   **`comprehensive_analysis`**: Perform a full analysis including all major indicators and a summary.
+*   **`options_analysis`**: Specialized analysis optimized for short-term options trading (14-30 day holding period).
+*   **`scan_candidates`**: Scan the market to find the best options trading candidates based on composite scores.
+
+## Development Commands
 
 ```bash
 # Install dependencies (use uv, it's configured in pyproject.toml)
@@ -36,35 +76,6 @@ mypy src/
 # Run the MCP server directly
 python -m volume_price_analysis.server
 ```
-
-## Architecture
-
-```
-src/volume_price_analysis/
-├── server.py        # MCP server - tool definitions & handlers
-├── indicators.py    # Pure calculation functions (23 indicators)
-└── data_fetcher.py  # Yahoo Finance data retrieval
-```
-
-### Data Flow
-
-1. **MCP Client** calls a tool (e.g., `comprehensive_analysis`)
-2. **server.py** `handle_call_tool()` receives the request
-3. **data_fetcher.py** `fetch_stock_data()` retrieves OHLCV data from Yahoo Finance
-4. **indicators.py** functions compute the requested indicators
-5. **server.py** formats results as JSON and returns via MCP protocol
-
-### Key Design Patterns
-
-- **indicators.py**: Stateless pure functions that take a pandas DataFrame and return calculated values. All functions expect columns: `Date`, `Open`, `High`, `Low`, `Close`, `Volume`.
-
-- **server.py**: Defines 9 MCP tools via `@server.list_tools()` decorator. Tool execution is handled by `handle_call_tool()` which dispatches based on tool name.
-
-- **Tool categories**:
-  - Basic: `get_stock_data`, `calculate_obv`, `calculate_vwap`, `calculate_volume_profile`, `calculate_mfi`, `analyze_volume_trends`
-  - Comprehensive: `comprehensive_analysis` (all indicators + summary)
-  - Options-focused: `options_analysis` (ADX, RSI divergence, IV percentile, expected move)
-  - Scanning: `scan_candidates` (market-wide screening with pre-built universes)
 
 ### Adding New Indicators
 
