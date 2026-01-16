@@ -42,7 +42,7 @@ python -m volume_price_analysis.server
 ```
 src/volume_price_analysis/
 ├── server.py        # MCP server - tool definitions & handlers
-├── indicators.py    # Pure calculation functions (24+ indicators)
+├── indicators.py    # Pure calculation functions (23 indicators)
 └── data_fetcher.py  # Yahoo Finance data retrieval
 ```
 
