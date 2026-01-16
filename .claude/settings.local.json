@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__volume-price-analysis__comprehensive_analysis",
+      "mcp__volume-price-analysis__options_analysis",
+      "mcp__volume-price-analysis__calculate_volume_profile"
+    ]
+  }
+}
