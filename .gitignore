@@ -19,11 +19,14 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual environments
+.venv/
 venv/
 env/
 ENV/
+.env
 
 # IDE
 .vscode/
@@ -31,7 +34,43 @@ ENV/
 *.swp
 *.swo
 *~
+.spyderproject
+.spyproject
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Testing
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+*.cover
+*.py,cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Linting
+.ruff_cache/
+
+# UV/pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Jupyter (if ever used)
+.ipynb_checkpoints/
+
+# Local development
+*.log
+*.local
+
+# Tool-specific
+.claude/
+.serena/

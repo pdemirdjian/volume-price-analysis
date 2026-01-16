@@ -1,5 +1,9 @@
 # Volume-Price Analysis MCP Server
 
+[![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
+
 A Model Context Protocol (MCP) server that provides comprehensive volume-price analysis tools for stock market data. Analyze stocks using indicators like OBV, VWAP, Volume Profile, Money Flow Index, and more.
 
 ## Features
@@ -376,4 +380,3 @@ Built using:
 - [yfinance](https://github.com/ranaroussi/yfinance)
 - [pandas](https://pandas.pydata.org/)
 - [numpy](https://numpy.org/)
-# volume-price-analysis
