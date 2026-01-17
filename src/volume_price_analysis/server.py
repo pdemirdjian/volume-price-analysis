@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 
 import pandas as pd
 from mcp.server import NotificationOptions, Server
@@ -40,8 +41,275 @@ from .indicators import (
     detect_volume_breakout,
 )
 
+logger = logging.getLogger(__name__)
+
 # Initialize MCP server
 server = Server("volume-price-analysis")
+
+# Concurrency limit for parallel scanning
+MAX_CONCURRENT_SCANS = 10
+
+# Minimum data points required for meaningful Bollinger Band squeeze detection
+MIN_SQUEEZE_DETECTION_PERIODS = 5
+
+
+def _analyze_single_symbol(
+    symbol: str,
+    period: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+) -> dict | None:
+    """
+    Analyze a single symbol for scan_candidates.
+
+    Returns a candidate dict if it passes filters, None otherwise.
+    Raises exception on error.
+    """
+    sym_data = fetch_stock_data(symbol, None, None, period)
+    if len(sym_data) < 30:
+        return None
+
+    # Calculate composite score and key indicators
+    composite = calculate_composite_score(sym_data, holding_period)
+    adx_data = calculate_adx(sym_data, 14)
+    iv_pct_data = calculate_iv_percentile(sym_data, 20)
+    expected_move = calculate_expected_move(sym_data, holding_period, 20)
+    rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
+    rvol = calculate_relative_volume(sym_data, 20)
+
+    score = composite["composite_score"]
+    adx = adx_data["adx"]
+    iv_pct = iv_pct_data["iv_percentile"]
+
+    # Apply filters
+    passes_score = abs(score) >= min_score
+    passes_adx = adx >= min_adx
+    passes_iv = iv_pct <= max_iv
+
+    if direction == "bullish":
+        passes_direction = score > 0
+    elif direction == "bearish":
+        passes_direction = score < 0
+    else:
+        passes_direction = True
+
+    if not (passes_score and passes_adx and passes_direction and passes_iv):
+        return None
+
+    return {
+        "symbol": symbol,
+        "composite_score": round(score, 2),
+        "recommendation": composite["recommendation"],
+        "signal_quality": composite["signal_quality"],
+        "adx": round(adx, 1),
+        "trend_strength": adx_data["trend_strength"],
+        "trend_direction": adx_data["trend_direction"],
+        "rsi": round(rsi_data["rsi"], 1),
+        "rsi_divergence": rsi_data["divergence_type"],
+        "iv_percentile": round(iv_pct, 1),
+        "iv_implication": iv_pct_data["options_implication"],
+        "expected_move_pct": round(expected_move["expected_move_percent"], 2),
+        "rvol": round(rvol["current_rvol"], 2),
+        "latest_price": round(float(sym_data["Close"].iloc[-1]), 2),
+        "key_levels": {
+            "upper_target": round(expected_move["upper_target_1std"], 2),
+            "lower_target": round(expected_move["lower_target_1std"], 2),
+        },
+    }
+
+
+async def _analyze_symbol_async(
+    symbol: str,
+    period: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[str, dict | None, str | None]:
+    """
+    Async wrapper for symbol analysis with concurrency limiting.
+
+    Returns (symbol, candidate_or_none, error_or_none).
+    """
+    async with semaphore:
+        try:
+            result = await asyncio.to_thread(
+                _analyze_single_symbol,
+                symbol,
+                period,
+                holding_period,
+                min_score,
+                min_adx,
+                max_iv,
+                direction,
+            )
+            return (symbol, result, None)
+        except Exception as e:
+            return (symbol, None, str(e))
+
+
+async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
+    """Handle scan_candidates tool - scans multiple symbols in parallel."""
+    # Pre-built symbol universes
+    universes = {
+        "mega_caps": [
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
+            "UNH", "XOM", "JNJ", "JPM", "V", "PG", "MA", "HD", "CVX", "MRK",
+            "ABBV", "LLY", "AVGO", "PEP", "KO", "COST", "TMO", "MCD", "WMT",
+            "CSCO", "ACN", "CRM",
+        ],
+        "tech": [
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO",
+            "ORCL", "CRM", "ADBE", "AMD", "INTC", "QCOM", "TXN", "MU", "AMAT",
+            "LRCX", "KLAC", "MRVL", "NOW", "SNOW", "PLTR", "PANW", "CRWD",
+            "ZS", "DDOG", "NET", "MDB", "TEAM", "SNPS", "CDNS", "ADI", "INTU",
+            "FTNT", "WDAY", "ANSS", "CPRT", "COIN", "SHOP", "MELI", "SE",
+            "RBLX", "U", "DOCU", "ZM", "OKTA", "SPLK", "VEEV", "TTD",
+        ],
+        "financials": [
+            "JPM", "BAC", "WFC", "GS", "MS", "C", "AXP", "BLK", "SCHW", "USB",
+            "PNC", "TFC", "COF", "AIG", "MET", "PRU", "ALL", "TRV", "CB", "CME",
+        ],
+        "healthcare": [
+            "UNH", "JNJ", "PFE", "MRK", "ABBV", "LLY", "BMY", "AMGN", "GILD",
+            "MRNA", "REGN", "VRTX", "ISRG", "DXCM", "IDXX", "ZTS", "CI", "ELV",
+            "HUM", "BIIB",
+        ],
+        "consumer": [
+            "WMT", "COST", "TGT", "HD", "LOW", "NKE", "SBUX", "MCD", "CMG",
+            "DPZ", "YUM", "LULU", "ULTA", "ROST", "DG", "DLTR", "EL", "CL",
+            "KMB", "TJX",
+        ],
+        "energy": [
+            "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "VLO", "PSX",
+            "DVN", "HAL", "BKR", "FANG", "HES", "MRO", "APA", "OVV", "CTRA",
+            "EQT", "AR",
+        ],
+        "etfs": [
+            "SPY", "QQQ", "IWM", "DIA", "EEM", "VTI", "VOO", "VEA", "VWO",
+            "GLD", "SLV", "USO", "XLF", "XLE", "XLK", "XLV", "XLI", "XLP",
+            "XLY", "XLB", "XLU", "XLRE", "XLC", "VNQ", "HYG", "LQD", "TLT",
+            "IEF", "SHY", "BND", "ARKK", "ARKG", "ARKW", "ARKF", "ARKQ",
+            "SMH", "SOXX", "IBB", "XBI", "KRE",
+        ],
+    }
+    universes["liquid"] = list(
+        set(
+            universes["mega_caps"]
+            + universes["tech"]
+            + universes["financials"]
+            + universes["healthcare"]
+            + universes["consumer"]
+            + universes["energy"]
+        )
+    )
+    universes["full_market"] = list(set(universes["liquid"] + universes["etfs"]))
+
+    # Get scanning parameters
+    custom_symbols = arguments.get("symbols", [])
+    universe = arguments.get("universe", "full_market").lower()
+    scan_period = arguments.get("period", "3mo")
+    holding_period = arguments.get("holding_period", 14)
+    min_score = arguments.get("min_score", 2.0)
+    min_adx = arguments.get("min_adx", 20)
+    max_iv = arguments.get("max_iv_percentile", 100)
+    direction = arguments.get("direction", "any").lower()
+    max_results = arguments.get("max_results", 15)
+
+    # Determine symbols to scan
+    if custom_symbols and len(custom_symbols) > 0:
+        symbols = [s.upper() for s in custom_symbols]
+        universe_used = "custom"
+    elif universe in universes:
+        symbols = universes[universe]
+        universe_used = universe
+    else:
+        symbols = universes["full_market"]
+        universe_used = "full_market"
+
+    # Parallel scanning with concurrency limit
+    logger.info(
+        "Starting parallel scan of %d symbols (max concurrent: %d)",
+        len(symbols),
+        MAX_CONCURRENT_SCANS,
+    )
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCANS)
+
+    tasks = [
+        _analyze_symbol_async(
+            sym,
+            scan_period,
+            holding_period,
+            min_score,
+            min_adx,
+            max_iv,
+            direction,
+            semaphore,
+        )
+        for sym in symbols
+    ]
+
+    results = await asyncio.gather(*tasks)
+
+    # Process results
+    candidates = []
+    errors = []
+    scanned = 0
+
+    for sym, candidate, error in results:
+        if error:
+            errors.append({"symbol": sym, "error": error})
+        else:
+            scanned += 1
+            if candidate is not None:
+                candidates.append(candidate)
+
+    logger.info("Scan complete: %d candidates from %d scanned", len(candidates), scanned)
+
+    # Sort by absolute composite score (highest first)
+    candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
+
+    # Separate into bullish and bearish
+    bullish = [c for c in candidates if c["composite_score"] > 0]
+    bearish = [c for c in candidates if c["composite_score"] < 0]
+
+    # Find highest conviction setups
+    high_conviction = [
+        c
+        for c in candidates
+        if abs(c["composite_score"]) >= 4 and c["adx"] >= 28 and c["iv_percentile"] <= 50
+    ]
+
+    result = {
+        "scan_parameters": {
+            "universe": universe_used,
+            "symbols_in_universe": len(symbols),
+            "symbols_scanned": scanned,
+            "holding_period": holding_period,
+            "min_score": min_score,
+            "min_adx": min_adx,
+            "max_iv_percentile": max_iv,
+            "direction_filter": direction,
+        },
+        "summary": {
+            "total_candidates": len(candidates),
+            "bullish_setups": len(bullish),
+            "bearish_setups": len(bearish),
+            "high_conviction": len(high_conviction),
+            "errors": len(errors),
+        },
+        "high_conviction_setups": high_conviction[:5] if high_conviction else [],
+        "top_bullish": bullish[:max_results] if bullish else [],
+        "top_bearish": bearish[:max_results] if bearish else [],
+        "errors": errors[:10] if errors else None,
+    }
+
+    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
 
 @server.list_tools()
@@ -398,16 +666,26 @@ async def handle_list_tools() -> list[Tool]:
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool execution requests."""
+    logger.info("Tool called: %s", name)
+    logger.debug("Tool arguments: %s", arguments)
 
     try:
-        # Extract common parameters
+        # scan_candidates handles its own data fetching per symbol
+        if name == "scan_candidates":
+            return await _handle_scan_candidates(arguments)
+
+        # Extract common parameters for single-symbol tools
         symbol = arguments.get("symbol", "").upper()
         start_date = arguments.get("start_date")
         end_date = arguments.get("end_date")
-        period = arguments.get("period", "1mo")
+
+        # Set default period based on tool type
+        default_period = "3mo" if name == "options_analysis" else "1mo"
+        period = arguments.get("period", default_period)
 
         # Fetch stock data
         data = fetch_stock_data(symbol, start_date, end_date, period)
+        logger.debug("Data fetched for %s: %d rows", symbol, len(data))
 
         if name == "get_stock_data":
             start_dt = data["Date"].iloc[0].strftime("%Y-%m-%d")
@@ -744,11 +1022,21 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             start_dt = data["Date"].iloc[0].strftime("%Y-%m-%d")
             end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
 
-            # Pre-calculate values for options analysis
-            obv_up = obv.iloc[-1] > obv.iloc[-3]
-            ad_up = ad_line.iloc[-1] > ad_line.iloc[-3]
-            vpt_diff = abs(vpt.iloc[-1] - vpt.iloc[-3])
-            vpt_conviction = vpt_diff > abs(vpt.iloc[-3] * 0.1) if vpt.iloc[-3] != 0 else False
+            # Pre-calculate values for options analysis (with bounds checking)
+            if len(obv) >= 4:
+                obv_up = obv.iloc[-1] > obv.iloc[-3]
+            else:
+                obv_up = False
+            if len(ad_line) >= 4:
+                ad_up = ad_line.iloc[-1] > ad_line.iloc[-3]
+            else:
+                ad_up = False
+            if len(vpt) >= 4:
+                vpt_diff = abs(vpt.iloc[-1] - vpt.iloc[-3])
+                vpt_conviction = vpt_diff > abs(vpt.iloc[-3] * 0.1) if vpt.iloc[-3] != 0 else False
+            else:
+                vpt_diff = 0.0
+                vpt_conviction = False
             mfi_val = mfi.iloc[-1] if not pd.isna(mfi.iloc[-1]) else 50.0
             cmf_val = cmf.iloc[-1] if not pd.isna(cmf.iloc[-1]) else 0.0
 
@@ -782,8 +1070,15 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             atr_val = atr.iloc[-1]
 
             if not pd.isna(bb_bw):
-                bb_mean = bbands["bandwidth"].iloc[-volume_window:].mean()
-                is_squeeze = bb_bw < bb_mean * 0.7
+                bw_series = bbands["bandwidth"].dropna()
+                if len(bw_series) >= volume_window:
+                    bb_mean = bw_series.iloc[-volume_window:].mean()
+                    is_squeeze = bb_bw < bb_mean * 0.7
+                elif len(bw_series) >= MIN_SQUEEZE_DETECTION_PERIODS:
+                    bb_mean = bw_series.mean()
+                    is_squeeze = bb_bw < bb_mean * 0.7
+                else:
+                    is_squeeze = False  # Insufficient data for squeeze detection
             else:
                 is_squeeze = False
 
@@ -820,547 +1115,176 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 theta_risk = "critical"
                 theta_note = "Urgent - close or roll positions to avoid rapid decay"
 
-            result = {
-                "symbol": symbol,
-                "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
-                "period": f"{start_dt} to {end_dt}",
-                "latest_price": float(latest_close),
-                "parameters": {
-                    "holding_period": holding_period,
-                    "days_to_expiration": days_to_expiration,
-                    "mfi_period": mfi_period,
-                    "volume_window": volume_window,
-                    "rsi_period": rsi_period,
-                    "adx_period": adx_period,
-                    "hv_window": hv_window,
-                    "optimization": f"Adaptive for {holding_period}-day options",
-                },
-                "composite_signal": {
-                    "score": composite["composite_score"],
-                    "recommendation": composite["recommendation"],
-                    "action": composite["action"],
-                    "signal_quality": composite["signal_quality"],
-                    "quality_note": composite["quality_note"],
-                    "score_breakdown": composite["score_breakdown"],
-                },
-                "trend_analysis": {
-                    "adx": {
-                        "value": adx_data["adx"],
-                        "plus_di": adx_data["plus_di"],
-                        "minus_di": adx_data["minus_di"],
-                        "trend_strength": adx_data["trend_strength"],
-                        "trend_direction": adx_data["trend_direction"],
-                        "adx_slope": adx_data["adx_slope"],
-                        "interpretation": adx_data["interpretation"],
+            try:
+                result = {
+                    "symbol": symbol,
+                    "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
+                    "period": f"{start_dt} to {end_dt}",
+                    "latest_price": float(latest_close),
+                    "parameters": {
+                        "holding_period": holding_period,
+                        "days_to_expiration": days_to_expiration,
+                        "mfi_period": mfi_period,
+                        "volume_window": volume_window,
+                        "rsi_period": rsi_period,
+                        "adx_period": adx_period,
+                        "hv_window": hv_window,
+                        "optimization": f"Adaptive for {holding_period}-day options",
                     },
-                    "rsi": {
-                        "value": rsi_data["rsi"],
-                        "condition": rsi_data["condition"],
-                        "divergence_type": rsi_data["divergence_type"],
-                        "divergence_signal": rsi_data["signal"],
-                        "interpretation": rsi_data["interpretation"],
+                    "composite_signal": {
+                        "score": composite["composite_score"],
+                        "recommendation": composite["recommendation"],
+                        "action": composite["action"],
+                        "signal_quality": composite["signal_quality"],
+                        "quality_note": composite["quality_note"],
+                        "score_breakdown": composite["score_breakdown"],
                     },
-                },
-                "volume_indicators": {
-                    "obv": {
-                        "value": float(obv.iloc[-1]),
-                        "trend": "increasing" if obv_up else "decreasing",
-                        "short_term_momentum": "bullish" if obv_up else "bearish",
+                    "trend_analysis": {
+                        "adx": {
+                            "value": adx_data["adx"],
+                            "plus_di": adx_data["plus_di"],
+                            "minus_di": adx_data["minus_di"],
+                            "trend_strength": adx_data["trend_strength"],
+                            "trend_direction": adx_data["trend_direction"],
+                            "adx_slope": adx_data["adx_slope"],
+                            "interpretation": adx_data["interpretation"],
+                        },
+                        "rsi": {
+                            "value": rsi_data["rsi"],
+                            "condition": rsi_data["condition"],
+                            "divergence_type": rsi_data["divergence_type"],
+                            "divergence_signal": rsi_data["signal"],
+                            "interpretation": rsi_data["interpretation"],
+                        },
                     },
-                    "accumulation_distribution": {
-                        "value": float(ad_line.iloc[-1]),
-                        "trend": "increasing" if ad_up else "decreasing",
-                        "signal": "institutional_buying" if ad_up else "institutional_selling",
+                    "volume_indicators": {
+                        "obv": {
+                            "value": float(obv.iloc[-1]),
+                            "trend": "increasing" if obv_up else "decreasing",
+                            "short_term_momentum": "bullish" if obv_up else "bearish",
+                        },
+                        "accumulation_distribution": {
+                            "value": float(ad_line.iloc[-1]),
+                            "trend": "increasing" if ad_up else "decreasing",
+                            "signal": "institutional_buying" if ad_up else "institutional_selling",
+                        },
+                        "vpt": {
+                            "value": float(vpt.iloc[-1]),
+                            "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-3] else "decreasing",
+                            "volume_conviction": "strong" if vpt_conviction else "weak",
+                        },
+                        "mfi": {
+                            "value": float(mfi_val),
+                            "condition": mfi_cond,
+                            "options_signal": mfi_signal,
+                        },
+                        "cmf": {"value": float(cmf_val), "signal": cmf_signal},
+                        "relative_volume": {
+                            "current_rvol": rvol["current_rvol"],
+                            "significance": rvol["significance"],
+                        },
+                        "volume_breakout": breakout,
                     },
-                    "vpt": {
-                        "value": float(vpt.iloc[-1]),
-                        "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-3] else "decreasing",
-                        "volume_conviction": "strong" if vpt_conviction else "weak",
+                    "price_indicators": {
+                        "vwap": {
+                            "value": float(latest_vwap),
+                            "price_vs_vwap": f"{((latest_close / latest_vwap - 1) * 100):.2f}%",
+                            "position": "above" if latest_close > latest_vwap else "below",
+                            "signal": "bullish_entry"
+                            if latest_close > latest_vwap
+                            else "bearish_entry",
+                        },
+                        "vwma": {
+                            "value": float(latest_vwma),
+                            "price_vs_vwma": f"{((latest_close / latest_vwma - 1) * 100):.2f}%",
+                            "trend": "bullish" if latest_close > latest_vwma else "bearish",
+                        },
+                        "price_roc": {
+                            "current_roc": roc["current_roc"],
+                            "direction": roc["direction"],
+                            "strength": roc["strength"],
+                            "volume_confirmed": roc["volume_confirmed"],
+                        },
                     },
-                    "mfi": {
-                        "value": float(mfi_val),
-                        "condition": mfi_cond,
-                        "options_signal": mfi_signal,
+                    "volatility_analysis": {
+                        "iv_percentile_proxy": {
+                            "percentile": iv_percentile["iv_percentile"],
+                            "current_hv": iv_percentile["current_hv"],
+                            "hv_range": f"{iv_percentile['hv_min']:.1%} - {iv_percentile['hv_max']:.1%}",  # noqa: E501
+                            "interpretation": iv_percentile["interpretation"],
+                            "options_implication": iv_percentile["options_implication"],
+                            "strategy_suggestion": iv_percentile["strategy_suggestion"],
+                        },
+                        "expected_move": {
+                            "dollars": expected_move["expected_move_dollars"],
+                            "percent": expected_move["expected_move_percent"],
+                            "upper_target": expected_move["upper_target_1std"],
+                            "lower_target": expected_move["lower_target_1std"],
+                            "targets": expected_move["targets"],
+                            "strike_guidance": expected_move["strike_guidance"],
+                            "interpretation": expected_move["interpretation"],
+                        },
+                        "atr": {
+                            "value": float(atr_val) if not pd.isna(atr_val) else 0.0,
+                            "daily_range": daily_range,
+                            "stop_loss_suggestion": stop_loss,
+                        },
+                        "bollinger_bands": {
+                            "upper": float(bb_upper) if not pd.isna(bb_upper) else 0.0,
+                            "middle": float(bb_middle) if not pd.isna(bb_middle) else 0.0,
+                            "lower": float(bb_lower) if not pd.isna(bb_lower) else 0.0,
+                            "percent_b": float(bb_pct_b) if not pd.isna(bb_pct_b) else 0.0,
+                            "bandwidth": float(bb_bw) if not pd.isna(bb_bw) else 0.0,
+                            "squeeze_detected": is_squeeze,
+                            "position": bb_position,
+                        },
                     },
-                    "cmf": {"value": float(cmf_val), "signal": cmf_signal},
-                    "relative_volume": {
-                        "current_rvol": rvol["current_rvol"],
-                        "significance": rvol["significance"],
+                    "volume_profile": {
+                        "point_of_control": profile["poc"],
+                        "value_area_high": profile["vah"],
+                        "value_area_low": profile["val"],
+                        "current_position": profile["position"],
+                        "interpretation": profile["interpretation"],
+                        "strike_selection_guidance": {
+                            "poc_strike": f"${profile['poc']:.2f} - Highest probability",
+                            "vah_strike": f"${profile['vah']:.2f} - Resistance level",
+                            "val_strike": f"${profile['val']:.2f} - Support level",
+                            "current_vs_poc": f"{profile['poc_distance_pct']:.2f}%",
+                        },
                     },
-                    "volume_breakout": breakout,
-                },
-                "price_indicators": {
-                    "vwap": {
-                        "value": float(latest_vwap),
-                        "price_vs_vwap": f"{((latest_close / latest_vwap - 1) * 100):.2f}%",
-                        "position": "above" if latest_close > latest_vwap else "below",
-                        "signal": "bullish_entry"
-                        if latest_close > latest_vwap
-                        else "bearish_entry",
+                    "time_decay": {
+                        "days_to_expiration": days_to_expiration,
+                        "theta_risk": theta_risk,
+                        "theta_note": theta_note,
                     },
-                    "vwma": {
-                        "value": float(latest_vwma),
-                        "price_vs_vwma": f"{((latest_close / latest_vwma - 1) * 100):.2f}%",
-                        "trend": "bullish" if latest_close > latest_vwma else "bearish",
-                    },
-                    "price_roc": {
-                        "current_roc": roc["current_roc"],
-                        "direction": roc["direction"],
-                        "strength": roc["strength"],
-                        "volume_confirmed": roc["volume_confirmed"],
-                    },
-                },
-                "volatility_analysis": {
-                    "iv_percentile_proxy": {
-                        "percentile": iv_percentile["iv_percentile"],
-                        "current_hv": iv_percentile["current_hv"],
-                        "hv_range": f"{iv_percentile['hv_min']:.1%} - {iv_percentile['hv_max']:.1%}",  # noqa: E501
-                        "interpretation": iv_percentile["interpretation"],
-                        "options_implication": iv_percentile["options_implication"],
-                        "strategy_suggestion": iv_percentile["strategy_suggestion"],
-                    },
-                    "expected_move": {
-                        "dollars": expected_move["expected_move_dollars"],
-                        "percent": expected_move["expected_move_percent"],
-                        "upper_target": expected_move["upper_target_1std"],
-                        "lower_target": expected_move["lower_target_1std"],
-                        "targets": expected_move["targets"],
-                        "strike_guidance": expected_move["strike_guidance"],
-                        "interpretation": expected_move["interpretation"],
-                    },
-                    "atr": {
-                        "value": float(atr_val) if not pd.isna(atr_val) else 0.0,
-                        "daily_range": daily_range,
-                        "stop_loss_suggestion": stop_loss,
-                    },
-                    "bollinger_bands": {
-                        "upper": float(bb_upper) if not pd.isna(bb_upper) else 0.0,
-                        "middle": float(bb_middle) if not pd.isna(bb_middle) else 0.0,
-                        "lower": float(bb_lower) if not pd.isna(bb_lower) else 0.0,
-                        "percent_b": float(bb_pct_b) if not pd.isna(bb_pct_b) else 0.0,
-                        "bandwidth": float(bb_bw) if not pd.isna(bb_bw) else 0.0,
-                        "squeeze_detected": is_squeeze,
-                        "position": bb_position,
-                    },
-                },
-                "volume_profile": {
-                    "point_of_control": profile["poc"],
-                    "value_area_high": profile["vah"],
-                    "value_area_low": profile["val"],
-                    "current_position": profile["position"],
-                    "interpretation": profile["interpretation"],
-                    "strike_selection_guidance": {
-                        "poc_strike": f"${profile['poc']:.2f} - Highest probability",
-                        "vah_strike": f"${profile['vah']:.2f} - Resistance level",
-                        "val_strike": f"${profile['val']:.2f} - Support level",
-                        "current_vs_poc": f"{profile['poc_distance_pct']:.2f}%",
-                    },
-                },
-                "time_decay": {
-                    "days_to_expiration": days_to_expiration,
-                    "theta_risk": theta_risk,
-                    "theta_note": theta_note,
-                },
-                "volume_trends": trends,
-                "options_insights": generate_options_insights(
-                    composite,
-                    adx_data,
-                    rsi_data,
-                    iv_percentile,
-                    expected_move,
-                    profile,
-                    rvol,
-                    breakout,
-                    trends,
-                    mfi_val,
-                    cmf_val,
-                    is_squeeze,
-                    bb_pct_b,
-                    holding_period,
-                    latest_close,
-                ),
-            }
-
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
-
-        elif name == "scan_candidates":
-            # Pre-built symbol universes
-            universes = {
-                "mega_caps": [
-                    "AAPL",
-                    "MSFT",
-                    "GOOGL",
-                    "AMZN",
-                    "NVDA",
-                    "META",
-                    "TSLA",
-                    "BRK-B",
-                    "UNH",
-                    "XOM",
-                    "JNJ",
-                    "JPM",
-                    "V",
-                    "PG",
-                    "MA",
-                    "HD",
-                    "CVX",
-                    "MRK",
-                    "ABBV",
-                    "LLY",
-                    "AVGO",
-                    "PEP",
-                    "KO",
-                    "COST",
-                    "TMO",
-                    "MCD",
-                    "WMT",
-                    "CSCO",
-                    "ACN",
-                    "CRM",
-                ],
-                "tech": [
-                    "AAPL",
-                    "MSFT",
-                    "GOOGL",
-                    "AMZN",
-                    "NVDA",
-                    "META",
-                    "TSLA",
-                    "AVGO",
-                    "ORCL",
-                    "CRM",
-                    "ADBE",
-                    "AMD",
-                    "INTC",
-                    "QCOM",
-                    "TXN",
-                    "MU",
-                    "AMAT",
-                    "LRCX",
-                    "KLAC",
-                    "MRVL",
-                    "NOW",
-                    "SNOW",
-                    "PLTR",
-                    "PANW",
-                    "CRWD",
-                    "ZS",
-                    "DDOG",
-                    "NET",
-                    "MDB",
-                    "TEAM",
-                    "SNPS",
-                    "CDNS",
-                    "ADI",
-                    "INTU",
-                    "FTNT",
-                    "WDAY",
-                    "ANSS",
-                    "CPRT",
-                    "COIN",
-                    "SHOP",
-                    "MELI",
-                    "SE",
-                    "RBLX",
-                    "U",
-                    "DOCU",
-                    "ZM",
-                    "OKTA",
-                    "SPLK",
-                    "VEEV",
-                    "TTD",
-                ],
-                "financials": [
-                    "JPM",
-                    "BAC",
-                    "WFC",
-                    "GS",
-                    "MS",
-                    "C",
-                    "AXP",
-                    "BLK",
-                    "SCHW",
-                    "USB",
-                    "PNC",
-                    "TFC",
-                    "COF",
-                    "AIG",
-                    "MET",
-                    "PRU",
-                    "ALL",
-                    "TRV",
-                    "CB",
-                    "CME",
-                ],
-                "healthcare": [
-                    "UNH",
-                    "JNJ",
-                    "PFE",
-                    "MRK",
-                    "ABBV",
-                    "LLY",
-                    "BMY",
-                    "AMGN",
-                    "GILD",
-                    "MRNA",
-                    "REGN",
-                    "VRTX",
-                    "ISRG",
-                    "DXCM",
-                    "IDXX",
-                    "ZTS",
-                    "CI",
-                    "ELV",
-                    "HUM",
-                    "BIIB",
-                ],
-                "consumer": [
-                    "WMT",
-                    "COST",
-                    "TGT",
-                    "HD",
-                    "LOW",
-                    "NKE",
-                    "SBUX",
-                    "MCD",
-                    "CMG",
-                    "DPZ",
-                    "YUM",
-                    "LULU",
-                    "ULTA",
-                    "ROST",
-                    "DG",
-                    "DLTR",
-                    "EL",
-                    "CL",
-                    "KMB",
-                    "TJX",
-                ],
-                "energy": [
-                    "XOM",
-                    "CVX",
-                    "COP",
-                    "SLB",
-                    "EOG",
-                    "OXY",
-                    "MPC",
-                    "VLO",
-                    "PSX",
-                    "DVN",
-                    "HAL",
-                    "BKR",
-                    "FANG",
-                    "HES",
-                    "MRO",
-                    "APA",
-                    "OVV",
-                    "CTRA",
-                    "EQT",
-                    "AR",
-                ],
-                "industrials": [
-                    "CAT",
-                    "DE",
-                    "BA",
-                    "RTX",
-                    "LMT",
-                    "GE",
-                    "HON",
-                    "UPS",
-                    "FDX",
-                    "UNP",
-                    "NSC",
-                    "CSX",
-                    "WM",
-                    "EMR",
-                    "ETN",
-                    "ITW",
-                    "PH",
-                    "ROK",
-                    "CMI",
-                    "PCAR",
-                ],
-                "etfs": [
-                    "SPY",
-                    "QQQ",
-                    "IWM",
-                    "DIA",
-                    "XLF",
-                    "XLE",
-                    "XLK",
-                    "XLV",
-                    "XLI",
-                    "XLP",
-                    "XLY",
-                    "XLB",
-                    "XLC",
-                    "XLRE",
-                    "XLU",
-                    "GLD",
-                    "SLV",
-                    "TLT",
-                    "SMH",
-                    "XBI",
-                    "ARKK",
-                    "SOXX",
-                    "IBB",
-                    "KRE",
-                    "XOP",
-                    "KWEB",
-                    "EEM",
-                    "FXI",
-                    "EWZ",
-                    "EWJ",
-                    "GDX",
-                    "GDXJ",
-                    "USO",
-                    "UNG",
-                    "HYG",
-                    "LQD",
-                    "TIP",
-                    "VNQ",
-                    "IYR",
-                    "XHB",
-                ],
-            }
-            # Full market combines all liquid stocks
-            universes["liquid"] = list(
-                set(
-                    universes["mega_caps"]
-                    + universes["tech"]
-                    + universes["financials"]
-                    + universes["healthcare"]
-                    + universes["consumer"]
-                    + universes["energy"]
-                    + universes["industrials"]
-                )
-            )
-            universes["full_market"] = list(set(universes["liquid"] + universes["etfs"]))
-
-            # Get scanning parameters
-            custom_symbols = arguments.get("symbols", [])
-            universe = arguments.get("universe", "full_market").lower()
-            scan_period = arguments.get("period", "3mo")
-            holding_period = arguments.get("holding_period", 14)
-            min_score = arguments.get("min_score", 2.0)
-            min_adx = arguments.get("min_adx", 20)
-            max_iv = arguments.get("max_iv_percentile", 100)
-            direction = arguments.get("direction", "any").lower()
-            max_results = arguments.get("max_results", 15)
-
-            # Determine symbols to scan
-            if custom_symbols and len(custom_symbols) > 0:
-                symbols = [s.upper() for s in custom_symbols]
-                universe_used = "custom"
-            elif universe in universes:
-                symbols = universes[universe]
-                universe_used = universe
-            else:
-                symbols = universes["full_market"]
-                universe_used = "full_market"
-
-            candidates = []
-            errors = []
-            scanned = 0
-
-            for sym in symbols:
-                try:
-                    sym_data = fetch_stock_data(sym, None, None, scan_period)
-                    if len(sym_data) < 30:
-                        continue
-
-                    scanned += 1
-
-                    # Calculate composite score and key indicators
-                    composite = calculate_composite_score(sym_data, holding_period)
-                    adx_data = calculate_adx(sym_data, 14)
-                    iv_pct_data = calculate_iv_percentile(sym_data, 20)
-                    expected_move = calculate_expected_move(sym_data, holding_period, 20)
-                    rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
-                    rvol = calculate_relative_volume(sym_data, 20)
-
-                    score = composite["composite_score"]
-                    adx = adx_data["adx"]
-                    iv_pct = iv_pct_data["iv_percentile"]
-
-                    # Apply filters
-                    passes_score = abs(score) >= min_score
-                    passes_adx = adx >= min_adx
-                    passes_iv = iv_pct <= max_iv
-
-                    if direction == "bullish":
-                        passes_direction = score > 0
-                    elif direction == "bearish":
-                        passes_direction = score < 0
-                    else:
-                        passes_direction = True
-
-                    if passes_score and passes_adx and passes_direction and passes_iv:
-                        candidates.append(
-                            {
-                                "symbol": sym,
-                                "composite_score": round(score, 2),
-                                "recommendation": composite["recommendation"],
-                                "signal_quality": composite["signal_quality"],
-                                "adx": round(adx, 1),
-                                "trend_strength": adx_data["trend_strength"],
-                                "trend_direction": adx_data["trend_direction"],
-                                "rsi": round(rsi_data["rsi"], 1),
-                                "rsi_divergence": rsi_data["divergence_type"],
-                                "iv_percentile": round(iv_pct, 1),
-                                "iv_implication": iv_pct_data["options_implication"],
-                                "expected_move_pct": round(
-                                    expected_move["expected_move_percent"], 2
-                                ),
-                                "rvol": round(rvol["current_rvol"], 2),
-                                "latest_price": round(float(sym_data["Close"].iloc[-1]), 2),
-                                "key_levels": {
-                                    "upper_target": round(expected_move["upper_target_1std"], 2),
-                                    "lower_target": round(expected_move["lower_target_1std"], 2),
-                                },
-                            }
-                        )
-
-                except Exception as e:
-                    errors.append({"symbol": sym, "error": str(e)})
-
-            # Sort by absolute composite score (highest first)
-            candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
-
-            # Separate into bullish and bearish
-            bullish = [c for c in candidates if c["composite_score"] > 0]
-            bearish = [c for c in candidates if c["composite_score"] < 0]
-
-            # Find highest conviction setups
-            high_conviction = [
-                c
-                for c in candidates
-                if abs(c["composite_score"]) >= 4 and c["adx"] >= 28 and c["iv_percentile"] <= 50
-            ]
-
-            result = {
-                "scan_parameters": {
-                    "universe": universe_used,
-                    "symbols_in_universe": len(symbols),
-                    "symbols_scanned": scanned,
-                    "holding_period": holding_period,
-                    "min_score": min_score,
-                    "min_adx": min_adx,
-                    "max_iv_percentile": max_iv,
-                    "direction_filter": direction,
-                },
-                "summary": {
-                    "total_candidates": len(candidates),
-                    "bullish_setups": len(bullish),
-                    "bearish_setups": len(bearish),
-                    "high_conviction": len(high_conviction),
-                    "errors": len(errors),
-                },
-                "high_conviction_setups": high_conviction[:5] if high_conviction else [],
-                "top_bullish": bullish[:max_results] if bullish else [],
-                "top_bearish": bearish[:max_results] if bearish else [],
-                "errors": errors[:10] if errors else None,
-            }
+                    "volume_trends": trends,
+                    "options_insights": generate_options_insights(
+                        composite,
+                        adx_data,
+                        rsi_data,
+                        iv_percentile,
+                        expected_move,
+                        profile,
+                        rvol,
+                        breakout,
+                        trends,
+                        mfi_val,
+                        cmf_val,
+                        is_squeeze,
+                        bb_pct_b,
+                        holding_period,
+                        latest_close,
+                    ),
+                }
+            except KeyError as e:
+                logger.error(f"Missing key in options_analysis result construction: {e}")
+                # Log the keys of the dictionaries involved to debug
+                logger.error(f"ADX keys: {adx_data.keys()}")
+                logger.error(f"RSI keys: {rsi_data.keys()}")
+                logger.error(f"IV Percentile keys: {iv_percentile.keys()}")
+                logger.error(f"Expected Move keys: {expected_move.keys()}")
+                logger.error(f"Profile keys: {profile.keys()}")
+                raise e
 
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
@@ -1368,6 +1292,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             raise ValueError(f"Unknown tool: {name}")
 
     except Exception as e:
+        logger.error("Tool %s failed: %s", name, str(e), exc_info=True)
         return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
 

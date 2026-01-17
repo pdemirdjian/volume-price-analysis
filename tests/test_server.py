@@ -384,3 +384,127 @@ class TestGenerateSummary:
 
         assert any("divergence" in s.lower() for s in summary)
         assert any("overbought" in s.lower() for s in summary)
+
+
+class TestScanCandidates:
+    """Tests for scan_candidates tool."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server._analyze_single_symbol")
+    async def test_scan_with_hyphenated_symbols(self, mock_analyze):
+        """Test scan_candidates correctly handles symbols with hyphens like BRK-B."""
+        # Mock returns a candidate for BRK-B and AAPL, None for others
+        def mock_analyze_side_effect(symbol, *args, **kwargs):
+            if symbol == "BRK-B":
+                return {
+                    "symbol": "BRK-B",
+                    "composite_score": 3.5,
+                    "recommendation": "bullish",
+                    "signal_quality": "good",
+                    "adx": 28.5,
+                    "trend_strength": "strong",
+                    "trend_direction": "bullish",
+                    "rsi": 55.0,
+                    "rsi_divergence": "none",
+                    "iv_percentile": 35.0,
+                    "iv_implication": "neutral",
+                    "expected_move_pct": 5.2,
+                    "rvol": 1.2,
+                    "latest_price": 450.00,
+                    "key_levels": {"upper_target": 475.00, "lower_target": 425.00},
+                }
+            elif symbol == "AAPL":
+                return {
+                    "symbol": "AAPL",
+                    "composite_score": -2.5,
+                    "recommendation": "bearish",
+                    "signal_quality": "moderate",
+                    "adx": 22.0,
+                    "trend_strength": "moderate",
+                    "trend_direction": "bearish",
+                    "rsi": 35.0,
+                    "rsi_divergence": "none",
+                    "iv_percentile": 45.0,
+                    "iv_implication": "neutral",
+                    "expected_move_pct": 4.5,
+                    "rvol": 0.9,
+                    "latest_price": 185.00,
+                    "key_levels": {"upper_target": 195.00, "lower_target": 175.00},
+                }
+            return None  # Filtered out
+
+        mock_analyze.side_effect = mock_analyze_side_effect
+
+        # Call scan_candidates with custom symbols including hyphenated BRK-B
+        result = await handle_call_tool(
+            name="scan_candidates",
+            arguments={
+                "symbols": ["AAPL", "BRK-B", "MSFT"],
+                "min_score": 2.0,
+                "min_adx": 20,
+            },
+        )
+
+        data = json.loads(result[0].text)
+
+        # Verify scan completed
+        assert "scan_parameters" in data
+        assert data["scan_parameters"]["universe"] == "custom"
+        assert data["scan_parameters"]["symbols_in_universe"] == 3
+
+        # Verify BRK-B was processed correctly (hyphen handled)
+        assert "top_bullish" in data
+        assert "top_bearish" in data
+
+        bullish_symbols = [c["symbol"] for c in data["top_bullish"]]
+        bearish_symbols = [c["symbol"] for c in data["top_bearish"]]
+
+        assert "BRK-B" in bullish_symbols, "BRK-B should be in bullish candidates"
+        assert "AAPL" in bearish_symbols, "AAPL should be in bearish candidates"
+
+        # Verify the mock was called with correct symbols including hyphen
+        called_symbols = [call[0][0] for call in mock_analyze.call_args_list]
+        assert "BRK-B" in called_symbols, "BRK-B should have been passed to analyzer"
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server._analyze_single_symbol")
+    async def test_scan_handles_errors_gracefully(self, mock_analyze):
+        """Test scan_candidates handles analysis errors without failing entire scan."""
+        def mock_analyze_side_effect(symbol, *args, **kwargs):
+            if symbol == "INVALID":
+                raise ValueError("No data found for symbol")
+            return {
+                "symbol": symbol,
+                "composite_score": 3.0,
+                "recommendation": "bullish",
+                "signal_quality": "good",
+                "adx": 25.0,
+                "trend_strength": "moderate",
+                "trend_direction": "bullish",
+                "rsi": 50.0,
+                "rsi_divergence": "none",
+                "iv_percentile": 40.0,
+                "iv_implication": "neutral",
+                "expected_move_pct": 4.0,
+                "rvol": 1.0,
+                "latest_price": 100.00,
+                "key_levels": {"upper_target": 110.00, "lower_target": 90.00},
+            }
+
+        mock_analyze.side_effect = mock_analyze_side_effect
+
+        result = await handle_call_tool(
+            name="scan_candidates",
+            arguments={"symbols": ["AAPL", "INVALID", "MSFT"]},
+        )
+
+        data = json.loads(result[0].text)
+
+        # Scan should complete despite one symbol error
+        assert "summary" in data
+        assert data["summary"]["errors"] == 1
+        assert data["scan_parameters"]["symbols_scanned"] == 2  # AAPL and MSFT
+
+        # Error should be captured
+        assert data["errors"] is not None
+        assert any(e["symbol"] == "INVALID" for e in data["errors"])
