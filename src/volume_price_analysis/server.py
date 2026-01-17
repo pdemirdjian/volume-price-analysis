@@ -150,6 +150,167 @@ async def _analyze_symbol_async(
             return (symbol, None, str(e))
 
 
+async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
+    """Handle scan_candidates tool - scans multiple symbols in parallel."""
+    # Pre-built symbol universes
+    universes = {
+        "mega_caps": [
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
+            "UNH", "XOM", "JNJ", "JPM", "V", "PG", "MA", "HD", "CVX", "MRK",
+            "ABBV", "LLY", "AVGO", "PEP", "KO", "COST", "TMO", "MCD", "WMT",
+            "CSCO", "ACN", "CRM",
+        ],
+        "tech": [
+            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO",
+            "ORCL", "CRM", "ADBE", "AMD", "INTC", "QCOM", "TXN", "MU", "AMAT",
+            "LRCX", "KLAC", "MRVL", "NOW", "SNOW", "PLTR", "PANW", "CRWD",
+            "ZS", "DDOG", "NET", "MDB", "TEAM", "SNPS", "CDNS", "ADI", "INTU",
+            "FTNT", "WDAY", "ANSS", "CPRT", "COIN", "SHOP", "MELI", "SE",
+            "RBLX", "U", "DOCU", "ZM", "OKTA", "SPLK", "VEEV", "TTD",
+        ],
+        "financials": [
+            "JPM", "BAC", "WFC", "GS", "MS", "C", "AXP", "BLK", "SCHW", "USB",
+            "PNC", "TFC", "COF", "AIG", "MET", "PRU", "ALL", "TRV", "CB", "CME",
+        ],
+        "healthcare": [
+            "UNH", "JNJ", "PFE", "MRK", "ABBV", "LLY", "BMY", "AMGN", "GILD",
+            "MRNA", "REGN", "VRTX", "ISRG", "DXCM", "IDXX", "ZTS", "CI", "ELV",
+            "HUM", "BIIB",
+        ],
+        "consumer": [
+            "WMT", "COST", "TGT", "HD", "LOW", "NKE", "SBUX", "MCD", "CMG",
+            "DPZ", "YUM", "LULU", "ULTA", "ROST", "DG", "DLTR", "EL", "CL",
+            "KMB", "TJX",
+        ],
+        "energy": [
+            "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "VLO", "PSX",
+            "DVN", "HAL", "BKR", "FANG", "HES", "MRO", "APA", "OVV", "CTRA",
+            "EQT", "AR",
+        ],
+        "etfs": [
+            "SPY", "QQQ", "IWM", "DIA", "EEM", "VTI", "VOO", "VEA", "VWO",
+            "GLD", "SLV", "USO", "XLF", "XLE", "XLK", "XLV", "XLI", "XLP",
+            "XLY", "XLB", "XLU", "XLRE", "XLC", "VNQ", "HYG", "LQD", "TLT",
+            "IEF", "SHY", "BND", "ARKK", "ARKG", "ARKW", "ARKF", "ARKQ",
+            "SMH", "SOXX", "IBB", "XBI", "KRE",
+        ],
+    }
+    universes["liquid"] = list(
+        set(
+            universes["mega_caps"]
+            + universes["tech"]
+            + universes["financials"]
+            + universes["healthcare"]
+            + universes["consumer"]
+            + universes["energy"]
+        )
+    )
+    universes["full_market"] = list(set(universes["liquid"] + universes["etfs"]))
+
+    # Get scanning parameters
+    custom_symbols = arguments.get("symbols", [])
+    universe = arguments.get("universe", "full_market").lower()
+    scan_period = arguments.get("period", "3mo")
+    holding_period = arguments.get("holding_period", 14)
+    min_score = arguments.get("min_score", 2.0)
+    min_adx = arguments.get("min_adx", 20)
+    max_iv = arguments.get("max_iv_percentile", 100)
+    direction = arguments.get("direction", "any").lower()
+    max_results = arguments.get("max_results", 15)
+
+    # Determine symbols to scan
+    if custom_symbols and len(custom_symbols) > 0:
+        symbols = [s.upper() for s in custom_symbols]
+        universe_used = "custom"
+    elif universe in universes:
+        symbols = universes[universe]
+        universe_used = universe
+    else:
+        symbols = universes["full_market"]
+        universe_used = "full_market"
+
+    # Parallel scanning with concurrency limit
+    logger.info(
+        "Starting parallel scan of %d symbols (max concurrent: %d)",
+        len(symbols),
+        MAX_CONCURRENT_SCANS,
+    )
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCANS)
+
+    tasks = [
+        _analyze_symbol_async(
+            sym,
+            scan_period,
+            holding_period,
+            min_score,
+            min_adx,
+            max_iv,
+            direction,
+            semaphore,
+        )
+        for sym in symbols
+    ]
+
+    results = await asyncio.gather(*tasks)
+
+    # Process results
+    candidates = []
+    errors = []
+    scanned = 0
+
+    for sym, candidate, error in results:
+        if error:
+            errors.append({"symbol": sym, "error": error})
+        elif candidate is not None:
+            candidates.append(candidate)
+            scanned += 1
+        else:
+            # Symbol was analyzed but filtered out or had insufficient data
+            scanned += 1
+
+    logger.info("Scan complete: %d candidates from %d scanned", len(candidates), scanned)
+
+    # Sort by absolute composite score (highest first)
+    candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
+
+    # Separate into bullish and bearish
+    bullish = [c for c in candidates if c["composite_score"] > 0]
+    bearish = [c for c in candidates if c["composite_score"] < 0]
+
+    # Find highest conviction setups
+    high_conviction = [
+        c
+        for c in candidates
+        if abs(c["composite_score"]) >= 4 and c["adx"] >= 28 and c["iv_percentile"] <= 50
+    ]
+
+    result = {
+        "scan_parameters": {
+            "universe": universe_used,
+            "symbols_in_universe": len(symbols),
+            "symbols_scanned": scanned,
+            "holding_period": holding_period,
+            "min_score": min_score,
+            "min_adx": min_adx,
+            "max_iv_percentile": max_iv,
+            "direction_filter": direction,
+        },
+        "summary": {
+            "total_candidates": len(candidates),
+            "bullish_setups": len(bullish),
+            "bearish_setups": len(bearish),
+            "high_conviction": len(high_conviction),
+            "errors": len(errors),
+        },
+        "high_conviction_setups": high_conviction[:5] if high_conviction else [],
+        "top_bullish": bullish[:max_results] if bullish else [],
+        "top_bearish": bearish[:max_results] if bearish else [],
+        "errors": errors[:10] if errors else None,
+    }
+
+    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
 @server.list_tools()
 async def handle_list_tools() -> list[Tool]:
     """List available volume-price analysis tools."""
@@ -508,7 +669,11 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     logger.debug("Tool arguments: %s", arguments)
 
     try:
-        # Extract common parameters
+        # scan_candidates handles its own data fetching per symbol
+        if name == "scan_candidates":
+            return await _handle_scan_candidates(arguments)
+
+        # Extract common parameters for single-symbol tools
         symbol = arguments.get("symbol", "").upper()
         start_date = arguments.get("start_date")
         end_date = arguments.get("end_date")
@@ -1102,363 +1267,6 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     holding_period,
                     latest_close,
                 ),
-            }
-
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
-
-        elif name == "scan_candidates":
-            # Pre-built symbol universes
-            universes = {
-                "mega_caps": [
-                    "AAPL",
-                    "MSFT",
-                    "GOOGL",
-                    "AMZN",
-                    "NVDA",
-                    "META",
-                    "TSLA",
-                    "BRK-B",
-                    "UNH",
-                    "XOM",
-                    "JNJ",
-                    "JPM",
-                    "V",
-                    "PG",
-                    "MA",
-                    "HD",
-                    "CVX",
-                    "MRK",
-                    "ABBV",
-                    "LLY",
-                    "AVGO",
-                    "PEP",
-                    "KO",
-                    "COST",
-                    "TMO",
-                    "MCD",
-                    "WMT",
-                    "CSCO",
-                    "ACN",
-                    "CRM",
-                ],
-                "tech": [
-                    "AAPL",
-                    "MSFT",
-                    "GOOGL",
-                    "AMZN",
-                    "NVDA",
-                    "META",
-                    "TSLA",
-                    "AVGO",
-                    "ORCL",
-                    "CRM",
-                    "ADBE",
-                    "AMD",
-                    "INTC",
-                    "QCOM",
-                    "TXN",
-                    "MU",
-                    "AMAT",
-                    "LRCX",
-                    "KLAC",
-                    "MRVL",
-                    "NOW",
-                    "SNOW",
-                    "PLTR",
-                    "PANW",
-                    "CRWD",
-                    "ZS",
-                    "DDOG",
-                    "NET",
-                    "MDB",
-                    "TEAM",
-                    "SNPS",
-                    "CDNS",
-                    "ADI",
-                    "INTU",
-                    "FTNT",
-                    "WDAY",
-                    "ANSS",
-                    "CPRT",
-                    "COIN",
-                    "SHOP",
-                    "MELI",
-                    "SE",
-                    "RBLX",
-                    "U",
-                    "DOCU",
-                    "ZM",
-                    "OKTA",
-                    "SPLK",
-                    "VEEV",
-                    "TTD",
-                ],
-                "financials": [
-                    "JPM",
-                    "BAC",
-                    "WFC",
-                    "GS",
-                    "MS",
-                    "C",
-                    "AXP",
-                    "BLK",
-                    "SCHW",
-                    "USB",
-                    "PNC",
-                    "TFC",
-                    "COF",
-                    "AIG",
-                    "MET",
-                    "PRU",
-                    "ALL",
-                    "TRV",
-                    "CB",
-                    "CME",
-                ],
-                "healthcare": [
-                    "UNH",
-                    "JNJ",
-                    "PFE",
-                    "MRK",
-                    "ABBV",
-                    "LLY",
-                    "BMY",
-                    "AMGN",
-                    "GILD",
-                    "MRNA",
-                    "REGN",
-                    "VRTX",
-                    "ISRG",
-                    "DXCM",
-                    "IDXX",
-                    "ZTS",
-                    "CI",
-                    "ELV",
-                    "HUM",
-                    "BIIB",
-                ],
-                "consumer": [
-                    "WMT",
-                    "COST",
-                    "TGT",
-                    "HD",
-                    "LOW",
-                    "NKE",
-                    "SBUX",
-                    "MCD",
-                    "CMG",
-                    "DPZ",
-                    "YUM",
-                    "LULU",
-                    "ULTA",
-                    "ROST",
-                    "DG",
-                    "DLTR",
-                    "EL",
-                    "CL",
-                    "KMB",
-                    "TJX",
-                ],
-                "energy": [
-                    "XOM",
-                    "CVX",
-                    "COP",
-                    "SLB",
-                    "EOG",
-                    "OXY",
-                    "MPC",
-                    "VLO",
-                    "PSX",
-                    "DVN",
-                    "HAL",
-                    "BKR",
-                    "FANG",
-                    "HES",
-                    "MRO",
-                    "APA",
-                    "OVV",
-                    "CTRA",
-                    "EQT",
-                    "AR",
-                ],
-                "industrials": [
-                    "CAT",
-                    "DE",
-                    "BA",
-                    "RTX",
-                    "LMT",
-                    "GE",
-                    "HON",
-                    "UPS",
-                    "FDX",
-                    "UNP",
-                    "NSC",
-                    "CSX",
-                    "WM",
-                    "EMR",
-                    "ETN",
-                    "ITW",
-                    "PH",
-                    "ROK",
-                    "CMI",
-                    "PCAR",
-                ],
-                "etfs": [
-                    "SPY",
-                    "QQQ",
-                    "IWM",
-                    "DIA",
-                    "XLF",
-                    "XLE",
-                    "XLK",
-                    "XLV",
-                    "XLI",
-                    "XLP",
-                    "XLY",
-                    "XLB",
-                    "XLC",
-                    "XLRE",
-                    "XLU",
-                    "GLD",
-                    "SLV",
-                    "TLT",
-                    "SMH",
-                    "XBI",
-                    "ARKK",
-                    "SOXX",
-                    "IBB",
-                    "KRE",
-                    "XOP",
-                    "KWEB",
-                    "EEM",
-                    "FXI",
-                    "EWZ",
-                    "EWJ",
-                    "GDX",
-                    "GDXJ",
-                    "USO",
-                    "UNG",
-                    "HYG",
-                    "LQD",
-                    "TIP",
-                    "VNQ",
-                    "IYR",
-                    "XHB",
-                ],
-            }
-            # Full market combines all liquid stocks
-            universes["liquid"] = list(
-                set(
-                    universes["mega_caps"]
-                    + universes["tech"]
-                    + universes["financials"]
-                    + universes["healthcare"]
-                    + universes["consumer"]
-                    + universes["energy"]
-                    + universes["industrials"]
-                )
-            )
-            universes["full_market"] = list(set(universes["liquid"] + universes["etfs"]))
-
-            # Get scanning parameters
-            custom_symbols = arguments.get("symbols", [])
-            universe = arguments.get("universe", "full_market").lower()
-            scan_period = arguments.get("period", "3mo")
-            holding_period = arguments.get("holding_period", 14)
-            min_score = arguments.get("min_score", 2.0)
-            min_adx = arguments.get("min_adx", 20)
-            max_iv = arguments.get("max_iv_percentile", 100)
-            direction = arguments.get("direction", "any").lower()
-            max_results = arguments.get("max_results", 15)
-
-            # Determine symbols to scan
-            if custom_symbols and len(custom_symbols) > 0:
-                symbols = [s.upper() for s in custom_symbols]
-                universe_used = "custom"
-            elif universe in universes:
-                symbols = universes[universe]
-                universe_used = universe
-            else:
-                symbols = universes["full_market"]
-                universe_used = "full_market"
-
-            # Parallel scanning with concurrency limit
-            logger.info(
-                "Starting parallel scan of %d symbols (max concurrent: %d)",
-                len(symbols),
-                MAX_CONCURRENT_SCANS,
-            )
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCANS)
-
-            tasks = [
-                _analyze_symbol_async(
-                    sym,
-                    scan_period,
-                    holding_period,
-                    min_score,
-                    min_adx,
-                    max_iv,
-                    direction,
-                    semaphore,
-                )
-                for sym in symbols
-            ]
-
-            results = await asyncio.gather(*tasks)
-
-            # Process results
-            candidates = []
-            errors = []
-            scanned = 0
-
-            for sym, candidate, error in results:
-                if error:
-                    errors.append({"symbol": sym, "error": error})
-                elif candidate is not None:
-                    candidates.append(candidate)
-                    scanned += 1
-                else:
-                    # Symbol was analyzed but filtered out or had insufficient data
-                    scanned += 1
-
-            logger.info("Scan complete: %d candidates from %d scanned", len(candidates), scanned)
-
-            # Sort by absolute composite score (highest first)
-            candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
-
-            # Separate into bullish and bearish
-            bullish = [c for c in candidates if c["composite_score"] > 0]
-            bearish = [c for c in candidates if c["composite_score"] < 0]
-
-            # Find highest conviction setups
-            high_conviction = [
-                c
-                for c in candidates
-                if abs(c["composite_score"]) >= 4 and c["adx"] >= 28 and c["iv_percentile"] <= 50
-            ]
-
-            result = {
-                "scan_parameters": {
-                    "universe": universe_used,
-                    "symbols_in_universe": len(symbols),
-                    "symbols_scanned": scanned,
-                    "holding_period": holding_period,
-                    "min_score": min_score,
-                    "min_adx": min_adx,
-                    "max_iv_percentile": max_iv,
-                    "direction_filter": direction,
-                },
-                "summary": {
-                    "total_candidates": len(candidates),
-                    "bullish_setups": len(bullish),
-                    "bearish_setups": len(bearish),
-                    "high_conviction": len(high_conviction),
-                    "errors": len(errors),
-                },
-                "high_conviction_setups": high_conviction[:5] if high_conviction else [],
-                "top_bullish": bullish[:max_results] if bullish else [],
-                "top_bearish": bearish[:max_results] if bearish else [],
-                "errors": errors[:10] if errors else None,
             }
 
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
