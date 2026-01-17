@@ -261,12 +261,10 @@ async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
     for sym, candidate, error in results:
         if error:
             errors.append({"symbol": sym, "error": error})
-        elif candidate is not None:
-            candidates.append(candidate)
-            scanned += 1
         else:
-            # Symbol was analyzed but filtered out or had insufficient data
             scanned += 1
+            if candidate is not None:
+                candidates.append(candidate)
 
     logger.info("Scan complete: %d candidates from %d scanned", len(candidates), scanned)
 

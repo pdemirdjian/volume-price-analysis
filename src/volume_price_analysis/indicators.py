@@ -87,7 +87,7 @@ def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str
     # Aggregate volume for each price bin using vectorized accumulation
     volumes = np.zeros(num_bins)
 
-    # For candles spanning single bins (most common case), use bincount
+    # For candles spanning single bins, use fast bincount
     single_bin_mask = low_bins == high_bins
     if np.any(single_bin_mask):
         single_volumes = np.bincount(
@@ -97,7 +97,7 @@ def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str
         )
         volumes += single_volumes[:num_bins]
 
-    # For candles spanning multiple bins, use loop (typically fewer iterations)
+    # For candles spanning multiple bins, distribute volume across bins
     multi_bin_indices = np.where(~single_bin_mask)[0]
     for idx in multi_bin_indices:
         start_bin = low_bins[idx]
