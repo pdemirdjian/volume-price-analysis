@@ -2,9 +2,11 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in this project, please report it through GitHub's private vulnerability reporting:
+If you discover a security vulnerability in this project, please report it
+through GitHub's private vulnerability reporting:
 
-1. Go to the [Security tab](https://github.com/pdemirdjian/volume-price-analysis/security)
+1. Go to the
+   [Security tab](https://github.com/pdemirdjian/volume-price-analysis/security)
 2. Click "Report a vulnerability"
 3. Provide details about the vulnerability
 
@@ -24,7 +26,8 @@ The following are **out of scope**:
 
 ## Response
 
-I aim to respond to security reports within 7 days and will work to release a fix as soon as practical.
+I aim to respond to security reports within 7 days and will work to release a
+fix as soon as practical.
 
 ## Supported Versions
 

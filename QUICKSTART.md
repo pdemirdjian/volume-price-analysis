@@ -42,7 +42,8 @@ pip install -e .
 python example_usage.py
 ```
 
-You should see analysis output for Apple stock (AAPL). If this works, everything is installed correctly!
+You should see analysis output for Apple stock (AAPL). If this works,
+everything is installed correctly!
 
 ### Run Test Suite (Optional but Recommended)
 
@@ -61,6 +62,7 @@ If tests pass, you're ready to go! 🚀
 Edit your MCP settings file:
 
 **macOS/Linux**: `~/.config/claude-code/mcp_settings.json`
+
 **Windows**: `%APPDATA%\claude-code\mcp_settings.json`
 
 Add this configuration:
@@ -77,6 +79,7 @@ Add this configuration:
 ```
 
 **Note**: If using a virtual environment, use the full path to Python:
+
 ```bash
 # Find your Python path
 which python  # macOS/Linux
@@ -89,23 +92,23 @@ Then update the command to use that full path.
 
 Restart Claude Code to load the new MCP server.
 
-## Step 5: Try It Out!
+## Step 5: Try It Out
 
 Ask Claude Code:
 
-```
+```text
 Analyze Apple stock (AAPL) volume and price trends for the last 3 months
 ```
 
 or
 
-```
+```text
 Show me a comprehensive volume-price analysis for Tesla
 ```
 
 or
 
-```
+```text
 Calculate the VWAP and volume profile for Microsoft over the past year
 ```
 
@@ -126,13 +129,15 @@ The server provides 7 tools:
 ### "No module named mcp"
 
 Install dependencies:
+
 ```bash
 pip install -e .
 ```
 
 ### "yfinance" errors
 
-Make sure you have internet connection. Yahoo Finance may occasionally have rate limits.
+Make sure you have internet connection. Yahoo Finance may occasionally have
+rate limits.
 
 ### Server not appearing in Claude Code
 
@@ -144,6 +149,7 @@ Make sure you have internet connection. Yahoo Finance may occasionally have rate
 ### Permission denied
 
 Make the example script executable:
+
 ```bash
 chmod +x example_usage.py
 ```
