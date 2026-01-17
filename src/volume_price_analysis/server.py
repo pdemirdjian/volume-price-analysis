@@ -1064,12 +1064,16 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             atr_val = atr.iloc[-1]
 
             if not pd.isna(bb_bw):
-                bw_series = bbands["bandwidth"]
+                bw_series = bbands["bandwidth"].dropna()
+                # Require minimum 5 values for meaningful squeeze detection
                 if len(bw_series) >= volume_window:
                     bb_mean = bw_series.iloc[-volume_window:].mean()
-                else:
+                    is_squeeze = bb_bw < bb_mean * 0.7
+                elif len(bw_series) >= 5:
                     bb_mean = bw_series.mean()
-                is_squeeze = bb_bw < bb_mean * 0.7
+                    is_squeeze = bb_bw < bb_mean * 0.7
+                else:
+                    is_squeeze = False  # Insufficient data for squeeze detection
             else:
                 is_squeeze = False
 

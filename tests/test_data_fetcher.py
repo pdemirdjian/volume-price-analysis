@@ -212,8 +212,8 @@ class TestValidateSymbolFormat:
         """Test valid symbol formats."""
         assert validate_symbol_format("AAPL") is True
         assert validate_symbol_format("MSFT") is True
-        assert validate_symbol_format("BRK.A") is True  # Berkshire A shares
-        assert validate_symbol_format("BRK.B") is True  # Berkshire B shares
+        assert validate_symbol_format("BRK-A") is True  # Berkshire A shares
+        assert validate_symbol_format("BRK-B") is True  # Berkshire B shares
         assert validate_symbol_format("SPY") is True
         assert validate_symbol_format("VIX") is True
         assert validate_symbol_format("^GSPC") is True  # S&P 500 index
