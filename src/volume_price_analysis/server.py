@@ -678,7 +678,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         symbol = arguments.get("symbol", "").upper()
         start_date = arguments.get("start_date")
         end_date = arguments.get("end_date")
-        
+
         # Set default period based on tool type
         default_period = "3mo" if name == "options_analysis" else "1mo"
         period = arguments.get("period", default_period)
