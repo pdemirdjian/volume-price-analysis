@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.1.0...v1.1.1) (2026-01-17)
+
+
+### Documentation
+
+* fix markdown linting errors across all documentation ([#29](https://github.com/pdemirdjian/volume-price-analysis/issues/29)) ([f2dc2b6](https://github.com/pdemirdjian/volume-price-analysis/commit/f2dc2b6a33f08e65382f44da4fe110c24c47dbe2))
+
 ## [1.1.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.0.2...v1.1.0) (2026-01-17)
 
 ### Features
