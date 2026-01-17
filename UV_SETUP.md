@@ -1,6 +1,8 @@
 # UV Setup Guide
 
-This project uses [UV](https://github.com/astral-sh/uv) for fast, reliable Python package and environment management. UV is a modern replacement for pip and virtual environments, written in Rust.
+This project uses [UV](https://github.com/astral-sh/uv) for fast, reliable
+Python package and environment management. UV is a modern replacement for pip
+and virtual environments, written in Rust.
 
 ## Why UV?
 
@@ -14,26 +16,31 @@ This project uses [UV](https://github.com/astral-sh/uv) for fast, reliable Pytho
 ### Install UV
 
 **macOS/Linux:**
+
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 **Windows (PowerShell):**
+
 ```powershell
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 **With pip (any platform):**
+
 ```bash
 pip install uv
 ```
 
 **With Homebrew (macOS):**
+
 ```bash
 brew install uv
 ```
 
 Verify installation:
+
 ```bash
 uv --version
 ```
@@ -57,16 +64,19 @@ uv venv
 ### 2. Activate Virtual Environment
 
 **macOS/Linux:**
+
 ```bash
 source .venv/bin/activate
 ```
 
 **Windows (PowerShell):**
+
 ```powershell
 .venv\Scripts\activate
 ```
 
 **Windows (CMD):**
+
 ```cmd
 .venv\Scripts\activate.bat
 ```
@@ -190,13 +200,13 @@ mypy src/
 
 ## UV vs Traditional Tools
 
-| Task | Traditional | UV |
-|------|-------------|-----|
-| Create venv | `python -m venv .venv` | `uv venv` |
-| Install package | `pip install pandas` | `uv pip install pandas` |
-| Install from file | `pip install -r requirements.txt` | `uv pip install -r requirements.txt` |
-| Install editable | `pip install -e .` | `uv pip install -e .` |
-| Speed | 🐌 Slow | ⚡ 10-100x faster |
+| Task              | Traditional              | UV                         |
+| ----------------- | ------------------------ | -------------------------- |
+| Create venv       | `python -m venv .venv`   | `uv venv`                  |
+| Install package   | `pip install pandas`     | `uv pip install pandas`    |
+| Install from file | `pip install -r req.txt` | `uv pip install -r req.txt`|
+| Install editable  | `pip install -e .`       | `uv pip install -e .`      |
+| Speed             | 🐌 Slow                  | ⚡ 10-100x faster          |
 
 ## Upgrading Dependencies
 
@@ -216,6 +226,7 @@ uv pip install -e ".[dev]" --upgrade
 ### UV command not found
 
 Add UV to your PATH:
+
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
@@ -225,6 +236,7 @@ Add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to make permanent.
 ### Wrong Python version
 
 Specify Python version explicitly:
+
 ```bash
 uv venv --python 3.12
 ```
@@ -234,6 +246,7 @@ Or ensure `.python-version` file exists (already configured in this project).
 ### Cache issues
 
 Clear UV cache:
+
 ```bash
 uv cache clean
 ```
@@ -241,6 +254,7 @@ uv cache clean
 ### Permission errors
 
 On Unix systems, ensure UV install script is executable:
+
 ```bash
 chmod +x ~/.cargo/bin/uv
 ```
@@ -293,6 +307,7 @@ When configuring the MCP server with Claude Code, use the UV-managed Python:
 ```
 
 Find the path:
+
 ```bash
 which python  # When venv is activated
 # or
@@ -308,6 +323,7 @@ echo "$(pwd)/.venv/bin/python"
 ## Comparison with Other Tools
 
 UV replaces or improves upon:
+
 - `pip` - Package installer
 - `pip-tools` - Dependency management
 - `virtualenv` - Virtual environment

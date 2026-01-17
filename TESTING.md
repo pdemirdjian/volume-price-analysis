@@ -6,11 +6,11 @@ Comprehensive testing documentation for the Volume-Price Analysis MCP Server.
 
 The project includes **50+ tests** organized into three main test modules:
 
-| Test Module | Tests | Coverage |
-|------------|-------|----------|
-| `test_indicators.py` | 25+ | All volume-price indicators |
-| `test_data_fetcher.py` | 15+ | Data fetching and validation |
-| `test_server.py` | 15+ | MCP server integration |
+| Test Module            | Tests | Coverage                    |
+| ---------------------- | ----- | --------------------------- |
+| `test_indicators.py`   | 25+   | All volume-price indicators |
+| `test_data_fetcher.py` | 15+   | Data fetching & validation  |
+| `test_server.py`       | 15+   | MCP server integration      |
 
 ## Quick Start
 
@@ -31,40 +31,47 @@ pytest --cov=src/volume_price_analysis --cov-report=term-missing
 
 Tests all volume-price calculation functions:
 
-**TestOBV** - On-Balance Volume
+#### TestOBV - On-Balance Volume
+
 - Basic calculation
 - Uptrend behavior
 - Downtrend behavior
 - Flat price handling
 
-**TestVWAP** - Volume Weighted Average Price
+#### TestVWAP - Volume Weighted Average Price
+
 - Basic calculation
 - Price range validation
 - Cumulative behavior
 - NaN handling
 
-**TestVolumeProfile** - Volume distribution
+#### TestVolumeProfile - Volume distribution
+
 - Basic profile generation
 - Total volume conservation
 - Price range coverage
 - Different bin configurations
 
-**TestMFI** - Money Flow Index
+#### TestMFI - Money Flow Index
+
 - Basic calculation
 - 0-100 range validation
 - Initial NaN values
 - Different periods
 
-**TestVPT** - Volume-Price Trend
+#### TestVPT - Volume-Price Trend
+
 - Basic calculation
 - Uptrend/downtrend behavior
 
-**TestVolumeTrends** - Trend analysis
+#### TestVolumeTrends - Trend analysis
+
 - Basic analysis
 - Divergence detection
 - Percentage formatting
 
-**TestEdgeCases**
+#### TestEdgeCases
+
 - Empty DataFrames
 - Single row DataFrames
 - Zero volume handling
@@ -73,19 +80,22 @@ Tests all volume-price calculation functions:
 
 Tests stock data fetching functionality:
 
-**TestFetchStockData**
+#### TestFetchStockData
+
 - Fetching with period parameter
 - Fetching with date range
 - Empty result handling
 - Column filtering
 - Date as column (not index)
 
-**TestValidateSymbol**
+#### TestValidateSymbol
+
 - Valid symbol validation
 - Invalid symbol handling
 - Exception handling
 
-**TestIntegration** (skipped by default)
+#### TestIntegration (skipped by default)
+
 - Real Yahoo Finance data fetching
 - Real symbol validation
 
@@ -93,37 +103,47 @@ Tests stock data fetching functionality:
 
 Tests MCP server functionality:
 
-**TestListTools**
+#### TestListTools
+
 - All tools listed
 - Valid schemas
 
-**TestCallToolGetStockData**
+#### TestCallToolGetStockData
+
 - Basic stock data retrieval
 - Date range queries
 
-**TestCallToolOBV**
+#### TestCallToolOBV
+
 - OBV calculation via MCP
 
-**TestCallToolVWAP**
+#### TestCallToolVWAP
+
 - VWAP calculation via MCP
 
-**TestCallToolVolumeProfile**
+#### TestCallToolVolumeProfile
+
 - Volume profile via MCP
 
-**TestCallToolMFI**
+#### TestCallToolMFI
+
 - MFI calculation via MCP
 
-**TestCallToolVolumeTrends**
+#### TestCallToolVolumeTrends
+
 - Trend analysis via MCP
 
-**TestCallToolComprehensive**
+#### TestCallToolComprehensive
+
 - Complete analysis with all indicators
 
-**TestErrorHandling**
+#### TestErrorHandling
+
 - Invalid symbol errors
 - Unknown tool errors
 
-**TestGenerateSummary**
+#### TestGenerateSummary
+
 - Bullish condition summaries
 - Divergence summaries
 
@@ -190,6 +210,7 @@ pytest --cov=src/volume_price_analysis --cov-report=term-missing
 ```
 
 This shows:
+
 - Overall coverage percentage
 - Line-by-line coverage
 - Missing lines highlighted
@@ -220,15 +241,19 @@ pytest tests/test_server.py --cov=src/volume_price_analysis.server
 The test suite uses several fixtures defined in `conftest.py`:
 
 ### `sample_stock_data`
+
 General-purpose stock data with realistic patterns
 
 ### `uptrend_data`
+
 Clear uptrend with increasing volume
 
 ### `downtrend_data`
+
 Clear downtrend with increasing volume
 
 ### `flat_price_data`
+
 Flat price with varying volume
 
 ## Mocking
@@ -247,6 +272,7 @@ async def test_get_stock_data_basic(self, mock_fetch):
 ```
 
 Benefits:
+
 - ⚡ Fast (no network delays)
 - 🔒 Reliable (no external dependencies)
 - 🎯 Focused (tests our code, not yfinance)
@@ -372,6 +398,7 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)/src"
 ### Async Warnings
 
 Configure pytest in `pyproject.toml`:
+
 ```toml
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -397,11 +424,13 @@ Check that `conftest.py` exists in the `tests/` directory.
 Current coverage: **~95%**
 
 Target coverage by module:
+
 - `indicators.py`: 95%+
 - `data_fetcher.py`: 90%+
 - `server.py`: 85%+
 
 Untested areas (acceptable):
+
 - Integration with real Yahoo Finance API (requires network)
 - Main entry point (`if __name__ == "__main__"`)
 
