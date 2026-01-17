@@ -227,6 +227,13 @@ class TestValidateSymbolFormat:
         assert validate_symbol_format("AAPL ") is False  # Contains space
         assert validate_symbol_format(None) is False  # type: ignore[arg-type]
 
+    def test_non_string_types(self):
+        """Test that non-string types return False."""
+        assert validate_symbol_format(123) is False  # type: ignore[arg-type]
+        assert validate_symbol_format(45.67) is False  # type: ignore[arg-type]
+        assert validate_symbol_format(["AAPL"]) is False  # type: ignore[arg-type]
+        assert validate_symbol_format({"symbol": "AAPL"}) is False  # type: ignore[arg-type]
+
 
 class TestIntegration:
     """Integration tests (require network access - skip in CI)."""
