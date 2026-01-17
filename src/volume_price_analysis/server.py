@@ -49,6 +49,9 @@ server = Server("volume-price-analysis")
 # Concurrency limit for parallel scanning
 MAX_CONCURRENT_SCANS = 10
 
+# Minimum data points required for meaningful Bollinger Band squeeze detection
+MIN_SQUEEZE_DETECTION_PERIODS = 5
+
 
 def _analyze_single_symbol(
     symbol: str,
@@ -1065,11 +1068,10 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             if not pd.isna(bb_bw):
                 bw_series = bbands["bandwidth"].dropna()
-                # Require minimum 5 values for meaningful squeeze detection
                 if len(bw_series) >= volume_window:
                     bb_mean = bw_series.iloc[-volume_window:].mean()
                     is_squeeze = bb_bw < bb_mean * 0.7
-                elif len(bw_series) >= 5:
+                elif len(bw_series) >= MIN_SQUEEZE_DETECTION_PERIODS:
                     bb_mean = bw_series.mean()
                     is_squeeze = bb_bw < bb_mean * 0.7
                 else:

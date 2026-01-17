@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 # Default timeout for yfinance requests (in seconds)
 DEFAULT_TIMEOUT = 30
 
-# Valid symbol pattern: 1-10 chars with at least one letter, may include dots, hyphens, carets
-SYMBOL_PATTERN = re.compile(r"^(?=.*[A-Za-z])[A-Za-z0-9.^-]{1,10}$")
+# Valid symbol pattern: starts with letter (e.g., AAPL, BRK-B) or ^ for indices (e.g., ^GSPC)
+SYMBOL_PATTERN = re.compile(r"^(?:[A-Za-z][A-Za-z0-9.^-]{0,9}|\^[A-Za-z][A-Za-z0-9.-]{0,8})$")
 
 
 def validate_symbol_format(symbol: str) -> bool:
