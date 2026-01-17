@@ -678,7 +678,10 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         symbol = arguments.get("symbol", "").upper()
         start_date = arguments.get("start_date")
         end_date = arguments.get("end_date")
-        period = arguments.get("period", "1mo")
+        
+        # Set default period based on tool type
+        default_period = "3mo" if name == "options_analysis" else "1mo"
+        period = arguments.get("period", default_period)
 
         # Fetch stock data
         data = fetch_stock_data(symbol, start_date, end_date, period)
@@ -1112,166 +1115,176 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 theta_risk = "critical"
                 theta_note = "Urgent - close or roll positions to avoid rapid decay"
 
-            result = {
-                "symbol": symbol,
-                "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
-                "period": f"{start_dt} to {end_dt}",
-                "latest_price": float(latest_close),
-                "parameters": {
-                    "holding_period": holding_period,
-                    "days_to_expiration": days_to_expiration,
-                    "mfi_period": mfi_period,
-                    "volume_window": volume_window,
-                    "rsi_period": rsi_period,
-                    "adx_period": adx_period,
-                    "hv_window": hv_window,
-                    "optimization": f"Adaptive for {holding_period}-day options",
-                },
-                "composite_signal": {
-                    "score": composite["composite_score"],
-                    "recommendation": composite["recommendation"],
-                    "action": composite["action"],
-                    "signal_quality": composite["signal_quality"],
-                    "quality_note": composite["quality_note"],
-                    "score_breakdown": composite["score_breakdown"],
-                },
-                "trend_analysis": {
-                    "adx": {
-                        "value": adx_data["adx"],
-                        "plus_di": adx_data["plus_di"],
-                        "minus_di": adx_data["minus_di"],
-                        "trend_strength": adx_data["trend_strength"],
-                        "trend_direction": adx_data["trend_direction"],
-                        "adx_slope": adx_data["adx_slope"],
-                        "interpretation": adx_data["interpretation"],
+            try:
+                result = {
+                    "symbol": symbol,
+                    "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
+                    "period": f"{start_dt} to {end_dt}",
+                    "latest_price": float(latest_close),
+                    "parameters": {
+                        "holding_period": holding_period,
+                        "days_to_expiration": days_to_expiration,
+                        "mfi_period": mfi_period,
+                        "volume_window": volume_window,
+                        "rsi_period": rsi_period,
+                        "adx_period": adx_period,
+                        "hv_window": hv_window,
+                        "optimization": f"Adaptive for {holding_period}-day options",
                     },
-                    "rsi": {
-                        "value": rsi_data["rsi"],
-                        "condition": rsi_data["condition"],
-                        "divergence_type": rsi_data["divergence_type"],
-                        "divergence_signal": rsi_data["signal"],
-                        "interpretation": rsi_data["interpretation"],
+                    "composite_signal": {
+                        "score": composite["composite_score"],
+                        "recommendation": composite["recommendation"],
+                        "action": composite["action"],
+                        "signal_quality": composite["signal_quality"],
+                        "quality_note": composite["quality_note"],
+                        "score_breakdown": composite["score_breakdown"],
                     },
-                },
-                "volume_indicators": {
-                    "obv": {
-                        "value": float(obv.iloc[-1]),
-                        "trend": "increasing" if obv_up else "decreasing",
-                        "short_term_momentum": "bullish" if obv_up else "bearish",
+                    "trend_analysis": {
+                        "adx": {
+                            "value": adx_data["adx"],
+                            "plus_di": adx_data["plus_di"],
+                            "minus_di": adx_data["minus_di"],
+                            "trend_strength": adx_data["trend_strength"],
+                            "trend_direction": adx_data["trend_direction"],
+                            "adx_slope": adx_data["adx_slope"],
+                            "interpretation": adx_data["interpretation"],
+                        },
+                        "rsi": {
+                            "value": rsi_data["rsi"],
+                            "condition": rsi_data["condition"],
+                            "divergence_type": rsi_data["divergence_type"],
+                            "divergence_signal": rsi_data["signal"],
+                            "interpretation": rsi_data["interpretation"],
+                        },
                     },
-                    "accumulation_distribution": {
-                        "value": float(ad_line.iloc[-1]),
-                        "trend": "increasing" if ad_up else "decreasing",
-                        "signal": "institutional_buying" if ad_up else "institutional_selling",
+                    "volume_indicators": {
+                        "obv": {
+                            "value": float(obv.iloc[-1]),
+                            "trend": "increasing" if obv_up else "decreasing",
+                            "short_term_momentum": "bullish" if obv_up else "bearish",
+                        },
+                        "accumulation_distribution": {
+                            "value": float(ad_line.iloc[-1]),
+                            "trend": "increasing" if ad_up else "decreasing",
+                            "signal": "institutional_buying" if ad_up else "institutional_selling",
+                        },
+                        "vpt": {
+                            "value": float(vpt.iloc[-1]),
+                            "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-3] else "decreasing",
+                            "volume_conviction": "strong" if vpt_conviction else "weak",
+                        },
+                        "mfi": {
+                            "value": float(mfi_val),
+                            "condition": mfi_cond,
+                            "options_signal": mfi_signal,
+                        },
+                        "cmf": {"value": float(cmf_val), "signal": cmf_signal},
+                        "relative_volume": {
+                            "current_rvol": rvol["current_rvol"],
+                            "significance": rvol["significance"],
+                        },
+                        "volume_breakout": breakout,
                     },
-                    "vpt": {
-                        "value": float(vpt.iloc[-1]),
-                        "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-3] else "decreasing",
-                        "volume_conviction": "strong" if vpt_conviction else "weak",
+                    "price_indicators": {
+                        "vwap": {
+                            "value": float(latest_vwap),
+                            "price_vs_vwap": f"{((latest_close / latest_vwap - 1) * 100):.2f}%",
+                            "position": "above" if latest_close > latest_vwap else "below",
+                            "signal": "bullish_entry"
+                            if latest_close > latest_vwap
+                            else "bearish_entry",
+                        },
+                        "vwma": {
+                            "value": float(latest_vwma),
+                            "price_vs_vwma": f"{((latest_close / latest_vwma - 1) * 100):.2f}%",
+                            "trend": "bullish" if latest_close > latest_vwma else "bearish",
+                        },
+                        "price_roc": {
+                            "current_roc": roc["current_roc"],
+                            "direction": roc["direction"],
+                            "strength": roc["strength"],
+                            "volume_confirmed": roc["volume_confirmed"],
+                        },
                     },
-                    "mfi": {
-                        "value": float(mfi_val),
-                        "condition": mfi_cond,
-                        "options_signal": mfi_signal,
+                    "volatility_analysis": {
+                        "iv_percentile_proxy": {
+                            "percentile": iv_percentile["iv_percentile"],
+                            "current_hv": iv_percentile["current_hv"],
+                            "hv_range": f"{iv_percentile['hv_min']:.1%} - {iv_percentile['hv_max']:.1%}",  # noqa: E501
+                            "interpretation": iv_percentile["interpretation"],
+                            "options_implication": iv_percentile["options_implication"],
+                            "strategy_suggestion": iv_percentile["strategy_suggestion"],
+                        },
+                        "expected_move": {
+                            "dollars": expected_move["expected_move_dollars"],
+                            "percent": expected_move["expected_move_percent"],
+                            "upper_target": expected_move["upper_target_1std"],
+                            "lower_target": expected_move["lower_target_1std"],
+                            "targets": expected_move["targets"],
+                            "strike_guidance": expected_move["strike_guidance"],
+                            "interpretation": expected_move["interpretation"],
+                        },
+                        "atr": {
+                            "value": float(atr_val) if not pd.isna(atr_val) else 0.0,
+                            "daily_range": daily_range,
+                            "stop_loss_suggestion": stop_loss,
+                        },
+                        "bollinger_bands": {
+                            "upper": float(bb_upper) if not pd.isna(bb_upper) else 0.0,
+                            "middle": float(bb_middle) if not pd.isna(bb_middle) else 0.0,
+                            "lower": float(bb_lower) if not pd.isna(bb_lower) else 0.0,
+                            "percent_b": float(bb_pct_b) if not pd.isna(bb_pct_b) else 0.0,
+                            "bandwidth": float(bb_bw) if not pd.isna(bb_bw) else 0.0,
+                            "squeeze_detected": is_squeeze,
+                            "position": bb_position,
+                        },
                     },
-                    "cmf": {"value": float(cmf_val), "signal": cmf_signal},
-                    "relative_volume": {
-                        "current_rvol": rvol["current_rvol"],
-                        "significance": rvol["significance"],
+                    "volume_profile": {
+                        "point_of_control": profile["poc"],
+                        "value_area_high": profile["vah"],
+                        "value_area_low": profile["val"],
+                        "current_position": profile["position"],
+                        "interpretation": profile["interpretation"],
+                        "strike_selection_guidance": {
+                            "poc_strike": f"${profile['poc']:.2f} - Highest probability",
+                            "vah_strike": f"${profile['vah']:.2f} - Resistance level",
+                            "val_strike": f"${profile['val']:.2f} - Support level",
+                            "current_vs_poc": f"{profile['poc_distance_pct']:.2f}%",
+                        },
                     },
-                    "volume_breakout": breakout,
-                },
-                "price_indicators": {
-                    "vwap": {
-                        "value": float(latest_vwap),
-                        "price_vs_vwap": f"{((latest_close / latest_vwap - 1) * 100):.2f}%",
-                        "position": "above" if latest_close > latest_vwap else "below",
-                        "signal": "bullish_entry"
-                        if latest_close > latest_vwap
-                        else "bearish_entry",
+                    "time_decay": {
+                        "days_to_expiration": days_to_expiration,
+                        "theta_risk": theta_risk,
+                        "theta_note": theta_note,
                     },
-                    "vwma": {
-                        "value": float(latest_vwma),
-                        "price_vs_vwma": f"{((latest_close / latest_vwma - 1) * 100):.2f}%",
-                        "trend": "bullish" if latest_close > latest_vwma else "bearish",
-                    },
-                    "price_roc": {
-                        "current_roc": roc["current_roc"],
-                        "direction": roc["direction"],
-                        "strength": roc["strength"],
-                        "volume_confirmed": roc["volume_confirmed"],
-                    },
-                },
-                "volatility_analysis": {
-                    "iv_percentile_proxy": {
-                        "percentile": iv_percentile["iv_percentile"],
-                        "current_hv": iv_percentile["current_hv"],
-                        "hv_range": f"{iv_percentile['hv_min']:.1%} - {iv_percentile['hv_max']:.1%}",  # noqa: E501
-                        "interpretation": iv_percentile["interpretation"],
-                        "options_implication": iv_percentile["options_implication"],
-                        "strategy_suggestion": iv_percentile["strategy_suggestion"],
-                    },
-                    "expected_move": {
-                        "dollars": expected_move["expected_move_dollars"],
-                        "percent": expected_move["expected_move_percent"],
-                        "upper_target": expected_move["upper_target_1std"],
-                        "lower_target": expected_move["lower_target_1std"],
-                        "targets": expected_move["targets"],
-                        "strike_guidance": expected_move["strike_guidance"],
-                        "interpretation": expected_move["interpretation"],
-                    },
-                    "atr": {
-                        "value": float(atr_val) if not pd.isna(atr_val) else 0.0,
-                        "daily_range": daily_range,
-                        "stop_loss_suggestion": stop_loss,
-                    },
-                    "bollinger_bands": {
-                        "upper": float(bb_upper) if not pd.isna(bb_upper) else 0.0,
-                        "middle": float(bb_middle) if not pd.isna(bb_middle) else 0.0,
-                        "lower": float(bb_lower) if not pd.isna(bb_lower) else 0.0,
-                        "percent_b": float(bb_pct_b) if not pd.isna(bb_pct_b) else 0.0,
-                        "bandwidth": float(bb_bw) if not pd.isna(bb_bw) else 0.0,
-                        "squeeze_detected": is_squeeze,
-                        "position": bb_position,
-                    },
-                },
-                "volume_profile": {
-                    "point_of_control": profile["poc"],
-                    "value_area_high": profile["vah"],
-                    "value_area_low": profile["val"],
-                    "current_position": profile["position"],
-                    "interpretation": profile["interpretation"],
-                    "strike_selection_guidance": {
-                        "poc_strike": f"${profile['poc']:.2f} - Highest probability",
-                        "vah_strike": f"${profile['vah']:.2f} - Resistance level",
-                        "val_strike": f"${profile['val']:.2f} - Support level",
-                        "current_vs_poc": f"{profile['poc_distance_pct']:.2f}%",
-                    },
-                },
-                "time_decay": {
-                    "days_to_expiration": days_to_expiration,
-                    "theta_risk": theta_risk,
-                    "theta_note": theta_note,
-                },
-                "volume_trends": trends,
-                "options_insights": generate_options_insights(
-                    composite,
-                    adx_data,
-                    rsi_data,
-                    iv_percentile,
-                    expected_move,
-                    profile,
-                    rvol,
-                    breakout,
-                    trends,
-                    mfi_val,
-                    cmf_val,
-                    is_squeeze,
-                    bb_pct_b,
-                    holding_period,
-                    latest_close,
-                ),
-            }
+                    "volume_trends": trends,
+                    "options_insights": generate_options_insights(
+                        composite,
+                        adx_data,
+                        rsi_data,
+                        iv_percentile,
+                        expected_move,
+                        profile,
+                        rvol,
+                        breakout,
+                        trends,
+                        mfi_val,
+                        cmf_val,
+                        is_squeeze,
+                        bb_pct_b,
+                        holding_period,
+                        latest_close,
+                    ),
+                }
+            except KeyError as e:
+                logger.error(f"Missing key in options_analysis result construction: {e}")
+                # Log the keys of the dictionaries involved to debug
+                logger.error(f"ADX keys: {adx_data.keys()}")
+                logger.error(f"RSI keys: {rsi_data.keys()}")
+                logger.error(f"IV Percentile keys: {iv_percentile.keys()}")
+                logger.error(f"Expected Move keys: {expected_move.keys()}")
+                logger.error(f"Profile keys: {profile.keys()}")
+                raise e
 
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 

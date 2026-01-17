@@ -766,6 +766,7 @@ def detect_rsi_divergence(data: pd.DataFrame, rsi: pd.Series, lookback: int = 10
             "bearish_divergence": False,
             "divergence_type": "none",
             "signal": "neutral",
+            "interpretation": "Insufficient data for divergence detection",
         }
 
     recent_data = data.iloc[-lookback:]
@@ -900,8 +901,10 @@ def calculate_iv_percentile(
             "current_hv": 0.0 if pd.isna(hv_val) else float(hv_val),  # type: ignore[arg-type]
             "hv_min": 0.0,
             "hv_max": 0.0,
+            "lookback_days": 0,
             "interpretation": "Insufficient data for percentile calculation",
             "options_implication": "neutral",
+            "strategy_suggestion": "Use standard position sizing, insufficient volatility data",
         }
 
     # Use available data up to lookback_days
