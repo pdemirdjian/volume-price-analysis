@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.0.2...v1.1.0) (2026-01-17)
+
+
+### Features
+
+* improve reliability and performance ([#26](https://github.com/pdemirdjian/volume-price-analysis/issues/26)) ([4cca0d1](https://github.com/pdemirdjian/volume-price-analysis/commit/4cca0d134dec2e2ffde42c78561630d771de7713))
+
 ## [1.0.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.0.1...v1.0.2) (2026-01-16)
 
 
