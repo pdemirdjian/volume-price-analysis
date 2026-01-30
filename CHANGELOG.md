@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.1.1...v1.1.2) (2026-01-30)
+
+
+### Bug Fixes
+
+* **deps:** update dependency pandas to v3 ([#41](https://github.com/pdemirdjian/volume-price-analysis/issues/41)) ([9da1af9](https://github.com/pdemirdjian/volume-price-analysis/commit/9da1af94aa836f62c1ec69c63662b4f4fdbc4481))
+* **deps:** update non-major dependencies ([#39](https://github.com/pdemirdjian/volume-price-analysis/issues/39)) ([755fba2](https://github.com/pdemirdjian/volume-price-analysis/commit/755fba2c9fd42869de6d3ba11fd0e2e16c671d44))
+
 ## [1.1.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.1.0...v1.1.1) (2026-01-17)
 
 
