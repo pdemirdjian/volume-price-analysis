@@ -73,6 +73,13 @@
       "groupName": "linting tools"
     },
     {
+      "description": "Use fix commit type for production deps to trigger releases",
+      "matchDepTypes": [
+        "dependencies"
+      ],
+      "semanticCommitType": "fix"
+    },
+    {
       "description": "Automerge GitHub Actions patches",
       "matchManagers": [
         "github-actions"
