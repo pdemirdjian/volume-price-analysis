@@ -24,8 +24,8 @@ dev = [
     "pytest-cov==6.1.0",
     "pytest-asyncio==1.2.0",
     "pytest-mock==3.15.0",
-    "ruff==0.14.13",
-    "mypy==1.19.0",
+    "ruff==0.14.14",
+    "mypy==1.19.1",
 ]
 
 [tool.pytest.ini_options]
