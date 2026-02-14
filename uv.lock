@@ -1050,7 +1050,6 @@ dependencies = [
     { name = "mcp" },
     { name = "numpy" },
     { name = "pandas" },
-    { name = "python-dotenv" },
     { name = "yfinance" },
 ]
 
@@ -1071,7 +1070,6 @@ requires-dist = [
     { name = "mcp", specifier = "==1.26.0" },
     { name = "numpy", specifier = "==2.4.2" },
     { name = "pandas", specifier = "==3.0.0" },
-    { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "yfinance", specifier = "==1.1.0" },
 ]
 

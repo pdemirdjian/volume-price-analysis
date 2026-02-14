@@ -59,6 +59,14 @@ class TestAgentConfig:
         assert config.max_deep_analysis == 10
         assert config.email_smtp_port == 465
 
+    def test_from_env_handles_invalid_int(self, monkeypatch):
+        monkeypatch.setenv("EMAIL_SMTP_PORT", "not_a_number")
+        monkeypatch.setenv("MAX_DEEP_ANALYSIS", "abc")
+
+        config = AgentConfig.from_env()
+        assert config.email_smtp_port == 587  # falls back to default
+        assert config.max_deep_analysis == 5  # falls back to default
+
     def test_validate_missing_required(self):
         config = AgentConfig()
         errors = config.validate()

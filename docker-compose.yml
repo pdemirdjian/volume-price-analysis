@@ -15,6 +15,7 @@ services:
     container_name: watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Required for authenticated pulls from ghcr.io private packages
       - /root/.docker/config.json:/config.json:ro
     command: --interval 3600 morning-briefing
     restart: unless-stopped
