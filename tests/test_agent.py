@@ -394,11 +394,5 @@ class TestRunMorningBriefing:
 
         # Should still send an email with fallback content
         mock_send.assert_called_once()
-        call_kwargs = mock_send.call_args
-        assert "Fallback" in call_kwargs.kwargs["body_markdown"] or "Fallback" in (
-            call_kwargs[1].get("body_markdown", "")
-            if len(call_kwargs) > 1
-            else call_kwargs[0][1]
-            if len(call_kwargs[0]) > 1
-            else ""
-        )
+        body = mock_send.call_args.kwargs.get("body_markdown", "")
+        assert "Fallback" in body
