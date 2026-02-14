@@ -1,0 +1,21 @@
+services:
+  morning-briefing:
+    image: ghcr.io/pdemirdjian/volume-price-analysis:latest
+    container_name: morning-briefing
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=America/New_York
+
+  # Watchtower auto-pulls new images from ghcr.io and restarts the container.
+  # NOTE: Docker socket access is required for Watchtower to function.
+  # It is scoped to only monitor the morning-briefing container (see command).
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Required for authenticated pulls from ghcr.io private packages
+      - /root/.docker/config.json:/config.json:ro
+    command: --interval 3600 morning-briefing
+    restart: unless-stopped
