@@ -7,6 +7,9 @@ services:
     environment:
       - TZ=America/New_York
 
+  # Watchtower auto-pulls new images from ghcr.io and restarts the container.
+  # NOTE: Docker socket access is required for Watchtower to function.
+  # It is scoped to only monitor the morning-briefing container (see command).
   watchtower:
     image: containrrr/watchtower
     container_name: watchtower

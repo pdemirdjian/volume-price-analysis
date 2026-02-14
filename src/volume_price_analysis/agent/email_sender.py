@@ -71,12 +71,15 @@ strong {{ color: #0f3460; }}
 
     logger.info("Sending briefing email to %s via %s:%d", to_addr, smtp_host, smtp_port)
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.starttls()
-        server.login(from_addr, password)
-        server.sendmail(from_addr, to_addr, msg.as_string())
-
-    logger.info("Email sent successfully")
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(from_addr, password)
+            server.sendmail(from_addr, to_addr, msg.as_string())
+        logger.info("Email sent successfully")
+    except smtplib.SMTPException:
+        logger.exception("Failed to send briefing email")
+        raise
 
 
 def send_error_email(
