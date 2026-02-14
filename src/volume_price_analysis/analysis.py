@@ -1,0 +1,1022 @@
+"""Reusable analysis functions for scanning and options analysis.
+
+This module extracts the core analysis logic from server.py so it can be
+used by both the MCP server and the morning agent without duplication.
+"""
+
+import asyncio
+import logging
+
+import pandas as pd
+
+from .data_fetcher import fetch_stock_data
+from .indicators import (
+    analyze_volume_trends,
+    calculate_accumulation_distribution,
+    calculate_adx,
+    calculate_atr,
+    calculate_bollinger_bands,
+    calculate_chaikin_money_flow,
+    calculate_composite_score,
+    calculate_enhanced_volume_profile,
+    calculate_expected_move,
+    calculate_iv_percentile,
+    calculate_mfi,
+    calculate_obv,
+    calculate_price_roc,
+    calculate_relative_volume,
+    calculate_rsi_with_divergence,
+    calculate_vpt,
+    calculate_vwap,
+    calculate_vwma,
+    detect_volume_breakout,
+)
+
+logger = logging.getLogger(__name__)
+
+# Concurrency limit for parallel scanning
+MAX_CONCURRENT_SCANS = 10
+
+# Minimum data points required for meaningful Bollinger Band squeeze detection
+MIN_SQUEEZE_DETECTION_PERIODS = 5
+
+# Pre-built symbol universes for scanning
+UNIVERSES: dict[str, list[str]] = {
+    "mega_caps": [
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "AMZN",
+        "NVDA",
+        "META",
+        "TSLA",
+        "BRK-B",
+        "UNH",
+        "XOM",
+        "JNJ",
+        "JPM",
+        "V",
+        "PG",
+        "MA",
+        "HD",
+        "CVX",
+        "MRK",
+        "ABBV",
+        "LLY",
+        "AVGO",
+        "PEP",
+        "KO",
+        "COST",
+        "TMO",
+        "MCD",
+        "WMT",
+        "CSCO",
+        "ACN",
+        "CRM",
+    ],
+    "tech": [
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "AMZN",
+        "NVDA",
+        "META",
+        "TSLA",
+        "AVGO",
+        "ORCL",
+        "CRM",
+        "ADBE",
+        "AMD",
+        "INTC",
+        "QCOM",
+        "TXN",
+        "MU",
+        "AMAT",
+        "LRCX",
+        "KLAC",
+        "MRVL",
+        "NOW",
+        "SNOW",
+        "PLTR",
+        "PANW",
+        "CRWD",
+        "ZS",
+        "DDOG",
+        "NET",
+        "MDB",
+        "TEAM",
+        "SNPS",
+        "CDNS",
+        "ADI",
+        "INTU",
+        "FTNT",
+        "WDAY",
+        "ANSS",
+        "CPRT",
+        "COIN",
+        "SHOP",
+        "MELI",
+        "SE",
+        "RBLX",
+        "U",
+        "DOCU",
+        "ZM",
+        "OKTA",
+        "SPLK",
+        "VEEV",
+        "TTD",
+    ],
+    "financials": [
+        "JPM",
+        "BAC",
+        "WFC",
+        "GS",
+        "MS",
+        "C",
+        "AXP",
+        "BLK",
+        "SCHW",
+        "USB",
+        "PNC",
+        "TFC",
+        "COF",
+        "AIG",
+        "MET",
+        "PRU",
+        "ALL",
+        "TRV",
+        "CB",
+        "CME",
+    ],
+    "healthcare": [
+        "UNH",
+        "JNJ",
+        "PFE",
+        "MRK",
+        "ABBV",
+        "LLY",
+        "BMY",
+        "AMGN",
+        "GILD",
+        "MRNA",
+        "REGN",
+        "VRTX",
+        "ISRG",
+        "DXCM",
+        "IDXX",
+        "ZTS",
+        "CI",
+        "ELV",
+        "HUM",
+        "BIIB",
+    ],
+    "consumer": [
+        "WMT",
+        "COST",
+        "TGT",
+        "HD",
+        "LOW",
+        "NKE",
+        "SBUX",
+        "MCD",
+        "CMG",
+        "DPZ",
+        "YUM",
+        "LULU",
+        "ULTA",
+        "ROST",
+        "DG",
+        "DLTR",
+        "EL",
+        "CL",
+        "KMB",
+        "TJX",
+    ],
+    "energy": [
+        "XOM",
+        "CVX",
+        "COP",
+        "SLB",
+        "EOG",
+        "OXY",
+        "MPC",
+        "VLO",
+        "PSX",
+        "DVN",
+        "HAL",
+        "BKR",
+        "FANG",
+        "HES",
+        "MRO",
+        "APA",
+        "OVV",
+        "CTRA",
+        "EQT",
+        "AR",
+    ],
+    "etfs": [
+        "SPY",
+        "QQQ",
+        "IWM",
+        "DIA",
+        "EEM",
+        "VTI",
+        "VOO",
+        "VEA",
+        "VWO",
+        "GLD",
+        "SLV",
+        "USO",
+        "XLF",
+        "XLE",
+        "XLK",
+        "XLV",
+        "XLI",
+        "XLP",
+        "XLY",
+        "XLB",
+        "XLU",
+        "XLRE",
+        "XLC",
+        "VNQ",
+        "HYG",
+        "LQD",
+        "TLT",
+        "IEF",
+        "SHY",
+        "BND",
+        "ARKK",
+        "ARKG",
+        "ARKW",
+        "ARKF",
+        "ARKQ",
+        "SMH",
+        "SOXX",
+        "IBB",
+        "XBI",
+        "KRE",
+    ],
+}
+UNIVERSES["liquid"] = list(
+    set(
+        UNIVERSES["mega_caps"]
+        + UNIVERSES["tech"]
+        + UNIVERSES["financials"]
+        + UNIVERSES["healthcare"]
+        + UNIVERSES["consumer"]
+        + UNIVERSES["energy"]
+    )
+)
+UNIVERSES["full_market"] = list(set(UNIVERSES["liquid"] + UNIVERSES["etfs"]))
+
+
+def analyze_single_symbol(
+    symbol: str,
+    period: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+) -> dict | None:
+    """
+    Analyze a single symbol for scan_candidates.
+
+    Returns a candidate dict if it passes filters, None otherwise.
+    Raises exception on error.
+    """
+    sym_data = fetch_stock_data(symbol, None, None, period)
+    if len(sym_data) < 30:
+        return None
+
+    # Calculate composite score and key indicators
+    composite = calculate_composite_score(sym_data, holding_period)
+    adx_data = calculate_adx(sym_data, 14)
+    iv_pct_data = calculate_iv_percentile(sym_data, 20)
+    expected_move = calculate_expected_move(sym_data, holding_period, 20)
+    rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
+    rvol = calculate_relative_volume(sym_data, 20)
+
+    score = composite["composite_score"]
+    adx = adx_data["adx"]
+    iv_pct = iv_pct_data["iv_percentile"]
+
+    # Apply filters
+    passes_score = abs(score) >= min_score
+    passes_adx = adx >= min_adx
+    passes_iv = iv_pct <= max_iv
+
+    if direction == "bullish":
+        passes_direction = score > 0
+    elif direction == "bearish":
+        passes_direction = score < 0
+    else:
+        passes_direction = True
+
+    if not (passes_score and passes_adx and passes_direction and passes_iv):
+        return None
+
+    return {
+        "symbol": symbol,
+        "composite_score": round(score, 2),
+        "recommendation": composite["recommendation"],
+        "signal_quality": composite["signal_quality"],
+        "adx": round(adx, 1),
+        "trend_strength": adx_data["trend_strength"],
+        "trend_direction": adx_data["trend_direction"],
+        "rsi": round(rsi_data["rsi"], 1),
+        "rsi_divergence": rsi_data["divergence_type"],
+        "iv_percentile": round(iv_pct, 1),
+        "iv_implication": iv_pct_data["options_implication"],
+        "expected_move_pct": round(expected_move["expected_move_percent"], 2),
+        "rvol": round(rvol["current_rvol"], 2),
+        "latest_price": round(float(sym_data["Close"].iloc[-1]), 2),
+        "key_levels": {
+            "upper_target": round(expected_move["upper_target_1std"], 2),
+            "lower_target": round(expected_move["lower_target_1std"], 2),
+        },
+    }
+
+
+async def _analyze_symbol_async(
+    symbol: str,
+    period: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[str, dict | None, str | None]:
+    """
+    Async wrapper for symbol analysis with concurrency limiting.
+
+    Returns (symbol, candidate_or_none, error_or_none).
+    """
+    async with semaphore:
+        try:
+            result = await asyncio.to_thread(
+                analyze_single_symbol,
+                symbol,
+                period,
+                holding_period,
+                min_score,
+                min_adx,
+                max_iv,
+                direction,
+            )
+            return (symbol, result, None)
+        except Exception as e:
+            return (symbol, None, str(e))
+
+
+async def run_scan(
+    symbols: list[str] | None = None,
+    universe: str = "full_market",
+    period: str = "3mo",
+    holding_period: int = 14,
+    min_score: float = 2.0,
+    min_adx: float = 20,
+    max_iv_percentile: float = 100,
+    direction: str = "any",
+    max_results: int = 15,
+    max_concurrent: int = MAX_CONCURRENT_SCANS,
+) -> dict:
+    """
+    Scan the market for options trading candidates.
+
+    Args:
+        symbols: Custom list of symbols (overrides universe if provided).
+        universe: Pre-built universe name (e.g., "full_market", "tech").
+        period: Historical data period for analysis.
+        holding_period: Expected options holding period in days.
+        min_score: Minimum |composite_score| to include.
+        min_adx: Minimum ADX for trend strength.
+        max_iv_percentile: Maximum IV percentile filter.
+        direction: "bullish", "bearish", or "any".
+        max_results: Maximum results per direction.
+        max_concurrent: Maximum concurrent symbol analyses.
+
+    Returns:
+        Dictionary with scan results including candidates, summary, and errors.
+    """
+    direction = direction.lower()
+
+    # Determine symbols to scan
+    if symbols and len(symbols) > 0:
+        scan_symbols = [s.upper() for s in symbols]
+        universe_used = "custom"
+    elif universe.lower() in UNIVERSES:
+        scan_symbols = UNIVERSES[universe.lower()]
+        universe_used = universe.lower()
+    else:
+        scan_symbols = UNIVERSES["full_market"]
+        universe_used = "full_market"
+
+    # Parallel scanning with concurrency limit
+    logger.info(
+        "Starting parallel scan of %d symbols (max concurrent: %d)",
+        len(scan_symbols),
+        max_concurrent,
+    )
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    tasks = [
+        _analyze_symbol_async(
+            sym,
+            period,
+            holding_period,
+            min_score,
+            min_adx,
+            max_iv_percentile,
+            direction,
+            semaphore,
+        )
+        for sym in scan_symbols
+    ]
+
+    results = await asyncio.gather(*tasks)
+
+    # Process results
+    candidates = []
+    errors = []
+    scanned = 0
+
+    for sym, candidate, error in results:
+        if error:
+            errors.append({"symbol": sym, "error": error})
+        else:
+            scanned += 1
+            if candidate is not None:
+                candidates.append(candidate)
+
+    logger.info("Scan complete: %d candidates from %d scanned", len(candidates), scanned)
+
+    # Sort by absolute composite score (highest first)
+    candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
+
+    # Separate into bullish and bearish
+    bullish = [c for c in candidates if c["composite_score"] > 0]
+    bearish = [c for c in candidates if c["composite_score"] < 0]
+
+    # Find highest conviction setups
+    high_conviction = [
+        c
+        for c in candidates
+        if abs(c["composite_score"]) >= 4 and c["adx"] >= 28 and c["iv_percentile"] <= 50
+    ]
+
+    return {
+        "scan_parameters": {
+            "universe": universe_used,
+            "symbols_in_universe": len(scan_symbols),
+            "symbols_scanned": scanned,
+            "holding_period": holding_period,
+            "min_score": min_score,
+            "min_adx": min_adx,
+            "max_iv_percentile": max_iv_percentile,
+            "direction_filter": direction,
+        },
+        "summary": {
+            "total_candidates": len(candidates),
+            "bullish_setups": len(bullish),
+            "bearish_setups": len(bearish),
+            "high_conviction": len(high_conviction),
+            "errors": len(errors),
+        },
+        "high_conviction_setups": high_conviction[:5] if high_conviction else [],
+        "top_bullish": bullish[:max_results] if bullish else [],
+        "top_bearish": bearish[:max_results] if bearish else [],
+        "errors": errors[:10] if errors else None,
+    }
+
+
+def run_options_analysis(
+    symbol: str,
+    data: pd.DataFrame,
+    holding_period: int = 14,
+    days_to_expiration: int | None = None,
+) -> dict:
+    """
+    Run comprehensive options analysis on a single symbol.
+
+    Args:
+        symbol: Stock ticker symbol.
+        data: DataFrame with OHLCV data (must already be fetched).
+        holding_period: Expected options holding period in days.
+        days_to_expiration: Days until options expiration (defaults to holding_period).
+
+    Returns:
+        Dictionary with full options analysis results.
+    """
+    if days_to_expiration is None:
+        days_to_expiration = holding_period
+
+    # Adaptive indicator periods based on holding period
+    if holding_period <= 14:
+        mfi_period = 7
+        volume_window = 10
+        rsi_period = 7
+        adx_period = 10
+        hv_window = 10
+    elif holding_period <= 21:
+        mfi_period = 10
+        volume_window = 14
+        rsi_period = 10
+        adx_period = 14
+        hv_window = 14
+    else:  # 22-30 days
+        mfi_period = 14
+        volume_window = 20
+        rsi_period = 14
+        adx_period = 14
+        hv_window = 20
+
+    # Calculate all indicators with adaptive parameters
+    obv = calculate_obv(data)
+    vwap = calculate_vwap(data)
+    mfi = calculate_mfi(data, mfi_period)
+    vpt = calculate_vpt(data)
+    trends = analyze_volume_trends(data, volume_window)
+    ad_line = calculate_accumulation_distribution(data)
+    cmf = calculate_chaikin_money_flow(data, volume_window)
+    rvol = calculate_relative_volume(data, volume_window)
+    breakout = detect_volume_breakout(data, 2.0, volume_window)
+    vwma = calculate_vwma(data, volume_window)
+    roc = calculate_price_roc(data, volume_window)
+
+    # Enhanced indicators
+    adx_data = calculate_adx(data, adx_period)
+    rsi_data = calculate_rsi_with_divergence(data, rsi_period, volume_window)
+    iv_percentile = calculate_iv_percentile(data, hv_window)
+    expected_move = calculate_expected_move(data, days_to_expiration, hv_window)
+    composite = calculate_composite_score(data, holding_period)
+
+    # Volatility indicators
+    atr = calculate_atr(data, volume_window)
+    bbands = calculate_bollinger_bands(data, volume_window)
+
+    # Enhanced volume profile with VAH/VAL
+    profile = calculate_enhanced_volume_profile(data)
+
+    latest_close = data["Close"].iloc[-1]
+    latest_vwap = vwap.iloc[-1]
+    latest_vwma = vwma.iloc[-1]
+    start_dt = data["Date"].iloc[0].strftime("%Y-%m-%d")
+    end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
+
+    # Pre-calculate values for options analysis (with bounds checking)
+    if len(obv) >= 4:
+        obv_up = obv.iloc[-1] > obv.iloc[-3]
+    else:
+        obv_up = False
+    if len(ad_line) >= 4:
+        ad_up = ad_line.iloc[-1] > ad_line.iloc[-3]
+    else:
+        ad_up = False
+    if len(vpt) >= 4:
+        vpt_diff = abs(vpt.iloc[-1] - vpt.iloc[-3])
+        vpt_conviction = vpt_diff > abs(vpt.iloc[-3] * 0.1) if vpt.iloc[-3] != 0 else False
+    else:
+        vpt_conviction = False
+    mfi_val = mfi.iloc[-1] if not pd.isna(mfi.iloc[-1]) else 50.0
+    cmf_val = cmf.iloc[-1] if not pd.isna(cmf.iloc[-1]) else 0.0
+
+    if mfi_val > 80:
+        mfi_cond = "Overbought"
+    elif mfi_val < 20:
+        mfi_cond = "Oversold"
+    else:
+        mfi_cond = "Neutral"
+
+    if mfi_val > 75:
+        mfi_signal = "consider_puts"
+    elif mfi_val < 25:
+        mfi_signal = "consider_calls"
+    else:
+        mfi_signal = "neutral"
+
+    if cmf_val > 0.25:
+        cmf_signal = "strong_buying"
+    elif cmf_val < -0.25:
+        cmf_signal = "strong_selling"
+    else:
+        cmf_signal = "neutral"
+
+    # Pre-calculate bollinger band values
+    bb_upper = bbands["upper"].iloc[-1]
+    bb_middle = bbands["middle"].iloc[-1]
+    bb_lower = bbands["lower"].iloc[-1]
+    bb_pct_b = bbands["percent_b"].iloc[-1]
+    bb_bw = bbands["bandwidth"].iloc[-1]
+    atr_val = atr.iloc[-1]
+
+    if not pd.isna(bb_bw):
+        bw_series = bbands["bandwidth"].dropna()
+        if len(bw_series) >= volume_window:
+            bb_mean = bw_series.iloc[-volume_window:].mean()
+            is_squeeze = bb_bw < bb_mean * 0.7
+        elif len(bw_series) >= MIN_SQUEEZE_DETECTION_PERIODS:
+            bb_mean = bw_series.mean()
+            is_squeeze = bb_bw < bb_mean * 0.7
+        else:
+            is_squeeze = False
+    else:
+        is_squeeze = False
+
+    if not pd.isna(bb_pct_b):
+        if bb_pct_b > 0.8:
+            bb_position = "overbought"
+        elif bb_pct_b < 0.2:
+            bb_position = "oversold"
+        else:
+            bb_position = "neutral"
+    else:
+        bb_position = "neutral"
+
+    if not pd.isna(atr_val):
+        daily_range = f"±${atr_val:.2f}"
+        stop_low = latest_close - (2 * atr_val)
+        stop_high = latest_close - (1.5 * atr_val)
+        stop_loss = f"${stop_low:.2f} to ${stop_high:.2f}"
+    else:
+        daily_range = "N/A"
+        stop_loss = "N/A"
+
+    # Time decay risk assessment
+    if days_to_expiration > 21:
+        theta_risk = "low"
+        theta_note = "Comfortable theta decay - can hold through minor pullbacks"
+    elif days_to_expiration > 14:
+        theta_risk = "moderate"
+        theta_note = "Monitor daily - theta acceleration begins"
+    elif days_to_expiration > 7:
+        theta_risk = "elevated"
+        theta_note = "Active management required - theta decay significant"
+    else:
+        theta_risk = "critical"
+        theta_note = "Urgent - close or roll positions to avoid rapid decay"
+
+    return {
+        "symbol": symbol,
+        "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
+        "period": f"{start_dt} to {end_dt}",
+        "latest_price": float(latest_close),
+        "parameters": {
+            "holding_period": holding_period,
+            "days_to_expiration": days_to_expiration,
+            "mfi_period": mfi_period,
+            "volume_window": volume_window,
+            "rsi_period": rsi_period,
+            "adx_period": adx_period,
+            "hv_window": hv_window,
+            "optimization": f"Adaptive for {holding_period}-day options",
+        },
+        "composite_signal": {
+            "score": composite["composite_score"],
+            "recommendation": composite["recommendation"],
+            "action": composite["action"],
+            "signal_quality": composite["signal_quality"],
+            "quality_note": composite["quality_note"],
+            "score_breakdown": composite["score_breakdown"],
+        },
+        "trend_analysis": {
+            "adx": {
+                "value": adx_data["adx"],
+                "plus_di": adx_data["plus_di"],
+                "minus_di": adx_data["minus_di"],
+                "trend_strength": adx_data["trend_strength"],
+                "trend_direction": adx_data["trend_direction"],
+                "adx_slope": adx_data["adx_slope"],
+                "interpretation": adx_data["interpretation"],
+            },
+            "rsi": {
+                "value": rsi_data["rsi"],
+                "condition": rsi_data["condition"],
+                "divergence_type": rsi_data["divergence_type"],
+                "divergence_signal": rsi_data["signal"],
+                "interpretation": rsi_data["interpretation"],
+            },
+        },
+        "volume_indicators": {
+            "obv": {
+                "value": float(obv.iloc[-1]),
+                "trend": "increasing" if obv_up else "decreasing",
+                "short_term_momentum": "bullish" if obv_up else "bearish",
+            },
+            "accumulation_distribution": {
+                "value": float(ad_line.iloc[-1]),
+                "trend": "increasing" if ad_up else "decreasing",
+                "signal": "institutional_buying" if ad_up else "institutional_selling",
+            },
+            "vpt": {
+                "value": float(vpt.iloc[-1]),
+                "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-3] else "decreasing",
+                "volume_conviction": "strong" if vpt_conviction else "weak",
+            },
+            "mfi": {
+                "value": float(mfi_val),
+                "condition": mfi_cond,
+                "options_signal": mfi_signal,
+            },
+            "cmf": {"value": float(cmf_val), "signal": cmf_signal},
+            "relative_volume": {
+                "current_rvol": rvol["current_rvol"],
+                "significance": rvol["significance"],
+            },
+            "volume_breakout": breakout,
+        },
+        "price_indicators": {
+            "vwap": {
+                "value": float(latest_vwap),
+                "price_vs_vwap": f"{((latest_close / latest_vwap - 1) * 100):.2f}%",
+                "position": "above" if latest_close > latest_vwap else "below",
+                "signal": "bullish_entry" if latest_close > latest_vwap else "bearish_entry",
+            },
+            "vwma": {
+                "value": float(latest_vwma),
+                "price_vs_vwma": f"{((latest_close / latest_vwma - 1) * 100):.2f}%",
+                "trend": "bullish" if latest_close > latest_vwma else "bearish",
+            },
+            "price_roc": {
+                "current_roc": roc["current_roc"],
+                "direction": roc["direction"],
+                "strength": roc["strength"],
+                "volume_confirmed": roc["volume_confirmed"],
+            },
+        },
+        "volatility_analysis": {
+            "iv_percentile_proxy": {
+                "percentile": iv_percentile["iv_percentile"],
+                "current_hv": iv_percentile["current_hv"],
+                "hv_range": f"{iv_percentile['hv_min']:.1%} - {iv_percentile['hv_max']:.1%}",
+                "interpretation": iv_percentile["interpretation"],
+                "options_implication": iv_percentile["options_implication"],
+                "strategy_suggestion": iv_percentile["strategy_suggestion"],
+            },
+            "expected_move": {
+                "dollars": expected_move["expected_move_dollars"],
+                "percent": expected_move["expected_move_percent"],
+                "upper_target": expected_move["upper_target_1std"],
+                "lower_target": expected_move["lower_target_1std"],
+                "targets": expected_move["targets"],
+                "strike_guidance": expected_move["strike_guidance"],
+                "interpretation": expected_move["interpretation"],
+            },
+            "atr": {
+                "value": float(atr_val) if not pd.isna(atr_val) else 0.0,
+                "daily_range": daily_range,
+                "stop_loss_suggestion": stop_loss,
+            },
+            "bollinger_bands": {
+                "upper": float(bb_upper) if not pd.isna(bb_upper) else 0.0,
+                "middle": float(bb_middle) if not pd.isna(bb_middle) else 0.0,
+                "lower": float(bb_lower) if not pd.isna(bb_lower) else 0.0,
+                "percent_b": float(bb_pct_b) if not pd.isna(bb_pct_b) else 0.0,
+                "bandwidth": float(bb_bw) if not pd.isna(bb_bw) else 0.0,
+                "squeeze_detected": is_squeeze,
+                "position": bb_position,
+            },
+        },
+        "volume_profile": {
+            "point_of_control": profile["poc"],
+            "value_area_high": profile["vah"],
+            "value_area_low": profile["val"],
+            "current_position": profile["position"],
+            "interpretation": profile["interpretation"],
+            "strike_selection_guidance": {
+                "poc_strike": f"${profile['poc']:.2f} - Highest probability",
+                "vah_strike": f"${profile['vah']:.2f} - Resistance level",
+                "val_strike": f"${profile['val']:.2f} - Support level",
+                "current_vs_poc": f"{profile['poc_distance_pct']:.2f}%",
+            },
+        },
+        "time_decay": {
+            "days_to_expiration": days_to_expiration,
+            "theta_risk": theta_risk,
+            "theta_note": theta_note,
+        },
+        "volume_trends": trends,
+        "options_insights": _generate_options_insights(
+            composite,
+            adx_data,
+            rsi_data,
+            iv_percentile,
+            expected_move,
+            profile,
+            rvol,
+            breakout,
+            trends,
+            mfi_val,
+            cmf_val,
+            is_squeeze,
+            bb_pct_b,
+            holding_period,
+            latest_close,
+        ),
+    }
+
+
+def _generate_options_insights(
+    composite,
+    adx_data,
+    rsi_data,
+    iv_percentile,
+    expected_move,
+    profile,
+    rvol,
+    breakout,
+    trends,
+    mfi_val,
+    cmf_val,
+    is_squeeze,
+    bb_pct_b,
+    holding_period,
+    latest_close,
+):
+    """Generate comprehensive options trading insights for 14-30 day plays."""
+    insights = []
+
+    # 1. Primary Signal - Composite Score
+    score = composite["composite_score"]
+    if score >= 5:
+        insights.append(
+            f"STRONG BULLISH: Composite score {score:.1f}/10 - High conviction call setup"
+        )
+    elif score >= 2:
+        insights.append(
+            f"BULLISH: Composite score {score:.1f}/10 - Consider call options or bull spreads"
+        )
+    elif score <= -5:
+        insights.append(
+            f"STRONG BEARISH: Composite score {score:.1f}/10 - High conviction put setup"
+        )
+    elif score <= -2:
+        insights.append(
+            f"BEARISH: Composite score {score:.1f}/10 - Consider put options or bear spreads"
+        )
+    else:
+        insights.append(
+            f"NEUTRAL: Composite score {score:.1f}/10 - "
+            f"No clear directional edge, consider iron condors or wait"
+        )
+
+    # 2. Trend Quality Assessment
+    adx = adx_data["adx"]
+    trend_dir = adx_data["trend_direction"]
+    if adx > 30:
+        insights.append(
+            f"STRONG TREND: ADX at {adx:.1f} ({trend_dir}) - "
+            f"Directional plays have wind at their back"
+        )
+    elif adx > 25:
+        insights.append(
+            f"Moderate Trend: ADX at {adx:.1f} ({trend_dir}) - Decent setup for directional options"
+        )
+    elif adx > 20:
+        insights.append(
+            f"Weak Trend: ADX at {adx:.1f} - Consider reduced position size or neutral strategies"
+        )
+    else:
+        insights.append(
+            f"NO TREND: ADX at {adx:.1f} - Premium selling (iron condors, strangles) preferred"
+        )
+
+    # 3. RSI Divergence Alert
+    if rsi_data["divergence_type"] == "bullish":
+        insights.append(
+            "RSI BULLISH DIVERGENCE: Price weakness not confirmed by momentum - "
+            "Potential reversal up, favor calls"
+        )
+    elif rsi_data["divergence_type"] == "bearish":
+        insights.append(
+            "RSI BEARISH DIVERGENCE: Price strength not confirmed by momentum - "
+            "Potential reversal down, favor puts"
+        )
+
+    # 4. IV Percentile / Volatility Edge
+    iv_pct = iv_percentile["iv_percentile"]
+    if iv_pct > 80:
+        insights.append(
+            f"HIGH IV PERCENTILE ({iv_pct:.0f}%): Options are EXPENSIVE - "
+            f"Favor selling premium (credit spreads, iron condors)"
+        )
+    elif iv_pct > 60:
+        insights.append(
+            f"IV slightly elevated ({iv_pct:.0f}%) - Consider debit spreads to reduce vega risk"
+        )
+    elif iv_pct < 20:
+        insights.append(
+            f"LOW IV PERCENTILE ({iv_pct:.0f}%): Options are CHEAP - "
+            f"Great time for long options, straddles, or strangles"
+        )
+    elif iv_pct < 40:
+        insights.append(
+            f"Below-average IV ({iv_pct:.0f}%) - Long directional plays are reasonably priced"
+        )
+
+    # 5. Expected Move Guidance
+    em_pct = expected_move["expected_move_percent"]
+    em_upper = expected_move["upper_target_1std"]
+    em_lower = expected_move["lower_target_1std"]
+    insights.append(
+        f"Expected Move: +/-{em_pct:.1f}% by expiration - "
+        f"Target range ${em_lower:.2f} to ${em_upper:.2f} (68% probability)"
+    )
+
+    # 6. Strike Selection from Volume Profile
+    poc = profile["poc"]
+    vah = profile["vah"]
+    val = profile["val"]
+    position = profile["position"]
+
+    if position == "above_value_area":
+        insights.append(
+            f"Strike Guidance: Price above value area - "
+            f"VAH ${vah:.2f} is key support if going long calls, "
+            f"POC ${poc:.2f} is downside target for puts"
+        )
+    elif position == "below_value_area":
+        insights.append(
+            f"Strike Guidance: Price below value area - "
+            f"VAL ${val:.2f} is key resistance if going long puts, "
+            f"POC ${poc:.2f} is upside target for calls"
+        )
+    else:
+        insights.append(
+            f"Strike Guidance: Price in value area - "
+            f"POC ${poc:.2f} acts as magnet, "
+            f"VAH ${vah:.2f}/VAL ${val:.2f} are boundary targets"
+        )
+
+    # 7. Bollinger Squeeze Alert
+    if is_squeeze:
+        insights.append(
+            "BOLLINGER SQUEEZE DETECTED: Volatility compressed - "
+            "Breakout imminent! Consider straddles or wait for direction"
+        )
+
+    if bb_pct_b is not None and not pd.isna(bb_pct_b):
+        if bb_pct_b > 0.95:
+            insights.append(
+                f"Price at upper Bollinger Band ({bb_pct_b:.0%}) - "
+                f"Extended, consider puts or profit-taking on calls"
+            )
+        elif bb_pct_b < 0.05:
+            insights.append(
+                f"Price at lower Bollinger Band ({bb_pct_b:.0%}) - "
+                f"Oversold, consider calls or profit-taking on puts"
+            )
+
+    # 8. Volume Conviction
+    if breakout["is_breakout"]:
+        direction = breakout["direction"]
+        mult = breakout["multiplier_above_avg"]
+        insights.append(
+            f"VOLUME BREAKOUT: {mult:.1f}x average ({direction}) - "
+            f"Strong conviction behind the move"
+        )
+    elif rvol["current_rvol"] > 1.5:
+        insights.append(
+            f"High volume ({rvol['current_rvol']:.1f}x average) - "
+            f"Institutional participation detected"
+        )
+    elif rvol["current_rvol"] < 0.7:
+        insights.append("Low volume - Wait for volume confirmation before entry")
+
+    # 9. Divergence Warning
+    if trends["divergence_detected"]:
+        insights.append(
+            f"PRICE-VOLUME DIVERGENCE: {trends['divergence_type']} - Current trend may be weakening"
+        )
+
+    # 10. MFI/CMF Extremes
+    if mfi_val > 80 and cmf_val > 0.2:
+        insights.append(
+            "EXTREME OVERBOUGHT: MFI + CMF both elevated - "
+            "High reversal risk, protect call profits or consider puts"
+        )
+    elif mfi_val < 20 and cmf_val < -0.2:
+        insights.append(
+            "EXTREME OVERSOLD: MFI + CMF both depressed - "
+            "Bounce potential high, consider calls for mean reversion"
+        )
+
+    # 11. Holding Period Reminder
+    if holding_period <= 14:
+        insights.append(
+            f"{holding_period}-day holding period: Using fast indicators - "
+            f"Execute quickly, manage theta aggressively"
+        )
+    elif holding_period <= 21:
+        insights.append(
+            f"{holding_period}-day holding period: Balanced approach - "
+            f"Monitor daily, theta decay moderate"
+        )
+    else:
+        insights.append(
+            f"{holding_period}-day holding period: Standard indicators - "
+            f"Can weather short-term volatility, theta decay manageable"
+        )
+
+    return insights

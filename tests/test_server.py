@@ -390,9 +390,10 @@ class TestScanCandidates:
     """Tests for scan_candidates tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server._analyze_single_symbol")
+    @patch("volume_price_analysis.analysis.analyze_single_symbol")
     async def test_scan_with_hyphenated_symbols(self, mock_analyze):
         """Test scan_candidates correctly handles symbols with hyphens like BRK-B."""
+
         # Mock returns a candidate for BRK-B and AAPL, None for others
         def mock_analyze_side_effect(symbol, *args, **kwargs):
             if symbol == "BRK-B":
@@ -467,9 +468,10 @@ class TestScanCandidates:
         assert "BRK-B" in called_symbols, "BRK-B should have been passed to analyzer"
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server._analyze_single_symbol")
+    @patch("volume_price_analysis.analysis.analyze_single_symbol")
     async def test_scan_handles_errors_gracefully(self, mock_analyze):
         """Test scan_candidates handles analysis errors without failing entire scan."""
+
         def mock_analyze_side_effect(symbol, *args, **kwargs):
             if symbol == "INVALID":
                 raise ValueError("No data found for symbol")

@@ -13,6 +13,9 @@ dependencies = [
     "yfinance==1.1.0",
     "pandas==3.0.0",
     "numpy==2.4.2",
+    "anthropic>=0.52.0",
+    "python-dotenv>=1.1.0",
+    "markdown>=3.7.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -73,3 +76,4 @@ ignore_missing_imports = true
 
 [project.scripts]
 volume-price-analysis = "volume_price_analysis.server:main"
+morning-briefing = "volume_price_analysis.agent.morning_agent:main"

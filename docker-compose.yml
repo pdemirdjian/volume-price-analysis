@@ -1,0 +1,17 @@
+services:
+  morning-briefing:
+    image: ghcr.io/pdemirdjian/volume-price-analysis:latest
+    container_name: morning-briefing
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=America/New_York
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro
+    command: --interval 3600 morning-briefing
+    restart: unless-stopped
