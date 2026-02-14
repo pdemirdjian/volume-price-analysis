@@ -91,6 +91,16 @@
       "minimumReleaseAge": "3 days"
     }
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update supercronic version in Dockerfile",
+      "fileMatch": ["^Dockerfile$"],
+      "matchStrings": ["SUPERCRONIC_VERSION=\"(?<currentValue>v[\\d.]+)\""],
+      "depName": "aptible/supercronic",
+      "datasource": "github-releases"
+    }
+  ],
   "vulnerabilityAlerts": {
     "labels": [
       "security"
