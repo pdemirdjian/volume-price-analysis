@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.0...v1.4.1) (2026-02-15)
+
+
+### Bug Fixes
+
+* tag Docker images with version on releases ([#71](https://github.com/pdemirdjian/volume-price-analysis/issues/71)) ([45195e6](https://github.com/pdemirdjian/volume-price-analysis/commit/45195e6f3dbbdbe6dd0ff082544329da2870c1c8))
+
 ## [1.4.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.3.0...v1.4.0) (2026-02-15)
 
 
