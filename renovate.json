@@ -48,7 +48,7 @@
     {
       "description": "Automerge non-major dev dependencies",
       "matchDepTypes": [
-        "devDependencies"
+        "dependency-groups"
       ],
       "matchUpdateTypes": [
         "minor",
@@ -75,7 +75,7 @@
     {
       "description": "Use fix commit type for production deps to trigger releases",
       "matchDepTypes": [
-        "dependencies"
+        "project.dependencies"
       ],
       "semanticCommitType": "fix"
     },
@@ -89,16 +89,6 @@
       ],
       "automerge": true,
       "minimumReleaseAge": "3 days"
-    }
-  ],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Update supercronic version in Dockerfile",
-      "fileMatch": ["^Dockerfile$"],
-      "matchStrings": ["ARG SUPERCRONIC_VERSION=(?<currentValue>v[\\d.]+)"],
-      "depName": "aptible/supercronic",
-      "datasource": "github-releases"
     }
   ],
   "vulnerabilityAlerts": {
