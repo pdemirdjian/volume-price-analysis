@@ -35,7 +35,6 @@ jobs:
           images: ghcr.io/pdemirdjian/volume-price-analysis
           tags: |
             type=raw,value=latest
-            type=sha
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
