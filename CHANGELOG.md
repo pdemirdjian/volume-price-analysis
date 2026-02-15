@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.1...v1.4.2) (2026-02-15)
+
+
+### Bug Fixes
+
+* mirror CI status checks to release-please PRs ([#73](https://github.com/pdemirdjian/volume-price-analysis/issues/73)) ([c5bb9f3](https://github.com/pdemirdjian/volume-price-analysis/commit/c5bb9f3cb702a21ef590bae06aa6adb1f3a712db))
+
 ## [1.4.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.0...v1.4.1) (2026-02-15)
 
 
