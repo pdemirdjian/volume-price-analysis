@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.14-slim@sha256:486b8092bfb12997e10d4920897213a06563449c951c5506c2a2cfaf591c599f
 
 # Install supercronic (lightweight cron for containers)
 # - Logs to stdout/stderr (works with docker logs)
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
 WORKDIR /app
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.10.2 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.2@sha256:94a23af2d50e97b87b522d3cea24aaf8a1faedec1344c952767434f69585cbf9 /uv /usr/local/bin/uv
 
 # Install dependencies first (layer caching)
 COPY pyproject.toml uv.lock README.md ./
