@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.1.3...v1.2.0) (2026-02-15)
+
+
+### Features
+
+* add morning briefing agent with Docker deployment ([#57](https://github.com/pdemirdjian/volume-price-analysis/issues/57)) ([569d627](https://github.com/pdemirdjian/volume-price-analysis/commit/569d62701c0ba44493cae0ee09946736cb92cf5a))
+
+
+### Bug Fixes
+
+* fix Docker build and add CI build test ([#60](https://github.com/pdemirdjian/volume-price-analysis/issues/60)) ([eec027f](https://github.com/pdemirdjian/volume-price-analysis/commit/eec027fecb1047e451ff49b49cdcecb5d0e15e2f))
+* only tag Docker image as latest on version releases ([#63](https://github.com/pdemirdjian/volume-price-analysis/issues/63)) ([f28a24f](https://github.com/pdemirdjian/volume-price-analysis/commit/f28a24f5ce8f2d770508d2267c900cf6aea46cfa))
+
 ## [1.1.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.1.2...v1.1.3) (2026-02-02)
 
 
