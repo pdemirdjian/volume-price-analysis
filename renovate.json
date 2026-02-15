@@ -96,7 +96,7 @@
       "customType": "regex",
       "description": "Update supercronic version in Dockerfile",
       "fileMatch": ["^Dockerfile$"],
-      "matchStrings": ["SUPERCRONIC_VERSION=\"(?<currentValue>v[\\d.]+)\""],
+      "matchStrings": ["ARG SUPERCRONIC_VERSION=(?<currentValue>v[\\d.]+)"],
       "depName": "aptible/supercronic",
       "datasource": "github-releases"
     }
