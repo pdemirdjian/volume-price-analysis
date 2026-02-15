@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.2.0...v1.3.0) (2026-02-15)
+
+
+### Features
+
+* add multi-arch Docker builds (amd64 + arm64) ([#66](https://github.com/pdemirdjian/volume-price-analysis/issues/66)) ([df6dc00](https://github.com/pdemirdjian/volume-price-analysis/commit/df6dc0051060df3a236e3881ff60063a7cf6d4a7))
+
 ## [1.2.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.1.3...v1.2.0) (2026-02-15)
 
 
