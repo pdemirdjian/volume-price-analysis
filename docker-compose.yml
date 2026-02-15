@@ -1,6 +1,6 @@
 services:
   morning-briefing:
-    image: ghcr.io/pdemirdjian/volume-price-analysis:latest
+    image: ghcr.io/pdemirdjian/volume-price-analysis:latest@sha256:ce3cf7057fa86873718ed9f3bcf295de2dadbf8660af3bb59351474f6b528e32
     container_name: morning-briefing
     restart: unless-stopped
     env_file: .env
@@ -11,7 +11,7 @@ services:
   # NOTE: Docker socket access is required for Watchtower to function.
   # It is scoped to only monitor the morning-briefing container (see command).
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower@sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038
     container_name: watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
