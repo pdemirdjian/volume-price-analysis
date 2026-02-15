@@ -1,6 +1,6 @@
 services:
   morning-briefing:
-    image: ghcr.io/pdemirdjian/volume-price-analysis:latest@sha256:ce3cf7057fa86873718ed9f3bcf295de2dadbf8660af3bb59351474f6b528e32
+    image: ghcr.io/pdemirdjian/volume-price-analysis:latest@sha256:15e40f0da7b552e89358bebe24566d03b9da66bef0362ee2c2999cb1380ac5c1
     container_name: morning-briefing
     restart: unless-stopped
     env_file: .env
