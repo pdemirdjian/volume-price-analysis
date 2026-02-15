@@ -8,12 +8,15 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  packages: write
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
       pr_branch: ${{ steps.release.outputs.pr && fromJSON(steps.release.outputs.pr).headBranchName || '' }}
+      release_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
         id: release
@@ -28,3 +31,14 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.release-please.outputs.pr_branch }}
+
+  # Build and push Docker image on releases (GITHUB_TOKEN tags don't trigger other workflows)
+  docker:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: read
+      packages: write
