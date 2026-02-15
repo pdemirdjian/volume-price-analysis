@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis.server import (
+    _validate_range,
     generate_summary,
     handle_call_tool,
     handle_list_tools,
@@ -510,3 +511,66 @@ class TestScanCandidates:
         # Error should be captured
         assert data["errors"] is not None
         assert any(e["symbol"] == "INVALID" for e in data["errors"])
+
+
+class TestParameterValidation:
+    """Tests for parameter range validation."""
+
+    def test_validate_range_valid(self):
+        """Test that valid values pass validation."""
+        _validate_range(20, "num_bins", 2, 1000)
+        _validate_range(14, "mfi_period", 1, 200)
+        _validate_range(1, "window", 1, 200)
+
+    def test_validate_range_at_boundaries(self):
+        """Test that boundary values pass validation."""
+        _validate_range(2, "num_bins", 2, 1000)
+        _validate_range(1000, "num_bins", 2, 1000)
+
+    def test_validate_range_below_minimum(self):
+        """Test that values below minimum raise ValueError."""
+        with pytest.raises(ValueError, match="num_bins must be between 2 and 1000"):
+            _validate_range(0, "num_bins", 2, 1000)
+
+    def test_validate_range_above_maximum(self):
+        """Test that values above maximum raise ValueError."""
+        with pytest.raises(ValueError, match="window must be between 1 and 200"):
+            _validate_range(500, "window", 1, 200)
+
+    def test_validate_range_negative(self):
+        """Test that negative values raise ValueError."""
+        with pytest.raises(ValueError, match="mfi_period must be between 1 and 200"):
+            _validate_range(-1, "mfi_period", 1, 200)
+
+    @pytest.mark.asyncio
+    async def test_invalid_num_bins_returns_error(self):
+        """Test that invalid num_bins returns error via tool handler."""
+        result = await handle_call_tool(
+            name="calculate_volume_profile",
+            arguments={"symbol": "AAPL", "num_bins": 0},
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "num_bins" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_mfi_period_returns_error(self):
+        """Test that invalid mfi_period returns error via tool handler."""
+        result = await handle_call_tool(
+            name="calculate_mfi",
+            arguments={"symbol": "AAPL", "mfi_period": -5},
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "mfi_period" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_window_returns_error(self):
+        """Test that invalid window returns error via tool handler."""
+        result = await handle_call_tool(
+            name="analyze_volume_trends",
+            arguments={"symbol": "AAPL", "window": 999},
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "window" in data["error"]
