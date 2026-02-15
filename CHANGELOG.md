@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.3.0...v1.4.0) (2026-02-15)
+
+
+### Features
+
+* support Gemini and Anthropic as AI providers ([#68](https://github.com/pdemirdjian/volume-price-analysis/issues/68)) ([15f669c](https://github.com/pdemirdjian/volume-price-analysis/commit/15f669c22dd08a5586e74f1094ea90444f7654ff))
+
 ## [1.3.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.2.0...v1.3.0) (2026-02-15)
 
 
