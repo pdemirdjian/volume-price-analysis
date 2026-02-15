@@ -7,8 +7,9 @@ FROM python:3.14-slim
 # - Supports env vars from Docker
 # renovate: datasource=github-releases depName=aptible/supercronic
 ARG SUPERCRONIC_VERSION=v0.2.33
+ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" -o /usr/local/bin/supercronic && \
+    curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" -o /usr/local/bin/supercronic && \
     chmod +x /usr/local/bin/supercronic && \
     apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
