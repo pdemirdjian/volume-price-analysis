@@ -1,9 +1,12 @@
-"""Claude API integration for generating morning briefings."""
+"""AI integration for generating morning briefings.
+
+Supports multiple providers via the AI_PROVIDER environment variable:
+- "gemini" (default): Google Gemini API via google-genai SDK
+- "anthropic": Anthropic Claude API via anthropic SDK
+"""
 
 import json
 import logging
-
-import anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -25,28 +28,48 @@ Format the briefing in markdown with clear sections:
 
 Keep it concise but thorough. Use bullet points. No fluff."""
 
+DEFAULT_MODELS = {
+    "gemini": "gemini-2.5-flash",
+    "anthropic": "claude-sonnet-4-5-20250929",
+}
+
 
 def generate_briefing(
     scan_results: dict,
     deep_analyses: list[dict],
-    model: str = "claude-sonnet-4-5-20250929",
+    provider: str = "gemini",
+    model: str = "",
     api_key: str = "",
 ) -> str:
     """
-    Send scan results and deep analyses to Claude for a natural-language briefing.
+    Generate a natural-language briefing from scan results and deep analyses.
 
     Args:
         scan_results: Output from run_scan().
         deep_analyses: List of outputs from run_options_analysis() for top candidates.
-        model: Claude model to use.
-        api_key: Anthropic API key.
+        provider: AI provider ("gemini" or "anthropic").
+        model: Model name. If empty, uses the default for the provider.
+        api_key: API key for the selected provider.
 
     Returns:
         Markdown-formatted briefing text.
     """
-    client = anthropic.Anthropic(api_key=api_key)
+    if not model:
+        model = DEFAULT_MODELS.get(provider, DEFAULT_MODELS["gemini"])
 
-    # Build the user message with structured data
+    user_content = _build_user_message(scan_results, deep_analyses)
+
+    if provider == "anthropic":
+        return _generate_anthropic(user_content, model, api_key)
+    elif provider == "gemini":
+        return _generate_gemini(user_content, model, api_key)
+    else:
+        msg = f"Unknown AI provider: {provider!r}. Use 'gemini' or 'anthropic'."
+        raise ValueError(msg)
+
+
+def _build_user_message(scan_results: dict, deep_analyses: list[dict]) -> str:
+    """Build the user message with structured data for the AI."""
     user_content = "Generate a morning options trading briefing from this data:\n\n"
     user_content += "## Scan Results\n"
     user_content += f"```json\n{json.dumps(scan_results, indent=2, default=str)}\n```\n\n"
@@ -58,7 +81,16 @@ def generate_briefing(
             user_content += f"### {symbol}\n"
             user_content += f"```json\n{json.dumps(analysis, indent=2, default=str)}\n```\n\n"
 
-    logger.info("Sending briefing request to Claude (%s)", model)
+    return user_content
+
+
+def _generate_anthropic(user_content: str, model: str, api_key: str) -> str:
+    """Generate briefing using Anthropic Claude API."""
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    logger.info("Sending briefing request to Anthropic (%s)", model)
 
     message = client.messages.create(
         model=model,
@@ -74,5 +106,28 @@ def generate_briefing(
         message.usage.input_tokens,
         message.usage.output_tokens,
     )
+
+    return briefing
+
+
+def _generate_gemini(user_content: str, model: str, api_key: str) -> str:
+    """Generate briefing using Google Gemini API."""
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+
+    logger.info("Sending briefing request to Gemini (%s)", model)
+
+    response = client.models.generate_content(
+        model=model,
+        contents=user_content,
+        config={
+            "system_instruction": SYSTEM_PROMPT,
+            "max_output_tokens": 4096,
+        },
+    )
+
+    briefing = response.text or ""
+    logger.info("Briefing generated: %d chars", len(briefing))
 
     return briefing
