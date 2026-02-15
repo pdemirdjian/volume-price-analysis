@@ -114,7 +114,7 @@ Calculate the VWAP and volume profile for Microsoft over the past year
 
 ## What You Get
 
-The server provides 7 tools:
+The server provides 9 tools:
 
 1. **get_stock_data** - Raw stock data
 2. **calculate_obv** - On-Balance Volume
@@ -123,6 +123,8 @@ The server provides 7 tools:
 5. **calculate_mfi** - Money Flow Index
 6. **analyze_volume_trends** - Volume trend analysis
 7. **comprehensive_analysis** - Everything at once!
+8. **options_analysis** - Short-term options trading analysis
+9. **scan_candidates** - Market-wide candidate scanning
 
 ## Common Issues
 
@@ -165,7 +167,7 @@ chmod +x example_usage.py
 
 If something isn't working:
 
-1. Verify Python version: `python --version` (need 3.10+)
+1. Verify Python version: `python --version` (need 3.14+)
 2. Test the example script first
 3. Check MCP server logs in Claude Code
 4. Make sure the stock symbol is valid
