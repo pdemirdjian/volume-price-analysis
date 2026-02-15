@@ -222,9 +222,14 @@ def main():
             for error in errors:
                 logger.error("Config error: %s", error)
             sys.exit(1)
-    elif not args.no_ai and not config.ai_provider_api_key:
-        logger.error("AI_PROVIDER_API_KEY required (even for --dry-run unless --no-ai)")
-        sys.exit(1)
+    elif not args.no_ai:
+        # Dry-run with AI still needs valid provider + key
+        errors = config.validate()
+        ai_errors = [e for e in errors if "API_KEY" in e or "AI_PROVIDER" in e]
+        if ai_errors:
+            for error in ai_errors:
+                logger.error("Config error: %s", error)
+            sys.exit(1)
 
     try:
         asyncio.run(run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai))
