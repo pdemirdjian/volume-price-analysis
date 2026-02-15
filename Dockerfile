@@ -5,13 +5,12 @@ FROM python:3.14-slim
 # - No syslog dependency
 # - Graceful signal handling for container stops
 # - Supports env vars from Docker
+# renovate: datasource=github-releases depName=aptible/supercronic
+ARG SUPERCRONIC_VERSION=v0.2.33
+ARG SUPERCRONIC_SHA256=feefa310da569c81b99e1027b86b27b51e6ee9ab647747b49099645120cfc671
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    SUPERCRONIC_VERSION="v0.2.33" && \
-    SUPERCRONIC_BASE_URL="https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}" && \
-    curl -fsSL "${SUPERCRONIC_BASE_URL}/supercronic-linux-amd64" -o /usr/local/bin/supercronic && \
-    curl -fsSL "${SUPERCRONIC_BASE_URL}/supercronic-linux-amd64.sha256" -o /tmp/supercronic.sha256 && \
-    (cd /usr/local/bin && sha256sum -c /tmp/supercronic.sha256) && \
-    rm /tmp/supercronic.sha256 && \
+    curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" -o /usr/local/bin/supercronic && \
+    echo "${SUPERCRONIC_SHA256}  /usr/local/bin/supercronic" | sha256sum -c - && \
     chmod +x /usr/local/bin/supercronic && \
     apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
