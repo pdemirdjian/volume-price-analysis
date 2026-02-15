@@ -5,7 +5,7 @@ Usage:
 
 Flags:
     --dry-run   Print briefing to stdout instead of sending email
-    --no-ai     Skip Claude API, email raw data instead
+    --no-ai     Skip AI briefing generation, email raw data instead
 """
 
 import argparse
@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import fetch_stock_data
-from .claude_client import generate_briefing
+from .ai_client import generate_briefing
 from .config import AgentConfig
 from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
 
@@ -90,16 +90,21 @@ async def run_morning_briefing(config: AgentConfig, dry_run: bool = False, no_ai
         logger.info("Step 3: Skipping AI (--no-ai mode)")
         briefing = None
     else:
-        logger.info("Step 3: Generating AI briefing via %s...", config.claude_model)
+        logger.info(
+            "Step 3: Generating AI briefing via %s (%s)...",
+            config.ai_provider,
+            config.ai_model or "default model",
+        )
         try:
             briefing = generate_briefing(
                 scan_results=scan_results,
                 deep_analyses=deep_analyses,
-                model=config.claude_model,
-                api_key=config.anthropic_api_key,
+                provider=config.ai_provider,
+                model=config.ai_model,
+                api_key=config.ai_provider_api_key,
             )
         except Exception:
-            logger.exception("Claude API call failed")
+            logger.exception("AI briefing generation failed")
             briefing = _fallback_briefing(scan_results, deep_analyses)
 
     # Step 4: Deliver
@@ -202,7 +207,7 @@ def main():
     """Entry point for the morning briefing agent."""
     parser = argparse.ArgumentParser(description="Morning market briefing agent")
     parser.add_argument("--dry-run", action="store_true", help="Print to stdout, don't email")
-    parser.add_argument("--no-ai", action="store_true", help="Skip Claude API, send raw data")
+    parser.add_argument("--no-ai", action="store_true", help="Skip AI generation, send raw data")
     args = parser.parse_args()
 
     config = AgentConfig.from_env()
@@ -212,14 +217,19 @@ def main():
         errors = config.validate()
         if args.no_ai:
             # Only need email config, not API key
-            errors = [e for e in errors if "ANTHROPIC" not in e]
+            errors = [e for e in errors if "API_KEY" not in e and "AI_PROVIDER" not in e]
         if errors:
             for error in errors:
                 logger.error("Config error: %s", error)
             sys.exit(1)
-    elif not args.no_ai and not config.anthropic_api_key:
-        logger.error("ANTHROPIC_API_KEY required (even for --dry-run unless --no-ai)")
-        sys.exit(1)
+    elif not args.no_ai:
+        # Dry-run with AI still needs valid provider + key
+        errors = config.validate()
+        ai_errors = [e for e in errors if "API_KEY" in e or "AI_PROVIDER" in e]
+        if ai_errors:
+            for error in ai_errors:
+                logger.error("Config error: %s", error)
+            sys.exit(1)
 
     try:
         asyncio.run(run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai))

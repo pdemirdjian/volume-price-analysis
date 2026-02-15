@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from volume_price_analysis.agent.claude_client import generate_briefing
+from volume_price_analysis.agent.ai_client import generate_briefing
 from volume_price_analysis.agent.config import AgentConfig
 from volume_price_analysis.agent.email_sender import send_briefing_email
 from volume_price_analysis.agent.morning_agent import (
@@ -18,36 +18,48 @@ class TestAgentConfig:
     """Test configuration loading and validation."""
 
     def test_from_env_loads_required_vars(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
+        monkeypatch.setenv("AI_PROVIDER", "gemini")
+        monkeypatch.setenv("AI_PROVIDER_API_KEY", "test-key")
         monkeypatch.setenv("EMAIL_FROM", "test@example.com")
         monkeypatch.setenv("EMAIL_PASSWORD", "test-password")
         monkeypatch.setenv("EMAIL_TO", "recipient@example.com")
 
         config = AgentConfig.from_env()
-        assert config.anthropic_api_key == "sk-test-key"
+        assert config.ai_provider == "gemini"
+        assert config.ai_provider_api_key == "test-key"
         assert config.email_from == "test@example.com"
         assert config.email_password == "test-password"
         assert config.email_to == "recipient@example.com"
 
+    def test_from_env_anthropic_provider(self, monkeypatch):
+        monkeypatch.setenv("AI_PROVIDER", "anthropic")
+        monkeypatch.setenv("AI_PROVIDER_API_KEY", "sk-test-key")
+
+        config = AgentConfig.from_env()
+        assert config.ai_provider == "anthropic"
+        assert config.ai_provider_api_key == "sk-test-key"
+
     def test_from_env_uses_defaults(self, monkeypatch):
-        # Clear any existing env vars
         for key in [
-            "ANTHROPIC_API_KEY",
+            "AI_PROVIDER",
+            "AI_PROVIDER_API_KEY",
             "EMAIL_FROM",
             "EMAIL_PASSWORD",
             "EMAIL_TO",
             "EMAIL_SMTP_HOST",
             "SCAN_UNIVERSE",
             "MAX_DEEP_ANALYSIS",
+            "AI_MODEL",
         ]:
             monkeypatch.delenv(key, raising=False)
 
         config = AgentConfig.from_env()
+        assert config.ai_provider == "gemini"
         assert config.email_smtp_host == "smtp.gmail.com"
         assert config.email_smtp_port == 587
         assert config.scan_universe == "full_market"
         assert config.max_deep_analysis == 5
-        assert config.claude_model == "claude-sonnet-4-5-20250929"
+        assert config.ai_model == ""
 
     def test_from_env_overrides_defaults(self, monkeypatch):
         monkeypatch.setenv("SCAN_UNIVERSE", "tech")
@@ -64,21 +76,53 @@ class TestAgentConfig:
         monkeypatch.setenv("MAX_DEEP_ANALYSIS", "abc")
 
         config = AgentConfig.from_env()
-        assert config.email_smtp_port == 587  # falls back to default
-        assert config.max_deep_analysis == 5  # falls back to default
+        assert config.email_smtp_port == 587
+        assert config.max_deep_analysis == 5
 
-    def test_validate_missing_required(self):
-        config = AgentConfig()
+    def test_validate_missing_api_key(self):
+        config = AgentConfig(
+            ai_provider="gemini",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
         errors = config.validate()
-        assert len(errors) == 4
-        assert any("ANTHROPIC_API_KEY" in e for e in errors)
+        assert len(errors) == 1
+        assert "AI_PROVIDER_API_KEY" in errors[0]
+
+    def test_validate_invalid_provider(self):
+        config = AgentConfig(
+            ai_provider="openai",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        errors = config.validate()
+        assert any("AI_PROVIDER" in e for e in errors)
+
+    def test_validate_missing_email(self):
+        config = AgentConfig(ai_provider="gemini", ai_provider_api_key="key")
+        errors = config.validate()
         assert any("EMAIL_FROM" in e for e in errors)
         assert any("EMAIL_PASSWORD" in e for e in errors)
         assert any("EMAIL_TO" in e for e in errors)
 
     def test_validate_all_present(self):
         config = AgentConfig(
-            anthropic_api_key="sk-test",
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        errors = config.validate()
+        assert len(errors) == 0
+
+    def test_validate_all_present_anthropic(self):
+        config = AgentConfig(
+            ai_provider="anthropic",
+            ai_provider_api_key="sk-test",
             email_from="a@b.com",
             email_password="pass",
             email_to="c@d.com",
@@ -136,7 +180,7 @@ class TestGetTopSymbols:
 
 
 class TestFallbackBriefing:
-    """Test fallback briefing when Claude API fails."""
+    """Test fallback briefing when AI API fails."""
 
     def test_includes_summary_stats(self):
         scan_results = {
@@ -175,8 +219,8 @@ class TestFallbackBriefing:
         assert "5.5" in briefing
 
 
-class TestGenerateBriefing:
-    """Test Claude API integration (mocked)."""
+class TestGenerateBriefingAnthropic:
+    """Test Anthropic API integration (mocked)."""
 
     def test_calls_anthropic_api(self, mocker):
         mock_client = MagicMock()
@@ -186,14 +230,12 @@ class TestGenerateBriefing:
         mock_message.usage.output_tokens = 200
         mock_client.messages.create.return_value = mock_message
 
-        mocker.patch(
-            "volume_price_analysis.agent.claude_client.anthropic.Anthropic",
-            return_value=mock_client,
-        )
+        mocker.patch("anthropic.Anthropic", return_value=mock_client)
 
         result = generate_briefing(
             scan_results={"summary": {"total_candidates": 5}},
             deep_analyses=[],
+            provider="anthropic",
             api_key="sk-test",
         )
 
@@ -208,14 +250,12 @@ class TestGenerateBriefing:
         mock_message.usage.output_tokens = 200
         mock_client.messages.create.return_value = mock_message
 
-        mocker.patch(
-            "volume_price_analysis.agent.claude_client.anthropic.Anthropic",
-            return_value=mock_client,
-        )
+        mocker.patch("anthropic.Anthropic", return_value=mock_client)
 
         generate_briefing(
             scan_results={"key": "value"},
             deep_analyses=[{"symbol": "AAPL"}],
+            provider="anthropic",
             api_key="sk-test",
         )
 
@@ -223,6 +263,59 @@ class TestGenerateBriefing:
         user_msg = call_args.kwargs["messages"][0]["content"]
         assert "AAPL" in user_msg
         assert "key" in user_msg
+
+
+class TestGenerateBriefingGemini:
+    """Test Gemini API integration (mocked)."""
+
+    def test_calls_gemini_api(self, mocker):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "# Morning Briefing\nGemini content"
+        mock_client.models.generate_content.return_value = mock_response
+
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        result = generate_briefing(
+            scan_results={"summary": {"total_candidates": 5}},
+            deep_analyses=[],
+            provider="gemini",
+            api_key="test-key",
+        )
+
+        assert "Morning Briefing" in result
+        mock_client.models.generate_content.assert_called_once()
+
+    def test_uses_default_model(self, mocker):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "briefing"
+        mock_client.models.generate_content.return_value = mock_response
+
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider="gemini",
+            api_key="test-key",
+        )
+
+        call_args = mock_client.models.generate_content.call_args
+        assert call_args.kwargs["model"] == "gemini-2.5-flash"
+
+
+class TestGenerateBriefingInvalidProvider:
+    """Test error handling for invalid provider."""
+
+    def test_raises_on_invalid_provider(self):
+        with pytest.raises(ValueError, match="Unknown AI provider"):
+            generate_briefing(
+                scan_results={},
+                deep_analyses=[],
+                provider="openai",
+                api_key="key",
+            )
 
 
 class TestSendBriefingEmail:
@@ -248,11 +341,9 @@ class TestSendBriefingEmail:
         mock_smtp_instance.login.assert_called_once_with("sender@test.com", "test-pass")
         mock_smtp_instance.sendmail.assert_called_once()
 
-        # Verify email content
         sent_args = mock_smtp_instance.sendmail.call_args
         assert sent_args[0][0] == "sender@test.com"
         assert sent_args[0][1] == "recipient@test.com"
-        # Message should contain both plain text and HTML parts
         msg_str = sent_args[0][2]
         assert "text/plain" in msg_str
         assert "text/html" in msg_str
@@ -263,7 +354,6 @@ class TestRunMorningBriefing:
 
     @pytest.mark.asyncio
     async def test_dry_run_prints_to_stdout(self, mocker, capsys):
-        # Mock scan
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -279,8 +369,6 @@ class TestRunMorningBriefing:
                 "top_bearish": [{"symbol": "TSLA"}],
             },
         )
-
-        # Mock fetch + analysis
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.fetch_stock_data",
             return_value=MagicMock(),
@@ -292,15 +380,14 @@ class TestRunMorningBriefing:
                 "composite_signal": {"score": 4.2},
             },
         )
-
-        # Mock Claude
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             return_value="# Test Briefing\nLooks good!",
         )
 
         config = AgentConfig(
-            anthropic_api_key="sk-test",
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
             email_from="a@b.com",
             email_password="pass",
             email_to="c@d.com",
@@ -313,7 +400,7 @@ class TestRunMorningBriefing:
         assert "Test Briefing" in captured.out
 
     @pytest.mark.asyncio
-    async def test_no_ai_mode_skips_claude(self, mocker):
+    async def test_no_ai_mode_skips_generation(self, mocker):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -338,7 +425,8 @@ class TestRunMorningBriefing:
         )
 
         config = AgentConfig(
-            anthropic_api_key="sk-test",
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
             email_from="a@b.com",
             email_password="pass",
             email_to="c@d.com",
@@ -350,7 +438,7 @@ class TestRunMorningBriefing:
         mock_raw_email.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_claude_failure_uses_fallback(self, mocker):
+    async def test_ai_failure_uses_fallback(self, mocker):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -383,7 +471,8 @@ class TestRunMorningBriefing:
         )
 
         config = AgentConfig(
-            anthropic_api_key="sk-test",
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
             email_from="a@b.com",
             email_password="pass",
             email_to="c@d.com",
@@ -392,7 +481,6 @@ class TestRunMorningBriefing:
 
         await run_morning_briefing(config, dry_run=False, no_ai=False)
 
-        # Should still send an email with fallback content
         mock_send.assert_called_once()
         body = mock_send.call_args.kwargs.get("body_markdown", "")
         assert "Fallback" in body

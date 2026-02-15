@@ -19,6 +19,8 @@ VWAP, Volume Profile, Money Flow Index, and more.
 5. **calculate_mfi** - Money Flow Index (volume-weighted RSI)
 6. **analyze_volume_trends** - Volume trend analysis with divergence detection
 7. **comprehensive_analysis** - Complete analysis with all indicators
+8. **options_analysis** - Specialized analysis for short-term options trading
+9. **scan_candidates** - Scan ~200 symbols for top options trading candidates
 
 ### Key Indicators Explained
 
@@ -87,7 +89,7 @@ VWAP, Volume Profile, Money Flow Index, and more.
 
 ### Prerequisites
 
-- Python 3.11 or higher
+- Python 3.14 or higher
 - [UV](https://github.com/astral-sh/uv) (recommended) or pip
 
 ### Recommended: Install with UV (Fast!)
@@ -316,7 +318,7 @@ All tools return structured JSON data. Example output from
 
 ### Running Tests
 
-Comprehensive test suite with 50+ tests covering all functionality:
+Comprehensive test suite with 100 tests covering all functionality:
 
 ```bash
 # Install with dev dependencies
@@ -342,6 +344,8 @@ Test coverage includes:
 - ✅ All volume-price indicators (OBV, VWAP, MFI, Volume Profile, VPT)
 - ✅ Data fetching and validation
 - ✅ MCP server tool registration and execution
+- ✅ Morning briefing agent (config, AI providers, email, orchestrator)
+- ✅ Analysis module (scan, options analysis, universes)
 - ✅ Edge cases and error handling
 
 ### Code Quality
@@ -376,6 +380,56 @@ source .venv/bin/activate  # macOS/Linux
 pip install -e ".[dev]"
 ```
 
+## Morning Briefing Agent
+
+An automated agent that runs daily at 8:30 AM ET to scan the market, analyze top
+candidates, and email you an AI-generated briefing.
+
+### Setup
+
+1. Get an API key from [Google AI Studio](https://aistudio.google.com/apikey)
+   (free) or [Anthropic Console](https://console.anthropic.com/) (paid)
+
+2. Create a `.env` file:
+
+   ```env
+   AI_PROVIDER=gemini
+   AI_PROVIDER_API_KEY=your-api-key
+   EMAIL_FROM=your-email@gmail.com
+   EMAIL_PASSWORD=your-gmail-app-password
+   EMAIL_TO=recipient@example.com
+   ```
+
+3. Run with Docker:
+
+   ```bash
+   docker compose up -d
+   ```
+
+### Manual Run
+
+```bash
+# Dry run (prints to stdout, no email)
+uv run python -m volume_price_analysis.agent.morning_agent --dry-run
+
+# Skip AI, email raw data
+uv run python -m volume_price_analysis.agent.morning_agent --no-ai
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_PROVIDER` | `gemini` | `gemini` or `anthropic` |
+| `AI_PROVIDER_API_KEY` | (required) | API key for chosen provider |
+| `AI_MODEL` | provider default | Override model (e.g., `gemini-2.5-flash`) |
+| `EMAIL_FROM` | (required) | Sender Gmail address |
+| `EMAIL_PASSWORD` | (required) | Gmail App Password |
+| `EMAIL_TO` | (required) | Recipient email address |
+| `SCAN_UNIVERSE` | `full_market` | Symbol universe to scan |
+| `MAX_DEEP_ANALYSIS` | `5` | Top N candidates for deep analysis |
+| `TZ` | `America/New_York` | Container timezone |
+
 ## Data Source
 
 This server uses [yfinance](https://github.com/ranaroussi/yfinance) to fetch
@@ -409,7 +463,7 @@ For issues or questions:
 
 1. Check that yfinance can fetch data for your symbol
 2. Verify your date ranges are valid
-3. Ensure Python version is 3.10+
+3. Ensure Python version is 3.14+
 4. Check MCP configuration is correct
 
 ## Acknowledgments

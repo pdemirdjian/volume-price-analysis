@@ -11,18 +11,21 @@ logger = logging.getLogger(__name__)
 class AgentConfig:
     """Configuration loaded from environment variables."""
 
-    # Required
-    anthropic_api_key: str = ""
+    # AI provider ("gemini" or "anthropic")
+    ai_provider: str = "gemini"
+    ai_provider_api_key: str = ""
+    ai_model: str = ""  # Empty = use provider default
+
+    # Email
     email_from: str = ""
     email_password: str = ""
     email_to: str = ""
-
-    # Optional with defaults
     email_smtp_host: str = "smtp.gmail.com"
     email_smtp_port: int = 587
+
+    # Scan settings
     scan_universe: str = "full_market"
     max_deep_analysis: int = 5
-    claude_model: str = "claude-sonnet-4-5-20250929"
 
     @classmethod
     def from_env(cls) -> AgentConfig:
@@ -42,7 +45,9 @@ class AgentConfig:
             logger.warning("MAX_DEEP_ANALYSIS=%r is not a valid integer, using default 5", raw)
 
         return cls(
-            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            ai_provider=os.environ.get("AI_PROVIDER", "gemini").lower(),
+            ai_provider_api_key=os.environ.get("AI_PROVIDER_API_KEY", ""),
+            ai_model=os.environ.get("AI_MODEL", ""),
             email_from=os.environ.get("EMAIL_FROM", ""),
             email_password=os.environ.get("EMAIL_PASSWORD", ""),
             email_to=os.environ.get("EMAIL_TO", ""),
@@ -50,14 +55,21 @@ class AgentConfig:
             email_smtp_port=smtp_port,
             scan_universe=os.environ.get("SCAN_UNIVERSE", "full_market"),
             max_deep_analysis=max_deep,
-            claude_model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5-20250929"),
         )
 
     def validate(self) -> list[str]:
         """Validate required configuration. Returns list of error messages."""
         errors = []
-        if not self.anthropic_api_key:
-            errors.append("ANTHROPIC_API_KEY is required")
+
+        # Validate AI provider
+        if self.ai_provider not in ("gemini", "anthropic"):
+            errors.append(
+                f"AI_PROVIDER={self.ai_provider!r} is invalid. Use 'gemini' or 'anthropic'."
+            )
+        elif not self.ai_provider_api_key:
+            errors.append("AI_PROVIDER_API_KEY is required")
+
+        # Validate email
         if not self.email_from:
             errors.append("EMAIL_FROM is required")
         if not self.email_password:
@@ -65,3 +77,4 @@ class AgentConfig:
         if not self.email_to:
             errors.append("EMAIL_TO is required")
         return errors
+
