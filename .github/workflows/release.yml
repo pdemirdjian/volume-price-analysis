@@ -31,6 +31,33 @@ jobs:
     with:
       ref: ${{ needs.release-please.outputs.pr_branch }}
 
+  # Mirror CI results to the release-please PR so branch protection sees them
+  report-ci-status:
+    needs: [release-please, ci]
+    if: always() && needs.release-please.outputs.pr_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Report CI status to PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BRANCH: ${{ needs.release-please.outputs.pr_branch }}
+          CI_RESULT: ${{ needs.ci.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          SHA=$(gh api "repos/${{ github.repository }}/git/ref/heads/$PR_BRANCH" --jq '.object.sha')
+          STATE="failure"
+          if [ "$CI_RESULT" = "success" ]; then STATE="success"; fi
+          for CONTEXT in test docker-build; do
+            gh api "repos/${{ github.repository }}/statuses/$SHA" \
+              -f state="$STATE" \
+              -f context="$CONTEXT" \
+              -f description="CI from release workflow" \
+              -f target_url="$RUN_URL"
+          done
+
   # Build and push Docker image on releases (GITHUB_TOKEN tags don't trigger other workflows)
   docker:
     needs: release-please
