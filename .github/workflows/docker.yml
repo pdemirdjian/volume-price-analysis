@@ -52,7 +52,7 @@ jobs:
           images: ghcr.io/pdemirdjian/volume-price-analysis
           tags: |
             type=raw,value=latest,enable=${{ inputs.version != '' }}
-            type=sha,prefix=
+            type=sha,prefix=,enable=${{ inputs.version == '' }}
             type=raw,value=${{ steps.version.outputs.full }},enable=${{ inputs.version != '' }}
             type=raw,value=${{ steps.version.outputs.major_minor }},enable=${{ inputs.version != '' }}
 
