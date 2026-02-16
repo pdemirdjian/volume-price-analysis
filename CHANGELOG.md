@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.3...v2.0.0) (2026-02-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace supercronic with Python asyncio scheduler ([#80](https://github.com/pdemirdjian/volume-price-analysis/issues/80))
+
+### Features
+
+* replace supercronic with Python asyncio scheduler ([#80](https://github.com/pdemirdjian/volume-price-analysis/issues/80)) ([57291e1](https://github.com/pdemirdjian/volume-price-analysis/commit/57291e1886cdb249bc8c41551f7ac77efc2249e7))
+
 ## [1.4.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.2...v1.4.3) (2026-02-16)
 
 
