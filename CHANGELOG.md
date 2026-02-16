@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.2...v1.4.3) (2026-02-16)
+
+
+### Bug Fixes
+
+* validate integer parameters in MCP tool handlers ([#78](https://github.com/pdemirdjian/volume-price-analysis/issues/78)) ([2f252de](https://github.com/pdemirdjian/volume-price-analysis/commit/2f252de73ad207d336a2625ea653b66a898d20a1))
+
 ## [1.4.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.1...v1.4.2) (2026-02-15)
 
 
