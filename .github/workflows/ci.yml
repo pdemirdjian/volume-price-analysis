@@ -40,6 +40,14 @@ jobs:
       - name: Run tests
         run: uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing
 
+  test-gate:
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+        if: ${{ contains(needs.test.result, 'failure') || contains(needs.test.result, 'cancelled') }}
+
   docker-build:
     runs-on: ubuntu-latest
 
