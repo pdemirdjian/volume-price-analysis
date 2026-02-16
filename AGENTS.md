@@ -49,7 +49,9 @@ src/volume_price_analysis/
 
 ### Morning Briefing Flow
 
-1. **scheduler.py** triggers `morning_agent.py` at 8:30 AM ET (weekdays)
+1. **scheduler.py** triggers `morning_agent.py` at 8:30 AM ET by default (weekdays)
+   - Use `--time HH:MM` to change the trigger time
+   - Use `--skip-holidays` to skip NYSE market holidays
 2. **analysis.py** `run_scan()` scans ~200 symbols for top candidates
 3. **analysis.py** `run_options_analysis()` deep-analyzes top N candidates
 4. **ai_client.py** sends data to Gemini or Claude API for natural-language

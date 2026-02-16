@@ -197,10 +197,15 @@ def main() -> None:
     try:
         parts = args.time.split(":")
         if len(parts) != 2:
-            raise ValueError("Invalid time format")
-        target = time(int(parts[0]), int(parts[1]))
-    except (ValueError, IndexError):
-        logger.error("Invalid time format: %r (expected HH:MM)", args.time)
+            raise ValueError("Time must be in HH:MM format")
+        hour, minute = int(parts[0]), int(parts[1])
+        if not (0 <= hour <= 23):
+            raise ValueError(f"Hour must be between 0 and 23 (got {hour})")
+        if not (0 <= minute <= 59):
+            raise ValueError(f"Minute must be between 0 and 59 (got {minute})")
+        target = time(hour, minute)
+    except ValueError as exc:
+        logger.error("Invalid --time value %r: %s", args.time, exc)
         sys.exit(1)
 
     asyncio.run(run_scheduler(target, ET, skip_holidays=args.skip_holidays))
