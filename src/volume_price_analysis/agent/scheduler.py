@@ -163,7 +163,7 @@ async def run_scheduler(
 
         def _signal_handler_win(signum: int, frame: object) -> None:
             logger.info("Received shutdown signal, stopping...")
-            stop_event.set()
+            loop.call_soon_threadsafe(stop_event.set)
 
         signal.signal(signal.SIGINT, _signal_handler_win)
     else:
