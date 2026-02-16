@@ -159,12 +159,21 @@ async def run_scheduler(
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
-    def _signal_handler() -> None:
-        logger.info("Received shutdown signal, stopping...")
-        stop_event.set()
+    if sys.platform == "win32":
 
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _signal_handler)
+        def _signal_handler_win(signum: int, frame: object) -> None:
+            logger.info("Received shutdown signal, stopping...")
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, _signal_handler_win)
+    else:
+
+        def _signal_handler() -> None:
+            logger.info("Received shutdown signal, stopping...")
+            stop_event.set()
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, _signal_handler)
 
     logger.info(
         "Scheduler starting (target=%s, tz=%s, skip_holidays=%s)",
