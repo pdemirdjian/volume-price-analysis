@@ -596,3 +596,33 @@ class TestParameterValidation:
         data = json.loads(result[0].text)
         assert "error" in data
         assert "max_results" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_options_analysis_holding_period_returns_error(self):
+        """Test that invalid holding_period returns error via options_analysis tool."""
+        result = await handle_call_tool(
+            name="options_analysis",
+            arguments={
+                "symbol": "AAPL",
+                "holding_period": 0,
+                "days_to_expiration": 30,
+            },
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "holding_period" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_days_to_expiration_returns_error(self):
+        """Test that invalid days_to_expiration returns error via options_analysis tool."""
+        result = await handle_call_tool(
+            name="options_analysis",
+            arguments={
+                "symbol": "AAPL",
+                "holding_period": 10,
+                "days_to_expiration": 0,
+            },
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "days_to_expiration" in data["error"]
