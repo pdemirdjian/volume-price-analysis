@@ -141,8 +141,8 @@ class TestRunLoop:
             await _run_loop(time(8, 30), ET, stop_event)
 
     @pytest.mark.asyncio
-    async def test_config_validation_failure_returns(self, caplog):
-        """Loop returns early if config validation fails."""
+    async def test_config_validation_failure_exits_nonzero(self, caplog):
+        """Loop exits with non-zero status if config validation fails."""
         stop_event = asyncio.Event()
 
         with patch(
@@ -152,7 +152,8 @@ class TestRunLoop:
             config.validate.return_value = ["EMAIL_FROM is required"]
             mock_config.return_value = config
 
-            await _run_loop(time(8, 30), ET, stop_event)
+            with pytest.raises(SystemExit, match="1"):
+                await _run_loop(time(8, 30), ET, stop_event)
 
         assert "Config error" in caplog.text
 

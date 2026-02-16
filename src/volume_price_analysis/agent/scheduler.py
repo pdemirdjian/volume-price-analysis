@@ -95,7 +95,7 @@ async def _run_loop(
     if errors:
         for error in errors:
             logger.error("Config error: %s", error)
-        return
+        raise SystemExit(1)
 
     while not stop_event.is_set():
         next_dt = _next_run(target, tz, skip_holidays=skip_holidays)
@@ -201,6 +201,8 @@ def main() -> None:
     # Parse time
     try:
         parts = args.time.split(":")
+        if len(parts) != 2:
+            raise ValueError("Invalid time format")
         target = time(int(parts[0]), int(parts[1]))
     except (ValueError, IndexError):
         logger.error("Invalid time format: %r (expected HH:MM)", args.time)
