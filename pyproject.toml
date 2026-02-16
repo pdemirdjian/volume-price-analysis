@@ -16,6 +16,7 @@ dependencies = [
     "anthropic>=0.52.0",
     "google-genai>=1.0.0",
     "markdown>=3.7.0",
+    "holidays>=0.70",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -77,3 +78,4 @@ ignore_missing_imports = true
 [project.scripts]
 volume-price-analysis = "volume_price_analysis.server:main"
 morning-briefing = "volume_price_analysis.agent.morning_agent:main"
+morning-scheduler = "volume_price_analysis.agent.scheduler:main"

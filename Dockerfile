@@ -1,30 +1,23 @@
-FROM python:3.14-slim@sha256:486b8092bfb12997e10d4920897213a06563449c951c5506c2a2cfaf591c599f
-
-# Install supercronic (lightweight cron for containers)
-# - Logs to stdout/stderr (works with docker logs)
-# - No syslog dependency
-# - Graceful signal handling for container stops
-# - Supports env vars from Docker
-# renovate: datasource=github-releases depName=aptible/supercronic
-ARG SUPERCRONIC_VERSION=v0.2.33
-ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" -o /usr/local/bin/supercronic && \
-    chmod +x /usr/local/bin/supercronic && \
-    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+# ── Stage 1: build ──
+FROM python:3.14-slim@sha256:486b8092bfb12997e10d4920897213a06563449c951c5506c2a2cfaf591c599f AS builder
 
 WORKDIR /app
 
-# Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.10.2@sha256:94a23af2d50e97b87b522d3cea24aaf8a1faedec1344c952767434f69585cbf9 /uv /usr/local/bin/uv
 
 # Install dependencies first (layer caching)
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --no-dev --frozen
+RUN uv sync --no-dev --frozen --no-install-project
 
-# Copy application code
+# Copy source and install the project (non-editable)
 COPY src/ src/
-COPY docker/crontab /app/crontab
+RUN uv sync --no-dev --frozen --no-editable
 
-# Default: run supercronic with the crontab
-CMD ["supercronic", "/app/crontab"]
+# ── Stage 2: runtime ──
+FROM python:3.14-slim@sha256:486b8092bfb12997e10d4920897213a06563449c951c5506c2a2cfaf591c599f
+
+WORKDIR /app
+COPY --from=builder /app/.venv .venv
+ENV PATH="/app/.venv/bin:$PATH"
+
+CMD ["morning-scheduler"]

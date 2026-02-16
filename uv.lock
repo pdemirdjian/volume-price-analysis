@@ -347,6 +347,18 @@ wheels = [
 ]
 
 [[package]]
+name = "holidays"
+version = "0.90"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3f/4e/c64742eaa810523995cc9c7cd97d7a6c16de5544bbe55a1ccd7107418feb/holidays-0.90.tar.gz", hash = "sha256:1fb6a973d9c8834a9b6644fcf369b0663373daa0d06bce5ae37d494e702dfb3f", size = 834130, upload-time = "2026-02-02T18:48:17.852Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/3d/e3d23cb51f6353931436df4e9d1d4873311d0ed50d273ef1531bdd074958/holidays-0.90-py3-none-any.whl", hash = "sha256:8ed92ea72e2db5ef00f024c37b03641085699809f42fe5ba03b040be6740f72d", size = 1353734, upload-time = "2026-02-02T18:48:16.138Z" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1114,8 +1126,8 @@ name = "uvicorn"
 version = "0.40.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c3/d1/8f3c683c9561a4e6689dd3b1d345c815f10f86acd044ee1fb9a4dcd0b8c5/uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea", size = 81761, upload-time = "2025-12-21T14:16:22.45Z" }
 wheels = [
@@ -1124,11 +1136,12 @@ wheels = [
 
 [[package]]
 name = "volume-price-analysis-mcp"
-version = "1.4.2"
+version = "1.4.3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "google-genai" },
+    { name = "holidays" },
     { name = "markdown" },
     { name = "mcp" },
     { name = "numpy" },
@@ -1150,6 +1163,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.52.0" },
     { name = "google-genai", specifier = ">=1.0.0" },
+    { name = "holidays", specifier = ">=0.70" },
     { name = "markdown", specifier = ">=3.7.0" },
     { name = "mcp", specifier = "==1.26.0" },
     { name = "numpy", specifier = "==2.4.2" },
