@@ -42,16 +42,21 @@ server = Server("volume-price-analysis")
 
 async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
     """Handle scan_candidates tool - delegates to analysis.run_scan."""
+    holding_period = arguments.get("holding_period", 14)
+    _validate_range(holding_period, "holding_period", 1, 90)
+    max_results = arguments.get("max_results", 15)
+    _validate_range(max_results, "max_results", 1, 100)
+
     result = await run_scan(
         symbols=arguments.get("symbols", []),
         universe=arguments.get("universe", "full_market"),
         period=arguments.get("period", "3mo"),
-        holding_period=arguments.get("holding_period", 14),
+        holding_period=holding_period,
         min_score=arguments.get("min_score", 2.0),
         min_adx=arguments.get("min_adx", 20),
         max_iv_percentile=arguments.get("max_iv_percentile", 100),
         direction=arguments.get("direction", "any"),
-        max_results=arguments.get("max_results", 15),
+        max_results=max_results,
     )
 
     return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
@@ -181,6 +186,8 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Number of price levels to analyze (default: 20)",
                         "default": 20,
+                        "minimum": 2,
+                        "maximum": 1000,
                     },
                 },
                 "required": ["symbol"],
@@ -216,6 +223,8 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Lookback period for MFI calculation (default: 14)",
                         "default": 14,
+                        "minimum": 1,
+                        "maximum": 200,
                     },
                 },
                 "required": ["symbol"],
@@ -248,6 +257,8 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Rolling window for trend analysis (default: 20)",
                         "default": 20,
+                        "minimum": 1,
+                        "maximum": 200,
                     },
                 },
                 "required": ["symbol"],
@@ -325,6 +336,8 @@ async def handle_list_tools() -> list[Tool]:
                             "30 days = standard (14-20 day indicators)"
                         ),
                         "default": 14,
+                        "minimum": 1,
+                        "maximum": 90,
                     },
                     "days_to_expiration": {
                         "type": "integer",
@@ -332,6 +345,8 @@ async def handle_list_tools() -> list[Tool]:
                             "Days until options expiration for expected move "
                             "calculation (default: same as holding_period)"
                         ),
+                        "minimum": 1,
+                        "maximum": 365,
                     },
                 },
                 "required": ["symbol"],
@@ -375,6 +390,8 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Options holding period in days (14-30)",
                         "default": 14,
+                        "minimum": 1,
+                        "maximum": 90,
                     },
                     "min_score": {
                         "type": "number",
@@ -400,12 +417,23 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Max results per direction (default: 15)",
                         "default": 15,
+                        "minimum": 1,
+                        "maximum": 100,
                     },
                 },
                 "required": [],
             },
         ),
     ]
+
+
+def _validate_range(
+    value: int | float, param_name: str, min_val: int | float, max_val: int | float
+) -> None:
+    """Validate that a parameter value is within the allowed range."""
+    if value < min_val or value > max_val:
+        msg = f"{param_name} must be between {min_val} and {max_val}, got {value}"
+        raise ValueError(msg)
 
 
 @server.call_tool()
@@ -427,6 +455,26 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         # Set default period based on tool type
         default_period = "3mo" if name == "options_analysis" else "1mo"
         period = arguments.get("period", default_period)
+
+        # Validate tool-specific integer parameters before fetching data (fail fast)
+        if name == "calculate_volume_profile":
+            _validate_range(arguments.get("num_bins", 20), "num_bins", 2, 1000)
+        elif name == "calculate_mfi":
+            _validate_range(arguments.get("mfi_period", 14), "mfi_period", 1, 200)
+        elif name == "analyze_volume_trends":
+            _validate_range(arguments.get("window", 20), "window", 1, 200)
+        elif name == "options_analysis":
+            _validate_range(
+                arguments.get("holding_period", 14), "holding_period", 1, 90
+            )
+            _validate_range(
+                arguments.get(
+                    "days_to_expiration", arguments.get("holding_period", 14)
+                ),
+                "days_to_expiration",
+                1,
+                365,
+            )
 
         # Fetch stock data
         data = fetch_stock_data(symbol, start_date, end_date, period)
