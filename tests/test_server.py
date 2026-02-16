@@ -574,3 +574,25 @@ class TestParameterValidation:
         data = json.loads(result[0].text)
         assert "error" in data
         assert "window" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_holding_period_returns_error(self):
+        """Test that invalid holding_period returns error via scan_candidates tool."""
+        result = await handle_call_tool(
+            name="scan_candidates",
+            arguments={"symbols": ["AAPL"], "holding_period": 0},
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "holding_period" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_max_results_returns_error(self):
+        """Test that invalid max_results returns error via scan_candidates tool."""
+        result = await handle_call_tool(
+            name="scan_candidates",
+            arguments={"symbols": ["AAPL"], "max_results": 0},
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "max_results" in data["error"]

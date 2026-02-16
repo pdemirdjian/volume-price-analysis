@@ -456,6 +456,26 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         default_period = "3mo" if name == "options_analysis" else "1mo"
         period = arguments.get("period", default_period)
 
+        # Validate tool-specific integer parameters before fetching data (fail fast)
+        if name == "calculate_volume_profile":
+            _validate_range(arguments.get("num_bins", 20), "num_bins", 2, 1000)
+        elif name == "calculate_mfi":
+            _validate_range(arguments.get("mfi_period", 14), "mfi_period", 1, 200)
+        elif name == "analyze_volume_trends":
+            _validate_range(arguments.get("window", 20), "window", 1, 200)
+        elif name == "options_analysis":
+            _validate_range(
+                arguments.get("holding_period", 14), "holding_period", 1, 90
+            )
+            _validate_range(
+                arguments.get(
+                    "days_to_expiration", arguments.get("holding_period", 14)
+                ),
+                "days_to_expiration",
+                1,
+                365,
+            )
+
         # Fetch stock data
         data = fetch_stock_data(symbol, start_date, end_date, period)
         logger.debug("Data fetched for %s: %d rows", symbol, len(data))
@@ -513,7 +533,6 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "calculate_volume_profile":
             num_bins = arguments.get("num_bins", 20)
-            _validate_range(num_bins, "num_bins", 2, 1000)
             profile = calculate_volume_profile(data, num_bins)
 
             # Find the price level with highest volume (Point of Control)
@@ -539,7 +558,6 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "calculate_mfi":
             mfi_period = arguments.get("mfi_period", 14)
-            _validate_range(mfi_period, "mfi_period", 1, 200)
             mfi = calculate_mfi(data, mfi_period)
             data["MFI"] = mfi
 
@@ -564,7 +582,6 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "analyze_volume_trends":
             window = arguments.get("window", 20)
-            _validate_range(window, "window", 1, 200)
             trends = analyze_volume_trends(data, window)
 
             result = {"symbol": symbol, "analysis": "Volume Trend Analysis", **trends}
@@ -735,9 +752,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "options_analysis":
             holding_period = arguments.get("holding_period", 14)
-            _validate_range(holding_period, "holding_period", 1, 90)
             days_to_expiration = arguments.get("days_to_expiration", holding_period)
-            _validate_range(days_to_expiration, "days_to_expiration", 1, 365)
 
             result = run_options_analysis(
                 symbol=symbol,
