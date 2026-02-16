@@ -57,12 +57,7 @@ def _next_run(
     if now is None:
         now = datetime.now(tz)
 
-    candidate = now.replace(
-        hour=target.hour,
-        minute=target.minute,
-        second=0,
-        microsecond=0,
-    )
+    candidate = datetime.combine(now.date(), target, tz)
 
     # If we're already at or past the target time today, move to tomorrow
     if now >= candidate:
@@ -100,7 +95,7 @@ async def _run_loop(
     while not stop_event.is_set():
         next_dt = _next_run(target, tz, skip_holidays=skip_holidays)
         now = datetime.now(tz)
-        delay = (next_dt - now).total_seconds()
+        delay = max(0, (next_dt - now).total_seconds())
 
         # Log next run (with holiday info if applicable)
         holiday_name = _nyse_holidays.get(next_dt.date())
