@@ -19,8 +19,8 @@ Finance (yfinance) and exposes analysis capabilities to AI assistants.
   - `anthropic` & `google-genai`: AI providers for morning briefing
   - `markdown`: Email HTML rendering
 - **Package Management**: `uv` (recommended) or `pip`
-- **Deployment**: Docker container with supercronic cron, CI/CD via GitHub
-  Actions to ghcr.io
+- **Deployment**: Docker container with Python asyncio scheduler, CI/CD via
+  GitHub Actions to ghcr.io
 
 ## Architecture
 
@@ -34,7 +34,8 @@ src/volume_price_analysis/
     ├── ai_client.py       # AI provider abstraction (Gemini/Anthropic)
     ├── config.py          # Environment-based configuration
     ├── email_sender.py    # SMTP email delivery
-    └── morning_agent.py   # Main orchestrator (entry point)
+    ├── morning_agent.py   # Main orchestrator (entry point)
+    └── scheduler.py       # Asyncio scheduler (replaces supercronic)
 ```
 
 ### MCP Data Flow
@@ -48,7 +49,7 @@ src/volume_price_analysis/
 
 ### Morning Briefing Flow
 
-1. **supercronic** triggers `morning_agent.py` at 8:30 AM ET (weekdays)
+1. **scheduler.py** triggers `morning_agent.py` at 8:30 AM ET (weekdays)
 2. **analysis.py** `run_scan()` scans ~200 symbols for top candidates
 3. **analysis.py** `run_options_analysis()` deep-analyzes top N candidates
 4. **ai_client.py** sends data to Gemini or Claude API for natural-language
