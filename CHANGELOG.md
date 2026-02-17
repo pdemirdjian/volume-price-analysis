@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.2.0...v2.2.1) (2026-02-17)
+
+
+### Bug Fixes
+
+* correct Renovate dev deps automerge rule ([#93](https://github.com/pdemirdjian/volume-price-analysis/issues/93)) ([f794df7](https://github.com/pdemirdjian/volume-price-analysis/commit/f794df77c999567579919c7faad00dc3384550de))
+
 ## [2.2.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.1.1...v2.2.0) (2026-02-17)
 
 
