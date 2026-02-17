@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.0.0...v2.1.0) (2026-02-17)
+
+
+### Features
+
+* add cross-platform support for macOS, Windows, and Linux ([#86](https://github.com/pdemirdjian/volume-price-analysis/issues/86)) ([6d30764](https://github.com/pdemirdjian/volume-price-analysis/commit/6d307641916fb64e3095209583a4dfee070002c5))
+
 ## [2.0.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v1.4.3...v2.0.0) (2026-02-16)
 
 
