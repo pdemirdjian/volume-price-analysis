@@ -132,9 +132,7 @@ class TestRunLoop:
         stop_event = asyncio.Event()
         stop_event.set()  # Pre-set so loop exits immediately
 
-        with patch(
-            "volume_price_analysis.agent.scheduler.AgentConfig.from_env"
-        ) as mock_config:
+        with patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config:
             config = MagicMock()
             config.validate.return_value = []
             mock_config.return_value = config
@@ -146,9 +144,7 @@ class TestRunLoop:
         """Loop exits with non-zero status if config validation fails."""
         stop_event = asyncio.Event()
 
-        with patch(
-            "volume_price_analysis.agent.scheduler.AgentConfig.from_env"
-        ) as mock_config:
+        with patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config:
             config = MagicMock()
             config.validate.return_value = ["EMAIL_FROM is required"]
             mock_config.return_value = config
@@ -171,19 +167,13 @@ class TestRunLoop:
         stop_event = asyncio.Event()
 
         with (
-            patch(
-                "volume_price_analysis.agent.scheduler.AgentConfig.from_env"
-            ) as mock_config,
+            patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config,
             patch(
                 "volume_price_analysis.agent.scheduler.run_morning_briefing",
                 side_effect=_fake_briefing,
             ),
-            patch(
-                "volume_price_analysis.agent.scheduler.send_error_email"
-            ) as mock_error_email,
-            patch(
-                "volume_price_analysis.agent.scheduler._next_run"
-            ) as mock_next_run,
+            patch("volume_price_analysis.agent.scheduler.send_error_email") as mock_error_email,
+            patch("volume_price_analysis.agent.scheduler._next_run") as mock_next_run,
         ):
             config = MagicMock()
             config.validate.return_value = []
@@ -249,9 +239,7 @@ class TestRunScheduler:
         """On Unix, loop.add_signal_handler is called for SIGTERM and SIGINT."""
         mock_loop = MagicMock()
         with (
-            patch(
-                "volume_price_analysis.agent.scheduler.sys"
-            ) as mock_sys,
+            patch("volume_price_analysis.agent.scheduler.sys") as mock_sys,
             patch(
                 "volume_price_analysis.agent.scheduler.asyncio.get_running_loop",
                 return_value=mock_loop,
@@ -265,21 +253,15 @@ class TestRunScheduler:
             await run_scheduler(time(8, 30), ET)
 
         assert mock_loop.add_signal_handler.call_count == 2
-        registered_signals = {
-            call.args[0] for call in mock_loop.add_signal_handler.call_args_list
-        }
+        registered_signals = {call.args[0] for call in mock_loop.add_signal_handler.call_args_list}
         assert registered_signals == {signal.SIGTERM, signal.SIGINT}
 
     @pytest.mark.asyncio
     async def test_windows_uses_signal_signal(self):
         """On Windows, signal.signal is called with SIGINT."""
         with (
-            patch(
-                "volume_price_analysis.agent.scheduler.sys"
-            ) as mock_sys,
-            patch(
-                "volume_price_analysis.agent.scheduler.signal.signal"
-            ) as mock_signal,
+            patch("volume_price_analysis.agent.scheduler.sys") as mock_sys,
+            patch("volume_price_analysis.agent.scheduler.signal.signal") as mock_signal,
             patch(
                 "volume_price_analysis.agent.scheduler._run_loop",
                 new_callable=AsyncMock,
