@@ -46,14 +46,15 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Automerge non-major dev dependencies",
+      "description": "Group and automerge non-major dev dependencies",
       "matchDepTypes": [
-        "dependency-groups"
+        "dev"
       ],
       "matchUpdateTypes": [
         "minor",
         "patch"
       ],
+      "groupName": "dev dependencies",
       "automerge": true,
       "minimumReleaseAge": "3 days"
     },
