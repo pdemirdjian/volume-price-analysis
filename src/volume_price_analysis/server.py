@@ -356,8 +356,8 @@ async def handle_list_tools() -> list[Tool]:
             name="scan_candidates",
             description=(
                 "Scan the market to find the best options trading candidates. "
-                "Use 'universe' for market-wide scans: 'full_market' (~200 liquid stocks+ETFs), "
-                "'mega_caps' (30 largest), 'tech' (50 tech stocks), 'etfs' (40 ETFs). "
+                "Use 'universe' for market-wide scans: 'full_market' (~550 S&P 500 + ETFs), "
+                "'sp500' (~503 constituents via pytickersymbols), 'etfs' (50 ETFs). "
                 "Or provide custom 'symbols' list. Returns ranked results with composite scores."
             ),
             inputSchema={
@@ -374,10 +374,9 @@ async def handle_list_tools() -> list[Tool]:
                     "universe": {
                         "type": "string",
                         "description": (
-                            "Pre-built symbol universe: 'full_market' (~200), "
-                            "'mega_caps' (30), 'tech' (50), 'financials' (20), "
-                            "'healthcare' (20), 'consumer' (20), 'energy' (20), "
-                            "'etfs' (40). Default: 'full_market'. Ignored if symbols provided."
+                            "Pre-built symbol universe: 'full_market' (~550, S&P 500 + ETFs), "
+                            "'sp500' (~503 constituents), 'etfs' (50). "
+                            "Default: 'full_market'. Ignored if symbols provided."
                         ),
                         "default": "full_market",
                     },

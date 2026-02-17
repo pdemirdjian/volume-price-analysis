@@ -901,6 +901,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pytickersymbols"
+version = "1.17.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8d/3f/ac67f265a452d18a8bfcb5666c1054d10213fa8e6ead6c7afc020636dff5/pytickersymbols-1.17.8.tar.gz", hash = "sha256:2432906bb06c2c1962f741244734c1a20b2f7d47c00ceed49d36c4eb970dd2a1", size = 401459, upload-time = "2026-02-03T08:25:21.193Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5c/ec/54d27137af9a1adf215697f04237f19f4d94b57c07bca7db6f313b3a94e6/pytickersymbols-1.17.8-py3-none-any.whl", hash = "sha256:c90e535122b09e451f6ff5c50438882bc61f9589535aa8241c630f7ac0c1a5d6", size = 406592, upload-time = "2026-02-03T08:25:19.663Z" },
+]
+
+[[package]]
 name = "pytz"
 version = "2025.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1126,8 +1139,8 @@ name = "uvicorn"
 version = "0.40.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c3/d1/8f3c683c9561a4e6689dd3b1d345c815f10f86acd044ee1fb9a4dcd0b8c5/uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea", size = 81761, upload-time = "2025-12-21T14:16:22.45Z" }
 wheels = [
@@ -1136,7 +1149,7 @@ wheels = [
 
 [[package]]
 name = "volume-price-analysis-mcp"
-version = "2.0.0"
+version = "2.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -1146,6 +1159,7 @@ dependencies = [
     { name = "mcp" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pytickersymbols" },
     { name = "yfinance" },
 ]
 
@@ -1168,6 +1182,7 @@ requires-dist = [
     { name = "mcp", specifier = "==1.26.0" },
     { name = "numpy", specifier = "==2.4.2" },
     { name = "pandas", specifier = "==3.0.0" },
+    { name = "pytickersymbols", specifier = ">=1.17.0" },
     { name = "yfinance", specifier = "==1.1.0" },
 ]
 

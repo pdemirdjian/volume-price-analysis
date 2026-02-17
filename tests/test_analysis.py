@@ -14,49 +14,26 @@ class TestUniverses:
     """Test universe definitions."""
 
     def test_universes_has_expected_keys(self):
-        expected = [
-            "mega_caps",
-            "tech",
-            "financials",
-            "healthcare",
-            "consumer",
-            "energy",
-            "etfs",
-            "liquid",
-            "full_market",
-        ]
+        expected = ["sp500", "etfs", "full_market"]
         for key in expected:
             assert key in UNIVERSES, f"Missing universe: {key}"
 
     def test_full_market_is_superset(self):
-        """full_market should contain all liquid stocks plus ETFs."""
+        """full_market should contain all S&P 500 stocks plus ETFs."""
         full = set(UNIVERSES["full_market"])
-        liquid = set(UNIVERSES["liquid"])
+        sp500 = set(UNIVERSES["sp500"])
         etfs = set(UNIVERSES["etfs"])
-        assert liquid.issubset(full)
+        assert sp500.issubset(full)
         assert etfs.issubset(full)
-
-    def test_liquid_is_union_of_sectors(self):
-        """liquid should be the union of all sector universes."""
-        liquid = set(UNIVERSES["liquid"])
-        sectors = (
-            set(UNIVERSES["mega_caps"])
-            | set(UNIVERSES["tech"])
-            | set(UNIVERSES["financials"])
-            | set(UNIVERSES["healthcare"])
-            | set(UNIVERSES["consumer"])
-            | set(UNIVERSES["energy"])
-        )
-        assert liquid == sectors
 
     def test_no_empty_universes(self):
         for name, symbols in UNIVERSES.items():
             assert len(symbols) > 0, f"Universe '{name}' is empty"
 
     def test_full_market_has_expected_size(self):
-        """full_market should have roughly 200 symbols (deduplicated)."""
-        assert len(UNIVERSES["full_market"]) >= 150
-        assert len(UNIVERSES["full_market"]) <= 250
+        """full_market should have ~550 symbols (S&P 500 + ETFs, deduplicated)."""
+        assert len(UNIVERSES["full_market"]) >= 450
+        assert len(UNIVERSES["full_market"]) <= 600
 
 
 class TestRunOptionsAnalysis:
