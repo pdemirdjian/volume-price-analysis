@@ -20,4 +20,7 @@ WORKDIR /app
 COPY --from=builder /app/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Pre-create yfinance cache directory to avoid race conditions
+RUN mkdir -p /root/.cache/py-yfinance
+
 CMD ["morning-scheduler"]
