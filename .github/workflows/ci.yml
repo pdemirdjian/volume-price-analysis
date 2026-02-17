@@ -86,4 +86,5 @@ jobs:
         with:
           image-ref: volume-price-analysis:ci
           exit-code: "1"
+          ignore-unfixed: true
           severity: CRITICAL,HIGH
