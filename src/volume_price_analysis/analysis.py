@@ -64,7 +64,10 @@ def _build_sp500_symbols() -> list[str]:
                 symbols.append(yahoo_sym)
         return sorted(set(symbols))
     except Exception:
-        logger.warning("Failed to load S&P 500 symbols from pytickersymbols, using ETFs only")
+        logger.warning(
+            "Failed to load S&P 500 symbols from pytickersymbols, using ETFs only",
+            exc_info=True,
+        )
         return []
 
 
