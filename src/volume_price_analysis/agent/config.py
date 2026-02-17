@@ -77,4 +77,3 @@ class AgentConfig:
         if not self.email_to:
             errors.append("EMAIL_TO is required")
         return errors
-

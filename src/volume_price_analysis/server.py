@@ -463,13 +463,9 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "analyze_volume_trends":
             _validate_range(arguments.get("window", 20), "window", 1, 200)
         elif name == "options_analysis":
+            _validate_range(arguments.get("holding_period", 14), "holding_period", 1, 90)
             _validate_range(
-                arguments.get("holding_period", 14), "holding_period", 1, 90
-            )
-            _validate_range(
-                arguments.get(
-                    "days_to_expiration", arguments.get("holding_period", 14)
-                ),
+                arguments.get("days_to_expiration", arguments.get("holding_period", 14)),
                 "days_to_expiration",
                 1,
                 365,
