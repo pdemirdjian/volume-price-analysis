@@ -2,6 +2,7 @@ name: CI
 
 permissions:
   contents: read
+  security-events: write
 
 on:
   push:
@@ -38,6 +39,17 @@ jobs:
       - name: Run linting
         run: uv run ruff check src/ tests/
 
+      - name: Run linting (SARIF)
+        if: matrix.os == 'ubuntu-latest' && (success() || failure())
+        run: uv run ruff check --output-format sarif -o ruff.sarif src/ tests/ || true
+
+      - name: Upload Ruff SARIF
+        if: matrix.os == 'ubuntu-latest' && (success() || failure())
+        uses: github/codeql-action/upload-sarif@17ec405481c24be464d4b2c5727a82f700ddb189 # v3.32.3
+        with:
+          sarif_file: ruff.sarif
+          category: ruff
+
       - name: Run type checking
         run: uv run mypy src/
 
@@ -60,6 +72,21 @@ jobs:
 
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+
+      - name: Lint Dockerfile (SARIF)
+        if: success() || failure()
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          format: sarif
+          output-file: hadolint.sarif
+          no-fail: true
+
+      - name: Upload Hadolint SARIF
+        if: success() || failure()
+        uses: github/codeql-action/upload-sarif@17ec405481c24be464d4b2c5727a82f700ddb189 # v3.32.3
+        with:
+          sarif_file: hadolint.sarif
+          category: hadolint
 
   docker-build:
     needs: [test-gate, hadolint]
@@ -88,3 +115,20 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL,HIGH
+
+      - name: Scan image with Trivy (SARIF)
+        if: success() || failure()
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        with:
+          image-ref: volume-price-analysis:ci
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          format: sarif
+          output: trivy.sarif
+
+      - name: Upload Trivy SARIF
+        if: success() || failure()
+        uses: github/codeql-action/upload-sarif@17ec405481c24be464d4b2c5727a82f700ddb189 # v3.32.3
+        with:
+          sarif_file: trivy.sarif
+          category: trivy
