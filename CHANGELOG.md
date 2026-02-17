@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.1.1...v2.2.0) (2026-02-17)
+
+
+### Features
+
+* dynamic S&P 500 symbol universes via pytickersymbols ([#90](https://github.com/pdemirdjian/volume-price-analysis/issues/90)) ([a5bd295](https://github.com/pdemirdjian/volume-price-analysis/commit/a5bd29556bad9f77d51184aa4ee0ce803425bdfc))
+
 ## [2.1.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.1.0...v2.1.1) (2026-02-17)
 
 
