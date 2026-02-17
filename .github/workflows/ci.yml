@@ -49,6 +49,7 @@ jobs:
         if: ${{ contains(needs.test.result, 'failure') || contains(needs.test.result, 'cancelled') }}
 
   docker-build:
+    needs: test-gate
     runs-on: ubuntu-latest
 
     steps:
