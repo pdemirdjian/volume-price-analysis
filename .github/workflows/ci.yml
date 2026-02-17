@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload Ruff SARIF
         if: matrix.os == 'ubuntu-latest' && (success() || failure())
-        uses: github/codeql-action/upload-sarif@f5c2471be782132e47a6e6f9c725e56730d6e9a3 # v3.32.3
+        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4.32.3
         with:
           sarif_file: ruff.sarif
           category: ruff
@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload Hadolint SARIF
         if: success() || failure()
-        uses: github/codeql-action/upload-sarif@f5c2471be782132e47a6e6f9c725e56730d6e9a3 # v3.32.3
+        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4.32.3
         with:
           sarif_file: hadolint.sarif
           category: hadolint
@@ -129,7 +129,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: success() || failure()
-        uses: github/codeql-action/upload-sarif@f5c2471be782132e47a6e6f9c725e56730d6e9a3 # v3.32.3
+        uses: github/codeql-action/upload-sarif@9e907b5e64f6b83e7804b09294d44122997950d6 # v4.32.3
         with:
           sarif_file: trivy.sarif
           category: trivy
