@@ -62,7 +62,7 @@ jobs:
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
 
   docker-build:
-    needs: test-gate
+    needs: [test-gate, hadolint]
     runs-on: ubuntu-latest
 
     steps:
