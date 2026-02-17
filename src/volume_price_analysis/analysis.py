@@ -44,24 +44,28 @@ MIN_SQUEEZE_DETECTION_PERIODS = 5
 
 def _build_sp500_symbols() -> list[str]:
     """Build S&P 500 symbol list dynamically from pytickersymbols (bundled data, no network)."""
-    pts = PyTickerSymbols()
-    symbols: list[str] = []
-    for stock in pts.get_stocks_by_index("S&P 500"):
-        # Prefer the USD-denominated Yahoo symbol (US exchange)
-        yahoo_sym = None
-        for sym_info in stock.get("symbols", []):
-            if sym_info.get("yahoo") and sym_info.get("currency") == "USD":
-                yahoo_sym = sym_info["yahoo"]
-                break
-        # Fallback to first available Yahoo symbol
-        if not yahoo_sym:
+    try:
+        pts = PyTickerSymbols()
+        symbols: list[str] = []
+        for stock in pts.get_stocks_by_index("S&P 500"):
+            # Prefer the USD-denominated Yahoo symbol (US exchange)
+            yahoo_sym = None
             for sym_info in stock.get("symbols", []):
-                if sym_info.get("yahoo"):
+                if sym_info.get("yahoo") and sym_info.get("currency") == "USD":
                     yahoo_sym = sym_info["yahoo"]
                     break
-        if yahoo_sym:
-            symbols.append(yahoo_sym)
-    return sorted(set(symbols))
+            # Fallback to first available Yahoo symbol
+            if not yahoo_sym:
+                for sym_info in stock.get("symbols", []):
+                    if sym_info.get("yahoo"):
+                        yahoo_sym = sym_info["yahoo"]
+                        break
+            if yahoo_sym:
+                symbols.append(yahoo_sym)
+        return sorted(set(symbols))
+    except Exception:
+        logger.warning("Failed to load S&P 500 symbols from pytickersymbols, using ETFs only")
+        return []
 
 
 _ETF_LIST: list[str] = [
