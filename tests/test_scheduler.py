@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import signal
 from datetime import datetime, time, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -242,3 +243,50 @@ class TestRunScheduler:
                 await run_scheduler(time(8, 30), ET)
 
         assert "Scheduler stopped" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unix_uses_add_signal_handler(self):
+        """On Unix, loop.add_signal_handler is called for SIGTERM and SIGINT."""
+        mock_loop = MagicMock()
+        with (
+            patch(
+                "volume_price_analysis.agent.scheduler.sys"
+            ) as mock_sys,
+            patch(
+                "volume_price_analysis.agent.scheduler.asyncio.get_running_loop",
+                return_value=mock_loop,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler._run_loop",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_sys.platform = "linux"
+            await run_scheduler(time(8, 30), ET)
+
+        assert mock_loop.add_signal_handler.call_count == 2
+        registered_signals = {
+            call.args[0] for call in mock_loop.add_signal_handler.call_args_list
+        }
+        assert registered_signals == {signal.SIGTERM, signal.SIGINT}
+
+    @pytest.mark.asyncio
+    async def test_windows_uses_signal_signal(self):
+        """On Windows, signal.signal is called with SIGINT."""
+        with (
+            patch(
+                "volume_price_analysis.agent.scheduler.sys"
+            ) as mock_sys,
+            patch(
+                "volume_price_analysis.agent.scheduler.signal.signal"
+            ) as mock_signal,
+            patch(
+                "volume_price_analysis.agent.scheduler._run_loop",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_sys.platform = "win32"
+            await run_scheduler(time(8, 30), ET)
+
+        mock_signal.assert_called_once()
+        assert mock_signal.call_args.args[0] == signal.SIGINT

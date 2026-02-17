@@ -100,7 +100,14 @@ instructions.
 ```bash
 # Install UV (macOS/Linux)
 curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
+```powershell
+# Install UV (Windows)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+```bash
 # Navigate to project
 cd volume-price-analysis
 
@@ -442,6 +449,14 @@ trading decisions.
 - Yahoo Finance API rate limits may apply
 - Not suitable for high-frequency or real-time trading
 - Historical data availability varies by symbol
+
+## Platform Support
+
+- Supported on **macOS**, **Windows**, and **Linux**
+- Docker deployment uses Linux containers (works on all platforms via Docker
+  Desktop)
+- On Windows, the scheduler handles `SIGINT` (Ctrl+C) only; `SIGTERM` is not
+  available
 
 ## License
 
