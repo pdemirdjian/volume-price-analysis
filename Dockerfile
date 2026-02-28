@@ -20,8 +20,8 @@ WORKDIR /app
 COPY --from=builder /app/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Upgrade base-image pip to fix CVE-2026-1703 and pre-create yfinance cache directory
-RUN /usr/local/bin/python -m pip install --no-cache-dir --upgrade "pip==26.0.*" \
+# Remove system pip (unused — uv manages deps) to fix CVE-2026-1703 and reduce attack surface
+RUN /usr/local/bin/python -m pip uninstall -y pip \
     && mkdir -p /root/.cache/py-yfinance
 
 CMD ["morning-scheduler"]
