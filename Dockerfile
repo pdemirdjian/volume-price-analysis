@@ -20,8 +20,8 @@ WORKDIR /app
 COPY --from=builder /app/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Upgrade system pip to fix CVE-2026-1703 and pre-create yfinance cache directory
-RUN pip install --no-cache-dir --upgrade "pip>=26.0" \
+# Upgrade base-image pip to fix CVE-2026-1703 and pre-create yfinance cache directory
+RUN /usr/local/bin/python -m pip install --no-cache-dir --upgrade "pip==26.0.*" \
     && mkdir -p /root/.cache/py-yfinance
 
 CMD ["morning-scheduler"]
