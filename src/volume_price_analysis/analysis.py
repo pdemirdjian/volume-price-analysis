@@ -573,7 +573,9 @@ def run_options_analysis(
             },
             "vpt": {
                 "value": float(vpt.iloc[-1]),
-                "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-3] else "decreasing",
+                "trend": (
+                    "increasing" if len(vpt) >= 4 and vpt.iloc[-1] > vpt.iloc[-3] else "decreasing"
+                ),
                 "volume_conviction": "strong" if vpt_conviction else "weak",
             },
             "mfi": {

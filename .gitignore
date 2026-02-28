@@ -72,5 +72,8 @@ pip-delete-this-directory.txt
 *.local
 
 # Tool-specific
-.claude/
+.claude/*
+!.claude/settings.json
+!.claude/agents/
+!.claude/skills/
 .serena/

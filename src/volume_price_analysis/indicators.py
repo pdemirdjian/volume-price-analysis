@@ -276,8 +276,8 @@ def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.Series:
 
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
 
-    # Calculate ATR as moving average of True Range
-    atr = true_range.rolling(window=period).mean()
+    # Calculate ATR using Wilder's smoothing
+    atr = true_range.ewm(alpha=1 / period, adjust=False).mean()
 
     return atr
 
@@ -660,13 +660,13 @@ def calculate_adx(data: pd.DataFrame, period: int = 14) -> dict[str, Any]:
     minus_dm = pd.Series(minus_dm, index=data.index)
 
     # Smoothed TR, +DM, -DM using Wilder's smoothing
-    atr = tr.rolling(window=period).mean()
-    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+    atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr)
+    minus_di = 100 * (minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr)
 
     # Calculate DX and ADX
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = dx.rolling(window=period).mean()
+    adx = dx.ewm(alpha=1 / period, adjust=False).mean()
 
     # Current values - extract as scalars
     adx_val = adx.iloc[-1]
@@ -736,8 +736,8 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     """
     delta = data["Close"].diff()
 
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1 / period, adjust=False).mean()
 
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
@@ -1130,6 +1130,7 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         else:
             score_breakdown["obv_momentum"] = -1
     else:
+        obv_momentum = False
         score_breakdown["obv_momentum"] = 0
 
     # 4. A/D Line momentum (+1/-1)
