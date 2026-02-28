@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.1...v2.3.2) (2026-02-28)
+
+
+### Bug Fixes
+
+* address Copilot review feedback on Wilder's smoothing and docs ([#110](https://github.com/pdemirdjian/volume-price-analysis/issues/110)) ([b69d893](https://github.com/pdemirdjian/volume-price-analysis/commit/b69d8939bcd2a4cb7c3ef03df49047853912a8e8))
+* correct Wilder's smoothing and crash bugs in indicators ([#108](https://github.com/pdemirdjian/volume-price-analysis/issues/108)) ([d1b43ff](https://github.com/pdemirdjian/volume-price-analysis/commit/d1b43ffd382cdb42df7978922b3e8915227df072))
+
 ## [2.3.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.0...v2.3.1) (2026-02-24)
 
 
