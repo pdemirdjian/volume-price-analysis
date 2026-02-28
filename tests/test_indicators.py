@@ -445,7 +445,7 @@ class TestATR:
     def test_initial_nans(self, sample_stock_data):
         """Test ATR has NaN values before the seed period."""
         atr = calculate_atr(sample_stock_data, period=14)
-        # First true range value is NaN (shift), so the first value is NaN
+        # ATR is NaN before the Wilder seed at index period-1
         assert pd.isna(atr.iloc[0])
 
     def test_atr_reflects_range(self, sample_stock_data):
@@ -476,9 +476,9 @@ class TestATR:
         )
         atr = calculate_atr(data, period=5)
         valid = atr.dropna()
-        # True range = max(4, 2, 2) = 4 for rows after the first
-        # (first row has NaN from shift)
-        # SMA seed of 5 values of 4.0 = 4.0, recursive stays at 4.0
+        # True range = max(4, 2, 2) = 4.0 for all rows in this constant dataset
+        # ATR is NaN before the Wilder seed at index period-1 (4 for period=5)
+        # SMA seed of the first 5 true range values (all 4.0) = 4.0; recursive stays at 4.0
         np.testing.assert_allclose(valid.values, 4.0, atol=0.01)
 
 
@@ -1392,17 +1392,60 @@ class TestRSI:
         assert 40 < rsi_last < 60
 
     def test_rsi_uses_wilder_smoothing(self):
-        """Test that RSI uses Wilder's smoothing (not simple rolling)."""
-        data = _make_oscillating_data(n=60)
-        rsi = calculate_rsi(data, period=14)
+        """Test that RSI uses Wilder's smoothing by verifying against manual calculation."""
+        period = 14
+        # Deterministic price data with both gains and losses
+        closes = []
+        price = 100.0
+        for i in range(period + 5):
+            if i % 2 == 0:
+                price += 1.0
+            else:
+                price -= 0.5
+            closes.append(price)
 
-        # Wilder's smoothing produces the first valid value after `period` non-NaN
-        # gains/losses. The diff() creates NaN at index 0, so first valid RSI
-        # should appear around index `period`.
-        valid = rsi.dropna()
-        assert len(valid) > 0
-        first_valid_idx = rsi.first_valid_index()
-        assert first_valid_idx is not None
+        dates = pd.date_range(start="2024-01-01", periods=len(closes), freq="D")
+        data = pd.DataFrame(
+            {
+                "High": [c + 0.5 for c in closes],
+                "Low": [c - 0.5 for c in closes],
+                "Close": closes,
+                "Volume": [1_000_000] * len(closes),
+            },
+            index=dates,
+        )
+
+        rsi = calculate_rsi(data, period=period)
+
+        # First valid RSI should be at positional index `period` (diff creates NaN at 0,
+        # so first `period` non-NaN deltas are indices 1..period, seed at index period)
+        first_valid_pos = rsi.first_valid_index()
+        assert rsi.index.get_loc(first_valid_pos) == period
+
+        # Verify RSI value against manual Wilder calculation
+        close = data["Close"]
+        delta = close.diff()
+        gains = delta.clip(lower=0.0)
+        losses = (-delta).clip(lower=0.0)
+
+        # SMA seed over first `period` non-NaN deltas (indices 1..period)
+        avg_gain = gains.iloc[1 : period + 1].mean()
+        avg_loss = losses.iloc[1 : period + 1].mean()
+
+        if avg_loss == 0:
+            expected_rsi = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            expected_rsi = 100.0 - 100.0 / (1.0 + rs)
+
+        np.testing.assert_allclose(rsi.iloc[period], expected_rsi, atol=1e-6)
+
+        # Verify one step of Wilder's recursion
+        avg_gain = (avg_gain * (period - 1) + gains.iloc[period + 1]) / period
+        avg_loss = (avg_loss * (period - 1) + losses.iloc[period + 1]) / period
+        rs = avg_gain / avg_loss
+        expected_next = 100.0 - 100.0 / (1.0 + rs)
+        np.testing.assert_allclose(rsi.iloc[period + 1], expected_next, atol=1e-6)
 
 
 class TestRSIDivergence:
