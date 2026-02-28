@@ -6,6 +6,35 @@ import numpy as np
 import pandas as pd
 
 
+def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
+    """Apply Wilder's smoothing: SMA seed over first `period` non-NaN values, then recursive.
+
+    This matches the standard Wilder smoothing used by TradingView, ThinkorSwim, etc.
+    Formula: smoothed[t] = (smoothed[t-1] * (period - 1) + value[t]) / period
+
+    Handles leading NaN values correctly (e.g., when ADX double-smooths DX which
+    already has NaN from the first smoothing pass).
+    """
+    values = series.to_numpy(dtype=float)
+    arr = np.full(len(values), np.nan)
+
+    # Find the first `period` non-NaN values to seed the SMA
+    valid_indices = np.where(~np.isnan(values))[0]
+    if len(valid_indices) < period:
+        return pd.Series(arr, index=series.index)
+
+    seed_end = valid_indices[period - 1]
+    arr[seed_end] = np.mean(values[valid_indices[:period]])
+
+    # Apply Wilder's recursive smoothing from the next position onward
+    for i in range(seed_end + 1, len(values)):
+        if np.isnan(values[i]):
+            continue
+        arr[i] = (arr[i - 1] * (period - 1) + values[i]) / period
+
+    return pd.Series(arr, index=series.index)
+
+
 def calculate_obv(data: pd.DataFrame) -> pd.Series:
     """
     Calculate On-Balance Volume (OBV).
@@ -276,8 +305,8 @@ def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.Series:
 
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
 
-    # Calculate ATR using Wilder's smoothing
-    atr = true_range.ewm(alpha=1 / period, adjust=False).mean()
+    # Calculate ATR using Wilder's smoothing (SMA-seeded, then recursive)
+    atr = _wilder_smooth(true_range, period)
 
     return atr
 
@@ -659,14 +688,16 @@ def calculate_adx(data: pd.DataFrame, period: int = 14) -> dict[str, Any]:
     plus_dm = pd.Series(plus_dm, index=data.index)
     minus_dm = pd.Series(minus_dm, index=data.index)
 
-    # Smoothed TR, +DM, -DM using Wilder's smoothing
-    atr = tr.ewm(alpha=1 / period, adjust=False).mean()
-    plus_di = 100 * (plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr)
-    minus_di = 100 * (minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr)
+    # Smoothed TR, +DM, -DM using Wilder's smoothing (SMA-seeded, then recursive)
+    smoothed_tr = _wilder_smooth(tr, period)
+    smoothed_plus_dm = _wilder_smooth(plus_dm, period)
+    smoothed_minus_dm = _wilder_smooth(minus_dm, period)
+    plus_di = 100 * (smoothed_plus_dm / smoothed_tr)
+    minus_di = 100 * (smoothed_minus_dm / smoothed_tr)
 
     # Calculate DX and ADX
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = dx.ewm(alpha=1 / period, adjust=False).mean()
+    adx = _wilder_smooth(dx, period)
 
     # Current values - extract as scalars
     adx_val = adx.iloc[-1]
@@ -736,8 +767,8 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     """
     delta = data["Close"].diff()
 
-    gain = (delta.where(delta > 0, 0)).ewm(alpha=1 / period, adjust=False).mean()
-    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1 / period, adjust=False).mean()
+    gain = _wilder_smooth(delta.clip(lower=0), period)
+    loss = _wilder_smooth((-delta).clip(lower=0), period)
 
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
@@ -767,6 +798,9 @@ def detect_rsi_divergence(data: pd.DataFrame, rsi: pd.Series, lookback: int = 10
             "divergence_type": "none",
             "signal": "neutral",
             "interpretation": "Insufficient data for divergence detection",
+            "current_rsi": float(rsi.iloc[-1])
+            if len(rsi) > 0 and not pd.isna(rsi.iloc[-1])
+            else 50.0,
         }
 
     recent_data = data.iloc[-lookback:]

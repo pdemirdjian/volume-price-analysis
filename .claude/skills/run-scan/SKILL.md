@@ -21,7 +21,8 @@ uv run python -c "
 import asyncio
 from volume_price_analysis.analysis import run_scan
 results = asyncio.run(run_scan())
-for r in results[:10]:
+candidates = results.get('top_bullish', []) + results.get('top_bearish', [])
+for r in candidates[:10]:
     print(f\"{r['symbol']:6s} score={r['composite_score']:.2f}\")
 "
 ```
