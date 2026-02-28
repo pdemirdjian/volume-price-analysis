@@ -83,10 +83,10 @@ The server exposes the following MCP tools:
 
 Defined in `pyproject.toml [project.scripts]`:
 
-- **`volume-price-analysis`** → `server:main` — Run the MCP server
-- **`morning-briefing`** → `agent.morning_agent:main` — Run a single morning
+- **`volume-price-analysis`** → `volume_price_analysis.server:main` — Run the MCP server
+- **`morning-briefing`** → `volume_price_analysis.agent.morning_agent:main` — Run a single morning
   briefing
-- **`morning-scheduler`** → `agent.scheduler:main` — Run the asyncio scheduler
+- **`morning-scheduler`** → `volume_price_analysis.agent.scheduler:main` — Run the asyncio scheduler
   (used in Docker)
 
 ## Development Commands
