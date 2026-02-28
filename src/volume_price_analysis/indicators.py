@@ -798,6 +798,9 @@ def detect_rsi_divergence(data: pd.DataFrame, rsi: pd.Series, lookback: int = 10
             "divergence_type": "none",
             "signal": "neutral",
             "interpretation": "Insufficient data for divergence detection",
+            "current_rsi": float(rsi.iloc[-1])
+            if len(rsi) > 0 and not pd.isna(rsi.iloc[-1])
+            else 50.0,
         }
 
     recent_data = data.iloc[-lookback:]

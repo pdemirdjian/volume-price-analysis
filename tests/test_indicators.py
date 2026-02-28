@@ -1486,6 +1486,8 @@ class TestRSIDivergence:
         assert result["bearish_divergence"] is False
         assert result["divergence_type"] == "none"
         assert "Insufficient" in result["interpretation"]
+        # Early-return path should include the same keys as the normal path
+        assert "current_rsi" in result
 
     def test_no_divergence_in_smooth_uptrend(self):
         """Test that a smooth uptrend does not produce bullish divergence."""
