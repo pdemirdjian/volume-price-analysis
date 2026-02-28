@@ -7,25 +7,32 @@ import pandas as pd
 
 
 def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
-    """Apply Wilder's smoothing: SMA seed over first `period` values, then recursive update.
+    """Apply Wilder's smoothing: SMA seed over first `period` non-NaN values, then recursive.
 
     This matches the standard Wilder smoothing used by TradingView, ThinkorSwim, etc.
     Formula: smoothed[t] = (smoothed[t-1] * (period - 1) + value[t]) / period
+
+    Handles leading NaN values correctly (e.g., when ADX double-smooths DX which
+    already has NaN from the first smoothing pass).
     """
-    result = pd.Series(np.nan, index=series.index)
-    values = series.to_numpy()
+    values = series.to_numpy(dtype=float)
+    arr = np.full(len(values), np.nan)
 
-    if len(values) < period:
-        return result
+    # Find the first `period` non-NaN values to seed the SMA
+    valid_indices = np.where(~np.isnan(values))[0]
+    if len(valid_indices) < period:
+        return pd.Series(arr, index=series.index)
 
-    # Seed with SMA of first `period` values
-    result.iloc[period - 1] = np.nanmean(values[:period])
+    seed_end = valid_indices[period - 1]
+    arr[seed_end] = np.mean(values[valid_indices[:period]])
 
-    # Apply Wilder's recursive smoothing
-    for i in range(period, len(values)):
-        result.iloc[i] = (result.iloc[i - 1] * (period - 1) + values[i]) / period
+    # Apply Wilder's recursive smoothing from the next position onward
+    for i in range(seed_end + 1, len(values)):
+        if np.isnan(values[i]):
+            continue
+        arr[i] = (arr[i - 1] * (period - 1) + values[i]) / period
 
-    return result
+    return pd.Series(arr, index=series.index)
 
 
 def calculate_obv(data: pd.DataFrame) -> pd.Series:
