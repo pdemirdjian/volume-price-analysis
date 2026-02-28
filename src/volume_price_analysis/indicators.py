@@ -767,8 +767,8 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     """
     delta = data["Close"].diff()
 
-    gain = _wilder_smooth(delta.where(delta > 0, 0), period)
-    loss = _wilder_smooth(-delta.where(delta < 0, 0), period)
+    gain = _wilder_smooth(delta.clip(lower=0), period)
+    loss = _wilder_smooth((-delta).clip(lower=0), period)
 
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
