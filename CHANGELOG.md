@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.2...v2.3.3) (2026-02-28)
+
+
+### Bug Fixes
+
+* remove vulnerable system pip from Docker runtime image ([#111](https://github.com/pdemirdjian/volume-price-analysis/issues/111)) ([8518569](https://github.com/pdemirdjian/volume-price-analysis/commit/85185690ede05b1b4bb2aa5e0dca0a72dfa56e58))
+
 ## [2.3.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.1...v2.3.2) (2026-02-28)
 
 
