@@ -13,11 +13,13 @@ Finance (yfinance) and exposes analysis capabilities to AI assistants.
 
 - **Language**: Python 3.14+
 - **Core Libraries**:
-  - `mcp`: Model Context Protocol SDK (>=1.25.0)
-  - `yfinance`: Stock data fetching (>=1.0)
-  - `pandas` (>=2.3.3) & `numpy` (>=2.4.1)
+  - `mcp`: Model Context Protocol SDK (1.26.0)
+  - `yfinance`: Stock data fetching (1.2.0)
+  - `pandas` (3.0.1) & `numpy` (2.4.2)
   - `anthropic` & `google-genai`: AI providers for morning briefing
   - `markdown`: Email HTML rendering
+  - `holidays`: NYSE market holiday detection
+  - `pytickersymbols`: Stock symbol universe (~200 symbols)
 - **Package Management**: `uv` (recommended) or `pip`
 - **Deployment**: Docker container with Python asyncio scheduler, CI/CD via
   GitHub Actions to ghcr.io
@@ -77,6 +79,16 @@ The server exposes the following MCP tools:
 - **`scan_candidates`**: Scan the market to find the best options trading
   candidates based on composite scores.
 
+## CLI Entry Points
+
+Defined in `pyproject.toml [project.scripts]`:
+
+- **`volume-price-analysis`** → `server:main` — Run the MCP server
+- **`morning-briefing`** → `agent.morning_agent:main` — Run a single morning
+  briefing
+- **`morning-scheduler`** → `agent.scheduler:main` — Run the asyncio scheduler
+  (used in Docker)
+
 ## Development Commands
 
 ```bash
@@ -84,29 +96,69 @@ The server exposes the following MCP tools:
 uv sync --all-extras --dev
 
 # Run tests
-pytest
+uv run pytest
 
 # Run single test file
-pytest tests/test_indicators.py
+uv run pytest tests/test_indicators.py
 
 # Run single test
-pytest tests/test_indicators.py::test_calculate_obv
+uv run pytest tests/test_indicators.py::test_calculate_obv
 
-# Run with coverage
-pytest --cov=src/volume_price_analysis --cov-report=term-missing
+# Run with coverage (also the default via pyproject.toml addopts)
+uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing
 
 # Format code
-ruff format src/ tests/
+uv run ruff format src/ tests/
 
 # Lint (with auto-fix)
-ruff check --fix src/ tests/
+uv run ruff check --fix src/ tests/
 
 # Type check
-mypy src/
+uv run mypy src/
 
 # Run the MCP server directly
-python -m volume_price_analysis.server
+uv run python -m volume_price_analysis.server
 ```
+
+### Docker
+
+```bash
+# Build
+docker build -t volume-price-analysis .
+
+# Run (requires env vars — see Environment Variables below)
+docker run --env-file .env volume-price-analysis
+```
+
+## Environment Variables
+
+Required for the morning briefing agent (not needed for MCP server). See
+`agent/config.py` `AgentConfig.from_env()` for all options.
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `AI_PROVIDER` | No | `"gemini"` (default) or `"anthropic"` |
+| `AI_PROVIDER_API_KEY` | Yes | API key for the chosen AI provider |
+| `AI_MODEL` | No | Override default model (empty = provider default) |
+| `EMAIL_FROM` | Yes | Gmail address for sending briefings |
+| `EMAIL_PASSWORD` | Yes | Gmail app password |
+| `EMAIL_TO` | Yes | Comma-separated recipient addresses |
+| `EMAIL_SMTP_HOST` | No | SMTP server (default: `smtp.gmail.com`) |
+| `EMAIL_SMTP_PORT` | No | SMTP port (default: `587`) |
+| `SCAN_UNIVERSE` | No | Symbol universe (default: `full_market`) |
+| `MAX_DEEP_ANALYSIS` | No | Max candidates for deep analysis (default: `5`) |
+
+Store these in `.env` (gitignored) or pass via Docker `--env-file`.
+
+## Code Style
+
+Configured in `pyproject.toml [tool.ruff]`:
+
+- **Line length**: 100
+- **Quote style**: double quotes
+- **Indent style**: spaces
+- **Lint rules**: pycodestyle, pyflakes, isort, bugbear, comprehensions,
+  pyupgrade, pep8-naming, flake8-async
 
 ### Adding New Indicators
 
