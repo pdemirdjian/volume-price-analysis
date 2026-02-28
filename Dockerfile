@@ -20,10 +20,8 @@ WORKDIR /app
 COPY --from=builder /app/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Upgrade system pip to fix CVE-2026-1703 (path traversal in wheel install)
-RUN pip install --no-cache-dir --upgrade "pip>=26.0"
-
-# Pre-create yfinance cache directory to avoid race conditions
-RUN mkdir -p /root/.cache/py-yfinance
+# Upgrade system pip to fix CVE-2026-1703 and pre-create yfinance cache directory
+RUN pip install --no-cache-dir --upgrade "pip>=26.0" \
+    && mkdir -p /root/.cache/py-yfinance
 
 CMD ["morning-scheduler"]
