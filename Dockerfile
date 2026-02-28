@@ -1,9 +1,9 @@
 # ── Stage 1: build ──
-FROM python:3.14-slim@sha256:486b8092bfb12997e10d4920897213a06563449c951c5506c2a2cfaf591c599f AS builder
+FROM python:3.14-slim@sha256:6a27522252aef8432841f224d9baaa6e9fce07b07584154fa0b9a96603af7456 AS builder
 
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:0.10.5@sha256:476133fa2aaddb4cbee003e3dc79a88d327a5dc7cb3179b7f02cabd8fdfbcc6e /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.7@sha256:edd1fd89f3e5b005814cc8f777610445d7b7e3ed05361f9ddfae67bebfe8456a /uv /usr/local/bin/uv
 
 # Install dependencies first (layer caching)
 COPY pyproject.toml uv.lock README.md ./
@@ -14,7 +14,7 @@ COPY src/ src/
 RUN uv sync --no-dev --frozen --no-editable
 
 # ── Stage 2: runtime ──
-FROM python:3.14-slim@sha256:486b8092bfb12997e10d4920897213a06563449c951c5506c2a2cfaf591c599f
+FROM python:3.14-slim@sha256:6a27522252aef8432841f224d9baaa6e9fce07b07584154fa0b9a96603af7456
 
 WORKDIR /app
 COPY --from=builder /app/.venv .venv
