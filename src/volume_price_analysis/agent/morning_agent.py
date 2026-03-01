@@ -110,7 +110,11 @@ async def run_morning_briefing(config: AgentConfig, dry_run: bool = False, no_ai
     # Step 4: Deliver
     elapsed_total = time.monotonic() - start_time
     stats_line = (
-        f"\n\n---\n*Generated in {elapsed_total:.1f}s | "
+        f"\n\n---\n"
+        f"**14-day holding period** - Indicators, expected moves, and strategies "
+        f"are calibrated for approx. 14 DTE options. Shorter-duration plays (0-5 DTE) "
+        f"may need different setups.\n\n"
+        f"*Generated in {elapsed_total:.1f}s | "
         f"{total_candidates} candidates scanned | "
         f"{len(deep_analyses)} deep analyses*"
     )
