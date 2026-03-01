@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.3...v2.3.4) (2026-03-01)
+
+
+### Bug Fixes
+
+* increase AI max_tokens to prevent briefing truncation and add 14-day holding period context ([8812cfd](https://github.com/pdemirdjian/volume-price-analysis/commit/8812cfd25e79c7c09e10bf4a8da76cf4fb50568c))
+* prevent briefing truncation and add 14-day holding period context ([#114](https://github.com/pdemirdjian/volume-price-analysis/issues/114)) ([4738547](https://github.com/pdemirdjian/volume-price-analysis/commit/47385477eb178b3aae04b4e1e44a3ad1e43af796))
+
 ## [2.3.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.2...v2.3.3) (2026-02-28)
 
 
