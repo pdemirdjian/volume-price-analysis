@@ -41,7 +41,7 @@ DEFAULT_MODELS = {
 
 _TRUNCATION_WARNING = (
     "\n\n---\n"
-    "**⚠️ This briefing was cut short due to output length limits. "
+    "**WARNING: This briefing was cut short due to output length limits. "
     "Some candidates or sections may be missing.**"
 )
 
@@ -147,7 +147,8 @@ def _generate_gemini(user_content: str, model: str, api_key: str) -> str:
 
     candidates = response.candidates
     finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
-    if finish_reason and finish_reason.name == "MAX_TOKENS":
+    finish_reason_value = getattr(finish_reason, "name", finish_reason)
+    if finish_reason_value and str(finish_reason_value) == "MAX_TOKENS":
         logger.warning("Briefing was TRUNCATED — output hit max_output_tokens limit")
         briefing += _TRUNCATION_WARNING
 

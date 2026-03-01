@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from volume_price_analysis.agent.ai_client import generate_briefing
+from volume_price_analysis.agent.ai_client import _TRUNCATION_WARNING, generate_briefing
 from volume_price_analysis.agent.config import AgentConfig
 from volume_price_analysis.agent.email_sender import send_briefing_email
 from volume_price_analysis.agent.morning_agent import (
@@ -265,6 +265,47 @@ class TestGenerateBriefingAnthropic:
         assert "key" in user_msg
 
 
+    def test_appends_warning_on_truncation(self, mocker):
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = [MagicMock(text="# Truncated briefing")]
+        mock_message.usage.input_tokens = 100
+        mock_message.usage.output_tokens = 16384
+        mock_message.stop_reason = "max_tokens"
+        mock_client.messages.create.return_value = mock_message
+
+        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+
+        result = generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider="anthropic",
+            api_key="sk-test",
+        )
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_no_warning_on_normal_completion(self, mocker):
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = [MagicMock(text="# Full briefing")]
+        mock_message.usage.input_tokens = 100
+        mock_message.usage.output_tokens = 500
+        mock_message.stop_reason = "end_turn"
+        mock_client.messages.create.return_value = mock_message
+
+        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+
+        result = generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider="anthropic",
+            api_key="sk-test",
+        )
+
+        assert _TRUNCATION_WARNING not in result
+
+
 class TestGenerateBriefingGemini:
     """Test Gemini API integration (mocked)."""
 
@@ -303,6 +344,72 @@ class TestGenerateBriefingGemini:
 
         call_args = mock_client.models.generate_content.call_args
         assert call_args.kwargs["model"] == "gemini-2.5-flash"
+
+
+    def test_appends_warning_on_truncation(self, mocker):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "# Truncated briefing"
+        mock_finish_reason = MagicMock()
+        mock_finish_reason.name = "MAX_TOKENS"
+        mock_candidate = MagicMock()
+        mock_candidate.finish_reason = mock_finish_reason
+        mock_response.candidates = [mock_candidate]
+        mock_client.models.generate_content.return_value = mock_response
+
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        result = generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider="gemini",
+            api_key="test-key",
+        )
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_no_warning_on_normal_completion(self, mocker):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "# Full briefing"
+        mock_finish_reason = MagicMock()
+        mock_finish_reason.name = "STOP"
+        mock_candidate = MagicMock()
+        mock_candidate.finish_reason = mock_finish_reason
+        mock_response.candidates = [mock_candidate]
+        mock_client.models.generate_content.return_value = mock_response
+
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        result = generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider="gemini",
+            api_key="test-key",
+        )
+
+        assert _TRUNCATION_WARNING not in result
+
+    def test_truncation_detection_with_string_finish_reason(self, mocker):
+        """Handles SDK versions where finish_reason is a plain string."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "# Truncated briefing"
+        mock_candidate = MagicMock(spec=[])  # no attributes by default
+        mock_candidate.finish_reason = "MAX_TOKENS"
+        mock_response.candidates = [mock_candidate]
+        mock_client.models.generate_content.return_value = mock_response
+
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        result = generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider="gemini",
+            api_key="test-key",
+        )
+
+        assert _TRUNCATION_WARNING in result
 
 
 class TestGenerateBriefingInvalidProvider:
