@@ -16,12 +16,18 @@ You are a professional options trading analyst writing a morning briefing email.
 Your audience is an experienced options trader who wants actionable intelligence,
 not generic advice. Be specific about symbols, scores, levels, and strategies.
 
+IMPORTANT: All analysis is optimized for a **14-day holding period**. Indicator
+periods, expected moves, and strategy suggestions are calibrated for this
+timeframe. Make this clear in your strategy suggestions (e.g., "14-day calls"
+not just "calls"). Readers doing shorter-duration plays (e.g., 0-5 DTE) should
+note that signals and levels may not apply to their timeframe.
+
 Format the briefing in markdown with clear sections:
 1. **Executive Summary** - 2-3 sentence overview of today's market setup
 2. **Top Picks** - For each high-conviction candidate, include:
    - Symbol, price, composite score, and direction (bullish/bearish)
    - Key levels (support/resistance from volume profile)
-   - Suggested strategy (calls, puts, spreads, etc.)
+   - Suggested strategy (calls, puts, spreads, etc.) with 14-day DTE framing
    - Risk factors to watch
 3. **Market Context** - Overall scan statistics, sector themes
 4. **Risk Warnings** - Any divergences, extreme readings, or caution flags
@@ -32,6 +38,12 @@ DEFAULT_MODELS = {
     "gemini": "gemini-2.5-flash",
     "anthropic": "claude-sonnet-4-5-20250929",
 }
+
+_TRUNCATION_WARNING = (
+    "\n\n---\n"
+    "**⚠️ This briefing was cut short due to output length limits. "
+    "Some candidates or sections may be missing.**"
+)
 
 
 def generate_briefing(
@@ -94,7 +106,7 @@ def _generate_anthropic(user_content: str, model: str, api_key: str) -> str:
 
     message = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=16384,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_content}],
     )
@@ -106,6 +118,9 @@ def _generate_anthropic(user_content: str, model: str, api_key: str) -> str:
         message.usage.input_tokens,
         message.usage.output_tokens,
     )
+    if message.stop_reason == "max_tokens":
+        logger.warning("Briefing was TRUNCATED — output hit max_tokens limit")
+        briefing += _TRUNCATION_WARNING
 
     return briefing
 
@@ -123,11 +138,17 @@ def _generate_gemini(user_content: str, model: str, api_key: str) -> str:
         contents=user_content,
         config={
             "system_instruction": SYSTEM_PROMPT,
-            "max_output_tokens": 4096,
+            "max_output_tokens": 16384,
         },
     )
 
     briefing = response.text or ""
     logger.info("Briefing generated: %d chars", len(briefing))
+
+    candidates = response.candidates
+    finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+    if finish_reason and finish_reason.name == "MAX_TOKENS":
+        logger.warning("Briefing was TRUNCATED — output hit max_output_tokens limit")
+        briefing += _TRUNCATION_WARNING
 
     return briefing
