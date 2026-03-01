@@ -264,7 +264,6 @@ class TestGenerateBriefingAnthropic:
         assert "AAPL" in user_msg
         assert "key" in user_msg
 
-
     def test_appends_warning_on_truncation(self, mocker):
         mock_client = MagicMock()
         mock_message = MagicMock()
@@ -344,7 +343,6 @@ class TestGenerateBriefingGemini:
 
         call_args = mock_client.models.generate_content.call_args
         assert call_args.kwargs["model"] == "gemini-2.5-flash"
-
 
     def test_appends_warning_on_truncation(self, mocker):
         mock_client = MagicMock()
