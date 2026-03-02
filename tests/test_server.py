@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis.server import (
+    _json_response,
+    _sanitize_for_json,
     _validate_range,
     generate_summary,
     handle_call_tool,
@@ -696,6 +698,35 @@ class TestScanCandidates:
         # Error should be captured
         assert data["errors"] is not None
         assert any(e["symbol"] == "INVALID" for e in data["errors"])
+
+
+class TestJsonSanitization:
+    """Tests for NaN/Infinity JSON sanitization."""
+
+    def test_sanitize_replaces_nan_with_none(self):
+        """Test that NaN floats become None."""
+        result = _sanitize_for_json({"val": float("nan"), "ok": 1.5})
+        assert result["val"] is None
+        assert result["ok"] == 1.5
+
+    def test_sanitize_replaces_infinity_with_none(self):
+        """Test that Infinity floats become None."""
+        result = _sanitize_for_json({"pos": float("inf"), "neg": float("-inf")})
+        assert result["pos"] is None
+        assert result["neg"] is None
+
+    def test_sanitize_handles_nested_structures(self):
+        """Test that sanitization works recursively in dicts and lists."""
+        result = _sanitize_for_json({"data": [{"v": float("nan")}, {"v": 3.0}]})
+        assert result["data"][0]["v"] is None
+        assert result["data"][1]["v"] == 3.0
+
+    def test_json_response_produces_valid_json(self):
+        """Test that _json_response output is parseable JSON with null for NaN."""
+        output = _json_response({"val": float("nan"), "ok": 42})
+        parsed = json.loads(output)
+        assert parsed["val"] is None
+        assert parsed["ok"] == 42
 
 
 class TestParameterValidation:

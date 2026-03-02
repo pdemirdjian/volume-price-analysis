@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 
 import pandas as pd
 from mcp.server import NotificationOptions, Server
@@ -36,6 +37,22 @@ from .indicators import (
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_for_json(obj: object) -> object:
+    """Recursively replace NaN/Infinity floats with None for RFC 8259 compliance."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
+
+
+def _json_response(result: dict) -> str:
+    """Serialize result dict to JSON, converting NaN/Infinity to null."""
+    return json.dumps(_sanitize_for_json(result), indent=2, default=str)
+
 # Initialize MCP server
 server = Server("volume-price-analysis")
 
@@ -59,7 +76,7 @@ async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
         max_results=max_results,
     )
 
-    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+    return [TextContent(type="text", text=_json_response(result))]
 
 
 @server.list_tools()
@@ -558,7 +575,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "sample_data": data.tail(5).to_dict(orient="records"),
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_obv":
             obv = calculate_obv(data)
@@ -574,7 +591,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[cols].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_vwap":
             vwap = calculate_vwap(data)
@@ -594,7 +611,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "VWAP"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_volume_profile":
             num_bins = arguments.get("num_bins", 20)
@@ -619,7 +636,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ],
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_mfi":
             mfi_period = arguments.get("mfi_period", 14)
@@ -643,7 +660,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "MFI"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_ad_line":
             ad_line = calculate_accumulation_distribution(data)
@@ -658,7 +675,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             if data_points <= 1 or latest_ad_line is None:
                 ad_trend = "flat"
             else:
-                # Compare to value 5 periods ago (or fewer) to capture recent momentum
+                # Compare to an earlier value (up to 5 data points back) to capture recent momentum
                 lookback = min(5, data_points)
                 past_value = ad_line.iloc[-lookback]
 
@@ -680,7 +697,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 .to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_cmf":
             cmf_period = arguments.get("cmf_period", 20)
@@ -714,7 +731,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "CMF"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "analyze_volume_trends":
             window = arguments.get("window", 20)
@@ -722,7 +739,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             result = {"symbol": symbol, "analysis": "Volume Trend Analysis", **trends}
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "comprehensive_analysis":
             # Calculate all volume indicators
@@ -884,7 +901,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ),
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "options_analysis":
             holding_period = arguments.get("holding_period", 14)
@@ -897,7 +914,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 days_to_expiration=days_to_expiration,
             )
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         else:
             raise ValueError(f"Unknown tool: {name}")
