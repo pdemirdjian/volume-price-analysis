@@ -231,6 +231,74 @@ async def handle_list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="calculate_ad_line",
+            description=(
+                "Calculate Accumulation/Distribution Line (A/D Line) - measures "
+                "cumulative flow of money into and out of a security"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)",
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": "Period if dates not specified (default: '1mo')",
+                        "default": "1mo",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
+        Tool(
+            name="calculate_cmf",
+            description=(
+                "Calculate Chaikin Money Flow (CMF) - measures buying and selling "
+                "pressure over a set period (ranges -1 to +1). "
+                "> 0 indicates buying, < 0 indicates selling"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)",
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": "Period if dates not specified (default: '1mo')",
+                        "default": "1mo",
+                    },
+                    "cmf_period": {
+                        "type": "integer",
+                        "description": "Lookback period for CMF calculation (default: 20)",
+                        "default": 20,
+                        "minimum": 1,
+                        "maximum": 200,
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
+        Tool(
             name="analyze_volume_trends",
             description="Analyze volume trends and detect price-volume divergences",
             inputSchema={
@@ -423,73 +491,6 @@ async def handle_list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
-        Tool(
-            name="calculate_ad_line",
-            description=(
-                "Calculate Accumulation/Distribution Line (A/D Line) - measures "
-                "cumulative flow of money into and out of a security"
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol",
-                    },
-                    "start_date": {
-                        "type": "string",
-                        "description": "Start date in YYYY-MM-DD format (optional)",
-                    },
-                    "end_date": {
-                        "type": "string",
-                        "description": "End date in YYYY-MM-DD format (optional)",
-                    },
-                    "period": {
-                        "type": "string",
-                        "description": "Period if dates not specified (default: '1mo')",
-                        "default": "1mo",
-                    },
-                },
-                "required": ["symbol"],
-            },
-        ),
-        Tool(
-            name="calculate_cmf",
-            description=(
-                "Calculate Chaikin Money Flow (CMF) - measures buying and selling "
-                "pressure over a set period. > 0 indicates buying, < 0 indicates selling"
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker symbol",
-                    },
-                    "start_date": {
-                        "type": "string",
-                        "description": "Start date in YYYY-MM-DD format (optional)",
-                    },
-                    "end_date": {
-                        "type": "string",
-                        "description": "End date in YYYY-MM-DD format (optional)",
-                    },
-                    "period": {
-                        "type": "string",
-                        "description": "Period if dates not specified (default: '1mo')",
-                        "default": "1mo",
-                    },
-                    "cmf_period": {
-                        "type": "integer",
-                        "description": "Lookback period for CMF calculation (default: 20)",
-                        "default": 20,
-                        "minimum": 1,
-                        "maximum": 200,
-                    },
-                },
-                "required": ["symbol"],
-            },
-        ),
     ]
 
 
@@ -649,26 +650,24 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             data["AD_Line"] = ad_line
 
             data_points = len(ad_line)
+            latest_value = ad_line.iloc[-1] if data_points > 0 else None
+            latest_ad_line = (
+                None if latest_value is None or pd.isna(latest_value) else float(latest_value)
+            )
 
-            if data_points == 0:
-                latest_ad_line = 0.0
+            if data_points <= 1 or latest_ad_line is None:
                 ad_trend = "flat"
             else:
-                latest_value = ad_line.iloc[-1]
-                latest_ad_line = float(latest_value)
+                # Compare to value 5 periods ago (or fewer) to capture recent momentum
+                lookback = min(5, data_points)
+                past_value = ad_line.iloc[-lookback]
 
-                if data_points == 1:
-                    ad_trend = "flat"
+                if latest_value > past_value:
+                    ad_trend = "increasing"
+                elif latest_value < past_value:
+                    ad_trend = "decreasing"
                 else:
-                    lookback = min(5, data_points)
-                    past_value = ad_line.iloc[-lookback]
-
-                    if latest_value > past_value:
-                        ad_trend = "increasing"
-                    elif latest_value < past_value:
-                        ad_trend = "decreasing"
-                    else:
-                        ad_trend = "flat"
+                    ad_trend = "flat"
 
             result = {
                 "symbol": symbol,
@@ -688,21 +687,24 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             cmf = calculate_chaikin_money_flow(data, cmf_period)
             data["CMF"] = cmf
 
-            # CMF returns NaN for periods before the window is complete
-            # We must use the last valid value, or None if there isn't one
-            latest_valid_cmf = cmf.dropna().iloc[-1] if not cmf.dropna().empty else None
+            # CMF uses a rolling window, so the first (period-1) values are NaN.
+            # Extract the last non-NaN value, falling back to None if all values are NaN
+            # (which happens when data length < cmf_period).
+            valid_cmf = cmf.dropna()
+            latest_valid_cmf = valid_cmf.iloc[-1] if not valid_cmf.empty else None
 
-            if latest_valid_cmf is not None:
-                if latest_valid_cmf > 0:
-                    condition = "Buying Pressure (>0)"
-                elif latest_valid_cmf < 0:
-                    condition = "Selling Pressure (<0)"
-                else:
-                    condition = "Neutral (0)"
+            if latest_valid_cmf is None:
+                condition = "Insufficient Data"
+                latest_cmf_val = None
+            elif latest_valid_cmf > 0:
+                condition = "Buying Pressure (>0)"
+                latest_cmf_val = float(latest_valid_cmf)
+            elif latest_valid_cmf < 0:
+                condition = "Selling Pressure (<0)"
                 latest_cmf_val = float(latest_valid_cmf)
             else:
-                condition = "Insufficient Data"
-                latest_cmf_val = 0.0
+                condition = "Neutral (0)"
+                latest_cmf_val = float(latest_valid_cmf)
 
             result = {
                 "symbol": symbol,

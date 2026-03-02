@@ -372,8 +372,68 @@ class TestCallToolCMF:
         data = json.loads(result[0].text)
 
         assert data["symbol"] == "GOOG"
-        assert data["latest_cmf"] == 0.0
+        assert data["latest_cmf"] is None
         assert data["condition"] == "Insufficient Data"
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf_selling_pressure(self, mock_fetch):
+        """Test CMF calculation tool returns selling pressure for negative CMF."""
+        # Close near Low produces negative Money Flow Multiplier => negative CMF
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=20, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(20)],
+                "High": [104 + i * 0.5 for i in range(20)],
+                "Low": [98 + i * 0.5 for i in range(20)],
+                "Close": [99 + i * 0.5 for i in range(20)],
+                "Volume": [1000000 + i * 10000 for i in range(20)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert data["condition"] == "Selling Pressure (<0)"
+        assert data["latest_cmf"] < 0
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf_default_period(self, mock_fetch):
+        """Test CMF calculation tool with default cmf_period (omitted argument)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=25, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(25)],
+                "High": [102 + i * 0.5 for i in range(25)],
+                "Low": [98 + i * 0.5 for i in range(25)],
+                "Close": [101 + i * 0.5 for i in range(25)],
+                "Volume": [1000000 + i * 10000 for i in range(25)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG"},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert "CMF-20" in data["indicator"]
+        assert data["latest_cmf"] is not None
+        assert data["condition"] in [
+            "Buying Pressure (>0)",
+            "Selling Pressure (<0)",
+            "Neutral (0)",
+        ]
 
 
 class TestCallToolVolumeTrends:
