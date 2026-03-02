@@ -53,6 +53,7 @@ def _json_response(result: dict) -> str:
     """Serialize result dict to JSON, converting NaN/Infinity to null."""
     return json.dumps(_sanitize_for_json(result), indent=2, default=str)
 
+
 # Initialize MCP server
 server = Server("volume-price-analysis")
 
