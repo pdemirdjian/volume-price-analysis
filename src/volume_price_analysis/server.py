@@ -706,10 +706,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             data["CMF"] = cmf
 
             # CMF uses a rolling window, so the first (period-1) values are NaN.
-            # Extract the last non-NaN value, falling back to None if all values are NaN
-            # (which happens when data length < cmf_period).
+            # Extract the last finite value, falling back to None if all values are
+            # NaN/inf (NaN from insufficient data, inf from zero rolling volume sum).
             valid_cmf = cmf.dropna()
             latest_valid_cmf = valid_cmf.iloc[-1] if not valid_cmf.empty else None
+            if latest_valid_cmf is not None and not math.isfinite(latest_valid_cmf):
+                latest_valid_cmf = None
 
             if latest_valid_cmf is None:
                 condition = "Insufficient Data"
