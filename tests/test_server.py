@@ -30,13 +30,15 @@ class TestListTools:
             "calculate_vwap",
             "calculate_volume_profile",
             "calculate_mfi",
+            "calculate_ad_line",
+            "calculate_cmf",
             "analyze_volume_trends",
             "comprehensive_analysis",
             "options_analysis",
             "scan_candidates",
         ]
 
-        assert len(tools) == 9
+        assert len(tools) == 11
         for expected_tool in expected_tools:
             assert expected_tool in tool_names
 
@@ -249,6 +251,72 @@ class TestCallToolMFI:
         assert "latest_mfi" in data
         assert "condition" in data
         assert data["condition"] in ["Overbought (>80)", "Oversold (<20)", "Neutral (20-80)"]
+
+
+class TestCallToolADLine:
+    """Tests for calculate_ad_line tool."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_ad_line(self, mock_fetch):
+        """Test AD Line calculation tool."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=20, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(20)],
+                "High": [102 + i * 0.5 for i in range(20)],
+                "Low": [98 + i * 0.5 for i in range(20)],
+                "Close": [101 + i * 0.5 for i in range(20)],
+                "Volume": [1000000 + i * 10000 for i in range(20)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_ad_line",
+            arguments={"symbol": "IBM", "period": "1mo"},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "IBM"
+        assert "Accumulation/Distribution Line" in data["indicator"]
+        assert "latest_ad_line" in data
+        assert "ad_trend" in data
+        assert data["ad_trend"] in ["increasing", "decreasing"]
+
+
+class TestCallToolCMF:
+    """Tests for calculate_cmf tool."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf(self, mock_fetch):
+        """Test CMF calculation tool."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=20, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(20)],
+                "High": [102 + i * 0.5 for i in range(20)],
+                "Low": [98 + i * 0.5 for i in range(20)],
+                "Close": [101 + i * 0.5 for i in range(20)],
+                "Volume": [1000000 + i * 10000 for i in range(20)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert "Chaikin Money Flow" in data["indicator"]
+        assert "latest_cmf" in data
+        assert "condition" in data
+        assert "Pressure" in data["condition"] or "Neutral" in data["condition"]
 
 
 class TestCallToolVolumeTrends:

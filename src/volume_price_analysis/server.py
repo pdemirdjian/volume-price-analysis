@@ -423,6 +423,73 @@ async def handle_list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
+        Tool(
+            name="calculate_ad_line",
+            description=(
+                "Calculate Accumulation/Distribution Line (A/D Line) - measures "
+                "cumulative flow of money into and out of a security"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)",
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": "Period if dates not specified (default: '1mo')",
+                        "default": "1mo",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
+        Tool(
+            name="calculate_cmf",
+            description=(
+                "Calculate Chaikin Money Flow (CMF) - measures buying and selling "
+                "pressure over a set period. > 0 indicates buying, < 0 indicates selling"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)",
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": "Period if dates not specified (default: '1mo')",
+                        "default": "1mo",
+                    },
+                    "cmf_period": {
+                        "type": "integer",
+                        "description": "Lookback period for CMF calculation (default: 20)",
+                        "default": 20,
+                        "minimum": 1,
+                        "maximum": 200,
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
     ]
 
 
@@ -460,6 +527,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             _validate_range(arguments.get("num_bins", 20), "num_bins", 2, 1000)
         elif name == "calculate_mfi":
             _validate_range(arguments.get("mfi_period", 14), "mfi_period", 1, 200)
+        elif name == "calculate_cmf":
+            _validate_range(arguments.get("cmf_period", 20), "cmf_period", 1, 200)
         elif name == "analyze_volume_trends":
             _validate_range(arguments.get("window", 20), "window", 1, 200)
         elif name == "options_analysis":
@@ -571,6 +640,46 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "latest_mfi": float(latest_mfi),
                 "condition": condition,
                 "recent_values": data[["Date", "Close", "MFI"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
+            }
+
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "calculate_ad_line":
+            ad_line = calculate_accumulation_distribution(data)
+            data["AD_Line"] = ad_line
+
+            result = {
+                "symbol": symbol,
+                "indicator": "Accumulation/Distribution Line (A/D Line)",
+                "latest_ad_line": float(ad_line.iloc[-1]),
+                "ad_trend": "increasing" if ad_line.iloc[-1] > ad_line.iloc[-5] else "decreasing",
+                "data_points": len(ad_line),
+                "recent_values": data[["Date", "Close", "Volume", "AD_Line"]]
+                .tail(10)
+                .to_dict(orient="records"),  # type: ignore[call-overload]
+            }
+
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "calculate_cmf":
+            cmf_period = arguments.get("cmf_period", 20)
+            cmf = calculate_chaikin_money_flow(data, cmf_period)
+            data["CMF"] = cmf
+
+            latest_cmf = cmf.iloc[-1]
+            if latest_cmf > 0:
+                condition = "Buying Pressure (>0)"
+            elif latest_cmf < 0:
+                condition = "Selling Pressure (<0)"
+            else:
+                condition = "Neutral (0)"
+
+            result = {
+                "symbol": symbol,
+                "indicator": f"Chaikin Money Flow (CMF-{cmf_period})",
+                "latest_cmf": float(latest_cmf),
+                "condition": condition,
+                "recent_values": data[["Date", "Close", "CMF"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
