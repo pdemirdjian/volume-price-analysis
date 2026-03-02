@@ -285,6 +285,36 @@ class TestCallToolADLine:
         assert "ad_trend" in data
         assert data["ad_trend"] in ["increasing", "decreasing"]
 
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_ad_line_short_data(self, mock_fetch):
+        """Test AD Line calculation tool with very little data (edge case)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=2, freq="D"),
+                "Open": [100, 101],
+                "High": [102, 103],
+                "Low": [98, 99],
+                "Close": [101, 102],
+                "Volume": [1000000, 1100000],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_ad_line",
+            arguments={"symbol": "IBM", "start_date": "2024-01-01", "end_date": "2024-01-02"},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "IBM"
+        assert "Accumulation/Distribution Line" in data["indicator"]
+        assert "latest_ad_line" in data
+        assert "ad_trend" in data
+        assert data["ad_trend"] in ["increasing", "decreasing", "flat"]
+        assert data["data_points"] == 2
+
 
 class TestCallToolCMF:
     """Tests for calculate_cmf tool."""
@@ -317,6 +347,33 @@ class TestCallToolCMF:
         assert "latest_cmf" in data
         assert "condition" in data
         assert "Pressure" in data["condition"] or "Neutral" in data["condition"]
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf_insufficient_data(self, mock_fetch):
+        """Test CMF calculation tool explicitly handling insufficient data."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=5, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(5)],
+                "High": [102 + i * 0.5 for i in range(5)],
+                "Low": [98 + i * 0.5 for i in range(5)],
+                "Close": [101 + i * 0.5 for i in range(5)],
+                "Volume": [1000000 + i * 10000 for i in range(5)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 20},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert data["latest_cmf"] == 0.0
+        assert data["condition"] == "Insufficient Data"
 
 
 class TestCallToolVolumeTrends:
@@ -631,6 +688,17 @@ class TestParameterValidation:
         data = json.loads(result[0].text)
         assert "error" in data
         assert "mfi_period" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_cmf_period_returns_error(self):
+        """Test that invalid cmf_period returns error via tool handler."""
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "AAPL", "cmf_period": 250},
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "cmf_period" in data["error"]
 
     @pytest.mark.asyncio
     async def test_invalid_window_returns_error(self):

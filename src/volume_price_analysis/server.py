@@ -648,12 +648,34 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             ad_line = calculate_accumulation_distribution(data)
             data["AD_Line"] = ad_line
 
+            data_points = len(ad_line)
+
+            if data_points == 0:
+                latest_ad_line = 0.0
+                ad_trend = "flat"
+            else:
+                latest_value = ad_line.iloc[-1]
+                latest_ad_line = float(latest_value)
+
+                if data_points == 1:
+                    ad_trend = "flat"
+                else:
+                    lookback = min(5, data_points)
+                    past_value = ad_line.iloc[-lookback]
+
+                    if latest_value > past_value:
+                        ad_trend = "increasing"
+                    elif latest_value < past_value:
+                        ad_trend = "decreasing"
+                    else:
+                        ad_trend = "flat"
+
             result = {
                 "symbol": symbol,
                 "indicator": "Accumulation/Distribution Line (A/D Line)",
-                "latest_ad_line": float(ad_line.iloc[-1]),
-                "ad_trend": "increasing" if ad_line.iloc[-1] > ad_line.iloc[-5] else "decreasing",
-                "data_points": len(ad_line),
+                "latest_ad_line": latest_ad_line,
+                "ad_trend": ad_trend,
+                "data_points": data_points,
                 "recent_values": data[["Date", "Close", "Volume", "AD_Line"]]
                 .tail(10)
                 .to_dict(orient="records"),  # type: ignore[call-overload]
@@ -666,18 +688,26 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             cmf = calculate_chaikin_money_flow(data, cmf_period)
             data["CMF"] = cmf
 
-            latest_cmf = cmf.iloc[-1]
-            if latest_cmf > 0:
-                condition = "Buying Pressure (>0)"
-            elif latest_cmf < 0:
-                condition = "Selling Pressure (<0)"
+            # CMF returns NaN for periods before the window is complete
+            # We must use the last valid value, or None if there isn't one
+            latest_valid_cmf = cmf.dropna().iloc[-1] if not cmf.dropna().empty else None
+
+            if latest_valid_cmf is not None:
+                if latest_valid_cmf > 0:
+                    condition = "Buying Pressure (>0)"
+                elif latest_valid_cmf < 0:
+                    condition = "Selling Pressure (<0)"
+                else:
+                    condition = "Neutral (0)"
+                latest_cmf_val = float(latest_valid_cmf)
             else:
-                condition = "Neutral (0)"
+                condition = "Insufficient Data"
+                latest_cmf_val = 0.0
 
             result = {
                 "symbol": symbol,
                 "indicator": f"Chaikin Money Flow (CMF-{cmf_period})",
-                "latest_cmf": float(latest_cmf),
+                "latest_cmf": latest_cmf_val,
                 "condition": condition,
                 "recent_values": data[["Date", "Close", "CMF"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
