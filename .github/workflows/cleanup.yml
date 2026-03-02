@@ -11,11 +11,9 @@ jobs:
   prune-images:
     runs-on: ubuntu-latest
     steps:
-      - uses: snok/container-retention-policy@3b0972b2276b171b212f8c4efbca59ebba26eceb # v3.0.1
+      - uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
-          account: pdemirdjian
-          token: ${{ secrets.GITHUB_TOKEN }}
-          image-names: volume-price-analysis
-          tag-selection: both
-          cut-off: 4w
-          keep-n-most-recent: 10
+          package-name: volume-price-analysis
+          package-type: container
+          min-versions-to-keep: 10
+          delete-only-untagged-versions: true
