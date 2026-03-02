@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.4...v2.4.0) (2026-03-02)
+
+
+### Features
+
+* add standalone MCP tools for A/D Line and CMF indicators ([#119](https://github.com/pdemirdjian/volume-price-analysis/issues/119)) ([59d9d10](https://github.com/pdemirdjian/volume-price-analysis/commit/59d9d10ddcba948c0f35a2e3d47a4e46a3dde1e6))
+
 ## [2.3.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.3...v2.3.4) (2026-03-01)
 
 
