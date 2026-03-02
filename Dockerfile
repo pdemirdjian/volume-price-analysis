@@ -21,7 +21,12 @@ COPY --from=builder /app/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Remove system pip (unused — uv manages deps) to fix CVE-2026-1703 and reduce attack surface
-RUN /usr/local/bin/python -m pip uninstall -y pip \
-    && mkdir -p /root/.cache/py-yfinance
+RUN /usr/local/bin/python -m pip uninstall -y pip
+
+# Run as non-root user
+RUN useradd --create-home appuser \
+    && mkdir -p /home/appuser/.cache/py-yfinance \
+    && chown -R appuser:appuser /app /home/appuser/.cache
+USER appuser
 
 CMD ["morning-scheduler"]

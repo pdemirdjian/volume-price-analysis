@@ -70,6 +70,8 @@ The server exposes the following MCP tools:
 - **`calculate_volume_profile`**: Analyze volume distribution across price
   levels.
 - **`calculate_mfi`**: Calculate Money Flow Index (MFI).
+- **`calculate_ad_line`**: Calculate Accumulation/Distribution Line (A/D Line).
+- **`calculate_cmf`**: Calculate Chaikin Money Flow (CMF).
 - **`analyze_volume_trends`**: Analyze volume trends and detect price-volume
   divergences.
 - **`comprehensive_analysis`**: Perform a full analysis including all major

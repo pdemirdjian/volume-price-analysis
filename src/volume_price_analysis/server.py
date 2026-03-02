@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 
 import pandas as pd
 from mcp.server import NotificationOptions, Server
@@ -36,6 +37,23 @@ from .indicators import (
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_for_json(obj: object) -> object:
+    """Recursively replace NaN/Infinity floats with None for RFC 8259 compliance."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
+
+
+def _json_response(result: dict) -> str:
+    """Serialize result dict to JSON, converting NaN/Infinity to null."""
+    return json.dumps(_sanitize_for_json(result), indent=2, default=str)
+
+
 # Initialize MCP server
 server = Server("volume-price-analysis")
 
@@ -59,7 +77,7 @@ async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
         max_results=max_results,
     )
 
-    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+    return [TextContent(type="text", text=_json_response(result))]
 
 
 @server.list_tools()
@@ -223,6 +241,74 @@ async def handle_list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Lookback period for MFI calculation (default: 14)",
                         "default": 14,
+                        "minimum": 1,
+                        "maximum": 200,
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
+        Tool(
+            name="calculate_ad_line",
+            description=(
+                "Calculate Accumulation/Distribution Line (A/D Line) - measures "
+                "cumulative flow of money into and out of a security"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)",
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": "Period if dates not specified (default: '1mo')",
+                        "default": "1mo",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
+        Tool(
+            name="calculate_cmf",
+            description=(
+                "Calculate Chaikin Money Flow (CMF) - measures buying and selling "
+                "pressure over a set period (ranges -1 to +1). "
+                "> 0 indicates buying, < 0 indicates selling"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)",
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": "Period if dates not specified (default: '1mo')",
+                        "default": "1mo",
+                    },
+                    "cmf_period": {
+                        "type": "integer",
+                        "description": "Lookback period for CMF calculation (default: 20)",
+                        "default": 20,
                         "minimum": 1,
                         "maximum": 200,
                     },
@@ -460,6 +546,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             _validate_range(arguments.get("num_bins", 20), "num_bins", 2, 1000)
         elif name == "calculate_mfi":
             _validate_range(arguments.get("mfi_period", 14), "mfi_period", 1, 200)
+        elif name == "calculate_cmf":
+            _validate_range(arguments.get("cmf_period", 20), "cmf_period", 1, 200)
         elif name == "analyze_volume_trends":
             _validate_range(arguments.get("window", 20), "window", 1, 200)
         elif name == "options_analysis":
@@ -488,7 +576,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "sample_data": data.tail(5).to_dict(orient="records"),
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_obv":
             obv = calculate_obv(data)
@@ -504,7 +592,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[cols].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_vwap":
             vwap = calculate_vwap(data)
@@ -524,7 +612,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "VWAP"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_volume_profile":
             num_bins = arguments.get("num_bins", 20)
@@ -549,7 +637,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ],
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "calculate_mfi":
             mfi_period = arguments.get("mfi_period", 14)
@@ -573,7 +661,80 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "MFI"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
+
+        elif name == "calculate_ad_line":
+            ad_line = calculate_accumulation_distribution(data)
+            data["AD_Line"] = ad_line
+
+            data_points = len(ad_line)
+            latest_value = ad_line.iloc[-1] if data_points > 0 else None
+            latest_ad_line = (
+                None if latest_value is None or pd.isna(latest_value) else float(latest_value)
+            )
+
+            if data_points <= 1 or latest_ad_line is None:
+                ad_trend = "flat"
+            else:
+                # Compare to an earlier value (up to 5 data points back) to capture recent momentum
+                lookback = min(5, data_points)
+                past_value = ad_line.iloc[-lookback]
+
+                if latest_value > past_value:
+                    ad_trend = "increasing"
+                elif latest_value < past_value:
+                    ad_trend = "decreasing"
+                else:
+                    ad_trend = "flat"
+
+            result = {
+                "symbol": symbol,
+                "indicator": "Accumulation/Distribution Line (A/D Line)",
+                "latest_ad_line": latest_ad_line,
+                "ad_trend": ad_trend,
+                "data_points": data_points,
+                "recent_values": data[["Date", "Close", "Volume", "AD_Line"]]
+                .tail(10)
+                .to_dict(orient="records"),  # type: ignore[call-overload]
+            }
+
+            return [TextContent(type="text", text=_json_response(result))]
+
+        elif name == "calculate_cmf":
+            cmf_period = arguments.get("cmf_period", 20)
+            cmf = calculate_chaikin_money_flow(data, cmf_period)
+            data["CMF"] = cmf
+
+            # CMF uses a rolling window, so the first (period-1) values are NaN.
+            # Extract the last finite value, falling back to None if all values are
+            # NaN/inf (NaN from insufficient data, inf from zero rolling volume sum).
+            valid_cmf = cmf.dropna()
+            latest_valid_cmf = valid_cmf.iloc[-1] if not valid_cmf.empty else None
+            if latest_valid_cmf is not None and not math.isfinite(latest_valid_cmf):
+                latest_valid_cmf = None
+
+            if latest_valid_cmf is None:
+                condition = "Insufficient Data"
+                latest_cmf_val = None
+            elif latest_valid_cmf > 0:
+                condition = "Buying Pressure (>0)"
+                latest_cmf_val = float(latest_valid_cmf)
+            elif latest_valid_cmf < 0:
+                condition = "Selling Pressure (<0)"
+                latest_cmf_val = float(latest_valid_cmf)
+            else:
+                condition = "Neutral (0)"
+                latest_cmf_val = float(latest_valid_cmf)
+
+            result = {
+                "symbol": symbol,
+                "indicator": f"Chaikin Money Flow (CMF-{cmf_period})",
+                "latest_cmf": latest_cmf_val,
+                "condition": condition,
+                "recent_values": data[["Date", "Close", "CMF"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
+            }
+
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "analyze_volume_trends":
             window = arguments.get("window", 20)
@@ -581,7 +742,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             result = {"symbol": symbol, "analysis": "Volume Trend Analysis", **trends}
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "comprehensive_analysis":
             # Calculate all volume indicators
@@ -743,7 +904,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ),
             }
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         elif name == "options_analysis":
             holding_period = arguments.get("holding_period", 14)
@@ -756,7 +917,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 days_to_expiration=days_to_expiration,
             )
 
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=_json_response(result))]
 
         else:
             raise ValueError(f"Unknown tool: {name}")

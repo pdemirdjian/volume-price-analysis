@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis.server import (
+    _json_response,
+    _sanitize_for_json,
     _validate_range,
     generate_summary,
     handle_call_tool,
@@ -30,13 +32,15 @@ class TestListTools:
             "calculate_vwap",
             "calculate_volume_profile",
             "calculate_mfi",
+            "calculate_ad_line",
+            "calculate_cmf",
             "analyze_volume_trends",
             "comprehensive_analysis",
             "options_analysis",
             "scan_candidates",
         ]
 
-        assert len(tools) == 9
+        assert len(tools) == 11
         for expected_tool in expected_tools:
             assert expected_tool in tool_names
 
@@ -249,6 +253,189 @@ class TestCallToolMFI:
         assert "latest_mfi" in data
         assert "condition" in data
         assert data["condition"] in ["Overbought (>80)", "Oversold (<20)", "Neutral (20-80)"]
+
+
+class TestCallToolADLine:
+    """Tests for calculate_ad_line tool."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_ad_line(self, mock_fetch):
+        """Test AD Line calculation tool."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=20, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(20)],
+                "High": [102 + i * 0.5 for i in range(20)],
+                "Low": [98 + i * 0.5 for i in range(20)],
+                "Close": [101 + i * 0.5 for i in range(20)],
+                "Volume": [1000000 + i * 10000 for i in range(20)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_ad_line",
+            arguments={"symbol": "IBM", "period": "1mo"},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "IBM"
+        assert "Accumulation/Distribution Line" in data["indicator"]
+        assert "latest_ad_line" in data
+        assert "ad_trend" in data
+        assert data["ad_trend"] in ["increasing", "decreasing"]
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_ad_line_short_data(self, mock_fetch):
+        """Test AD Line calculation tool with very little data (edge case)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=2, freq="D"),
+                "Open": [100, 101],
+                "High": [102, 103],
+                "Low": [98, 99],
+                "Close": [101, 102],
+                "Volume": [1000000, 1100000],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_ad_line",
+            arguments={"symbol": "IBM", "start_date": "2024-01-01", "end_date": "2024-01-02"},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "IBM"
+        assert "Accumulation/Distribution Line" in data["indicator"]
+        assert "latest_ad_line" in data
+        assert "ad_trend" in data
+        assert data["ad_trend"] in ["increasing", "decreasing", "flat"]
+        assert data["data_points"] == 2
+
+
+class TestCallToolCMF:
+    """Tests for calculate_cmf tool."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf(self, mock_fetch):
+        """Test CMF calculation tool."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=20, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(20)],
+                "High": [102 + i * 0.5 for i in range(20)],
+                "Low": [98 + i * 0.5 for i in range(20)],
+                "Close": [101 + i * 0.5 for i in range(20)],
+                "Volume": [1000000 + i * 10000 for i in range(20)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert "Chaikin Money Flow" in data["indicator"]
+        assert "latest_cmf" in data
+        assert "condition" in data
+        assert "Pressure" in data["condition"] or "Neutral" in data["condition"]
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf_insufficient_data(self, mock_fetch):
+        """Test CMF calculation tool explicitly handling insufficient data."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=5, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(5)],
+                "High": [102 + i * 0.5 for i in range(5)],
+                "Low": [98 + i * 0.5 for i in range(5)],
+                "Close": [101 + i * 0.5 for i in range(5)],
+                "Volume": [1000000 + i * 10000 for i in range(5)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 20},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert data["latest_cmf"] is None
+        assert data["condition"] == "Insufficient Data"
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf_selling_pressure(self, mock_fetch):
+        """Test CMF calculation tool returns selling pressure for negative CMF."""
+        # Close near Low produces negative Money Flow Multiplier => negative CMF
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=20, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(20)],
+                "High": [104 + i * 0.5 for i in range(20)],
+                "Low": [98 + i * 0.5 for i in range(20)],
+                "Close": [99 + i * 0.5 for i in range(20)],
+                "Volume": [1000000 + i * 10000 for i in range(20)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert data["condition"] == "Selling Pressure (<0)"
+        assert data["latest_cmf"] < 0
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_calculate_cmf_default_period(self, mock_fetch):
+        """Test CMF calculation tool with default cmf_period (omitted argument)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=25, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(25)],
+                "High": [102 + i * 0.5 for i in range(25)],
+                "Low": [98 + i * 0.5 for i in range(25)],
+                "Close": [101 + i * 0.5 for i in range(25)],
+                "Volume": [1000000 + i * 10000 for i in range(25)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "GOOG"},
+        )
+
+        data = json.loads(result[0].text)
+
+        assert data["symbol"] == "GOOG"
+        assert "CMF-20" in data["indicator"]
+        assert data["latest_cmf"] is not None
+        assert data["condition"] in [
+            "Buying Pressure (>0)",
+            "Selling Pressure (<0)",
+            "Neutral (0)",
+        ]
 
 
 class TestCallToolVolumeTrends:
@@ -513,6 +700,35 @@ class TestScanCandidates:
         assert any(e["symbol"] == "INVALID" for e in data["errors"])
 
 
+class TestJsonSanitization:
+    """Tests for NaN/Infinity JSON sanitization."""
+
+    def test_sanitize_replaces_nan_with_none(self):
+        """Test that NaN floats become None."""
+        result = _sanitize_for_json({"val": float("nan"), "ok": 1.5})
+        assert result["val"] is None
+        assert result["ok"] == 1.5
+
+    def test_sanitize_replaces_infinity_with_none(self):
+        """Test that Infinity floats become None."""
+        result = _sanitize_for_json({"pos": float("inf"), "neg": float("-inf")})
+        assert result["pos"] is None
+        assert result["neg"] is None
+
+    def test_sanitize_handles_nested_structures(self):
+        """Test that sanitization works recursively in dicts and lists."""
+        result = _sanitize_for_json({"data": [{"v": float("nan")}, {"v": 3.0}]})
+        assert result["data"][0]["v"] is None
+        assert result["data"][1]["v"] == 3.0
+
+    def test_json_response_produces_valid_json(self):
+        """Test that _json_response output is parseable JSON with null for NaN."""
+        output = _json_response({"val": float("nan"), "ok": 42})
+        parsed = json.loads(output)
+        assert parsed["val"] is None
+        assert parsed["ok"] == 42
+
+
 class TestParameterValidation:
     """Tests for parameter range validation."""
 
@@ -563,6 +779,17 @@ class TestParameterValidation:
         data = json.loads(result[0].text)
         assert "error" in data
         assert "mfi_period" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_cmf_period_returns_error(self):
+        """Test that invalid cmf_period returns error via tool handler."""
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "AAPL", "cmf_period": 250},
+        )
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert "cmf_period" in data["error"]
 
     @pytest.mark.asyncio
     async def test_invalid_window_returns_error(self):

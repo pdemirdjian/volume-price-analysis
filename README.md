@@ -17,10 +17,12 @@ VWAP, Volume Profile, Money Flow Index, and more.
 3. **calculate_vwap** - Volume Weighted Average Price
 4. **calculate_volume_profile** - Distribution of volume at price levels
 5. **calculate_mfi** - Money Flow Index (volume-weighted RSI)
-6. **analyze_volume_trends** - Volume trend analysis with divergence detection
-7. **comprehensive_analysis** - Complete analysis with all indicators
-8. **options_analysis** - Specialized analysis for short-term options trading
-9. **scan_candidates** - Scan ~200 symbols for top options trading candidates
+6. **calculate_ad_line** - Accumulation/Distribution Line
+7. **calculate_cmf** - Chaikin Money Flow
+8. **analyze_volume_trends** - Volume trend analysis with divergence detection
+9. **comprehensive_analysis** - Complete analysis with all indicators
+10. **options_analysis** - Specialized analysis for short-term options trading
+11. **scan_candidates** - Scan ~200 symbols for top options trading candidates
 
 ### Key Indicators Explained
 
@@ -466,7 +468,6 @@ MIT License - feel free to use and modify as needed.
 
 Contributions welcome! Potential enhancements:
 
-- Add more volume indicators (Accumulation/Distribution, Chaikin Money Flow)
 - Support for multiple data sources (Alpha Vantage, Polygon.io)
 - Real-time data streams
 - Chart generation
