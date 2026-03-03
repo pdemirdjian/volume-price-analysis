@@ -30,7 +30,7 @@ Finance (yfinance) and exposes analysis capabilities to AI assistants.
 ```text
 src/volume_price_analysis/
 ├── server.py        # MCP server - tool definitions & handlers
-├── indicators.py    # Pure calculation functions (24 indicators)
+├── indicators.py    # Pure calculation functions (23 indicators)
 ├── data_fetcher.py  # Yahoo Finance data retrieval
 ├── analysis.py      # Reusable scan/analysis logic (used by server + agent)
 └── agent/           # Morning briefing agent
