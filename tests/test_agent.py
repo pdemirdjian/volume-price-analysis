@@ -6,7 +6,7 @@ import pytest
 
 from volume_price_analysis.agent.ai_client import _TRUNCATION_WARNING, generate_briefing
 from volume_price_analysis.agent.config import AgentConfig
-from volume_price_analysis.agent.email_sender import send_briefing_email
+from volume_price_analysis.agent.email_sender import send_briefing_email, send_error_email
 from volume_price_analysis.agent.morning_agent import (
     _fallback_briefing,
     _get_top_symbols,
@@ -448,10 +448,49 @@ class TestSendBriefingEmail:
 
         sent_args = mock_smtp_instance.sendmail.call_args
         assert sent_args[0][0] == "sender@test.com"
-        assert sent_args[0][1] == "recipient@test.com"
+        assert sent_args[0][1] == ["recipient@test.com"]
         msg_str = sent_args[0][2]
         assert "text/plain" in msg_str
         assert "text/html" in msg_str
+
+
+    def test_sends_to_multiple_recipients(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        send_briefing_email(
+            subject="Test Briefing",
+            body_markdown="# Hello",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="alice@test.com,bob@test.com,carol@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        # sendmail must receive a LIST of addresses, not a comma-separated string
+        assert sent_args[0][1] == ["alice@test.com", "bob@test.com", "carol@test.com"]
+
+    def test_send_error_email_multiple_recipients(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        send_error_email(
+            error_message="Something failed",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="alice@test.com,bob@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        assert sent_args[0][1] == ["alice@test.com", "bob@test.com"]
 
 
 class TestRunMorningBriefing:

@@ -69,13 +69,15 @@ strong {{ color: #0f3460; }}
 </html>"""
     msg.attach(MIMEText(html_full, "html"))
 
-    logger.info("Sending briefing email to %s via %s:%d", to_addr, smtp_host, smtp_port)
+    recipients = [addr.strip() for addr in to_addr.split(",")]
+
+    logger.info("Sending briefing email to %s via %s:%d", recipients, smtp_host, smtp_port)
 
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
             server.login(from_addr, password)
-            server.sendmail(from_addr, to_addr, msg.as_string())
+            server.sendmail(from_addr, recipients, msg.as_string())
         logger.info("Email sent successfully")
     except smtplib.SMTPException:
         logger.exception("Failed to send briefing email")
@@ -94,6 +96,8 @@ def send_error_email(
     subject = "Morning Briefing - ERROR"
     body = f"The morning briefing agent encountered a critical error:\n\n{error_message}"
 
+    recipients = [addr.strip() for addr in to_addr.split(",")]
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = from_addr
@@ -104,7 +108,7 @@ def send_error_email(
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
             server.login(from_addr, password)
-            server.sendmail(from_addr, to_addr, msg.as_string())
+            server.sendmail(from_addr, recipients, msg.as_string())
         logger.info("Error notification email sent")
     except Exception:
         logger.exception("Failed to send error notification email")
