@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.4.2...v2.4.3) (2026-03-03)
+
+
+### Bug Fixes
+
+* **deps:** update dependency nh3 to ~=0.3.3 ([#127](https://github.com/pdemirdjian/volume-price-analysis/issues/127)) ([92d681c](https://github.com/pdemirdjian/volume-price-analysis/commit/92d681c58b68daf029a05397ef4f35eca322ee79))
+
 ## [2.4.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.4.1...v2.4.2) (2026-03-03)
 
 
