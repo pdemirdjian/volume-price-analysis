@@ -11,6 +11,14 @@ import markdown  # type: ignore[import-untyped]
 logger = logging.getLogger(__name__)
 
 
+def _parse_recipients(to_addr: str) -> list[str]:
+    """Split a comma-separated address string into individual recipients."""
+    recipients = [addr.strip() for addr in to_addr.split(",") if addr.strip()]
+    if not recipients:
+        raise ValueError("No valid recipient email addresses provided.")
+    return recipients
+
+
 def send_briefing_email(
     subject: str,
     body_markdown: str,
@@ -69,7 +77,7 @@ strong {{ color: #0f3460; }}
 </html>"""
     msg.attach(MIMEText(html_full, "html"))
 
-    recipients = [addr.strip() for addr in to_addr.split(",")]
+    recipients = _parse_recipients(to_addr)
 
     logger.info("Sending briefing email to %s via %s:%d", recipients, smtp_host, smtp_port)
 
@@ -96,7 +104,7 @@ def send_error_email(
     subject = "Morning Briefing - ERROR"
     body = f"The morning briefing agent encountered a critical error:\n\n{error_message}"
 
-    recipients = [addr.strip() for addr in to_addr.split(",")]
+    recipients = _parse_recipients(to_addr)
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject

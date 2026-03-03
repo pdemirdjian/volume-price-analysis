@@ -6,7 +6,11 @@ import pytest
 
 from volume_price_analysis.agent.ai_client import _TRUNCATION_WARNING, generate_briefing
 from volume_price_analysis.agent.config import AgentConfig
-from volume_price_analysis.agent.email_sender import send_briefing_email, send_error_email
+from volume_price_analysis.agent.email_sender import (
+    _parse_recipients,
+    send_briefing_email,
+    send_error_email,
+)
 from volume_price_analysis.agent.morning_agent import (
     _fallback_briefing,
     _get_top_symbols,
@@ -472,6 +476,32 @@ class TestSendBriefingEmail:
         sent_args = mock_smtp_instance.sendmail.call_args
         # sendmail must receive a LIST of addresses, not a comma-separated string
         assert sent_args[0][1] == ["alice@test.com", "bob@test.com", "carol@test.com"]
+
+    def test_filters_empty_recipients_from_trailing_comma(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        send_briefing_email(
+            subject="Test Briefing",
+            body_markdown="# Hello",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="alice@test.com,bob@test.com,",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        assert sent_args[0][1] == ["alice@test.com", "bob@test.com"]
+
+    def test_raises_on_empty_recipients(self):
+        with pytest.raises(ValueError, match="No valid recipient"):
+            _parse_recipients("")
+
+        with pytest.raises(ValueError, match="No valid recipient"):
+            _parse_recipients(",,")
 
     def test_send_error_email_multiple_recipients(self, mocker):
         mock_smtp = MagicMock()
