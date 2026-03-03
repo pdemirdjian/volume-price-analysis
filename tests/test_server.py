@@ -539,6 +539,35 @@ class TestErrorHandling:
         assert "error" in data
         assert "Unknown tool" in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_value_error_returns_specific_message(self):
+        """Test that ValueError returns the actual error message to the caller."""
+        result = await handle_call_tool(
+            name="get_stock_data", arguments={"symbol": "!!!", "period": "1mo"}
+        )
+
+        data = json.loads(result[0].text)
+        assert "error" in data
+        # ValueError message should be passed through to the caller
+        assert "Invalid symbol format" in data["error"]
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_generic_exception_returns_generic_message(self, mock_fetch):
+        """Test that non-ValueError exceptions return a generic message, hiding internals."""
+        mock_fetch.side_effect = RuntimeError("secret internal path /etc/foo")
+
+        result = await handle_call_tool(
+            name="get_stock_data", arguments={"symbol": "AAPL", "period": "1mo"}
+        )
+
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert data["error"] == "An internal error occurred"
+        # Internal details must NOT leak to the caller
+        assert "secret internal path" not in data["error"]
+        assert "/etc/foo" not in data["error"]
+
 
 class TestGenerateSummary:
     """Tests for summary generation."""

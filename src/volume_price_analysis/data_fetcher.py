@@ -14,6 +14,12 @@ DEFAULT_TIMEOUT = 30
 # Valid symbol pattern: starts with letter (e.g., AAPL, BRK-B) or ^ for indices (e.g., ^GSPC)
 SYMBOL_PATTERN = re.compile(r"^(?:[A-Za-z][A-Za-z0-9.^-]{0,9}|\^[A-Za-z][A-Za-z0-9.-]{0,8})$")
 
+# Valid period values accepted by yfinance
+VALID_PERIODS = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
+
+# Date format: YYYY-MM-DD
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 
 def validate_symbol_format(symbol: str) -> bool:
     """
@@ -60,6 +66,18 @@ def fetch_stock_data(
             f"Invalid symbol format: '{symbol}'. "
             "Symbols must be 1-10 alphanumeric characters (may include . - ^)"
         )
+
+    # Validate period
+    if period not in VALID_PERIODS:
+        raise ValueError(
+            f"Invalid period: '{period}'. Must be one of: {', '.join(sorted(VALID_PERIODS))}"
+        )
+
+    # Validate date formats
+    if start_date and not DATE_PATTERN.match(start_date):
+        raise ValueError(f"Invalid start_date format: '{start_date}'. Must be YYYY-MM-DD")
+    if end_date and not DATE_PATTERN.match(end_date):
+        raise ValueError(f"Invalid end_date format: '{end_date}'. Must be YYYY-MM-DD")
 
     logger.debug("Fetching data for %s (period=%s, timeout=%ds)", symbol, period, timeout)
     ticker = yf.Ticker(symbol)

@@ -7,6 +7,7 @@ import pytest
 
 from volume_price_analysis.data_fetcher import (
     DEFAULT_TIMEOUT,
+    VALID_PERIODS,
     fetch_stock_data,
     validate_symbol,
     validate_symbol_format,
@@ -233,6 +234,70 @@ class TestValidateSymbolFormat:
         assert validate_symbol_format(45.67) is False  # type: ignore[arg-type]
         assert validate_symbol_format(["AAPL"]) is False  # type: ignore[arg-type]
         assert validate_symbol_format({"symbol": "AAPL"}) is False  # type: ignore[arg-type]
+
+
+class TestInputValidation:
+    """Tests for input validation in fetch_stock_data."""
+
+    def test_invalid_period_raises_error(self):
+        """Test that an invalid period value raises ValueError."""
+        with pytest.raises(ValueError, match=r"Invalid period: 'invalid_period'"):
+            fetch_stock_data("AAPL", period="invalid_period")
+
+    @pytest.mark.parametrize("period", sorted(VALID_PERIODS))
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_all_valid_periods_accepted(self, mock_ticker, period):
+        """Test that every valid period is accepted without raising."""
+        mock_data = pd.DataFrame(
+            {
+                "Open": [100],
+                "High": [101],
+                "Low": [99],
+                "Close": [100.5],
+                "Volume": [1000000],
+            },
+            index=pd.date_range(start="2024-01-01", periods=1, freq="D"),
+        )
+        mock_data.index.name = "Date"
+
+        mock_ticker_instance = Mock()
+        mock_ticker_instance.history.return_value = mock_data
+        mock_ticker.return_value = mock_ticker_instance
+
+        result = fetch_stock_data("AAPL", period=period)
+        assert len(result) == 1
+
+    def test_invalid_start_date_format_raises_error(self):
+        """Test that an invalid start_date format raises ValueError."""
+        with pytest.raises(ValueError, match=r"Invalid start_date format: 'not-a-date'"):
+            fetch_stock_data("AAPL", start_date="not-a-date", end_date="2024-01-02")
+
+    def test_invalid_end_date_format_raises_error(self):
+        """Test that an invalid end_date format raises ValueError."""
+        with pytest.raises(ValueError, match=r"Invalid end_date format: '01/02/2024'"):
+            fetch_stock_data("AAPL", start_date="2024-01-01", end_date="01/02/2024")
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_valid_date_formats_accepted(self, mock_ticker):
+        """Test that valid YYYY-MM-DD date formats are accepted."""
+        mock_data = pd.DataFrame(
+            {
+                "Open": [100],
+                "High": [101],
+                "Low": [99],
+                "Close": [100.5],
+                "Volume": [1000000],
+            },
+            index=pd.date_range(start="2024-01-01", periods=1, freq="D"),
+        )
+        mock_data.index.name = "Date"
+
+        mock_ticker_instance = Mock()
+        mock_ticker_instance.history.return_value = mock_data
+        mock_ticker.return_value = mock_ticker_instance
+
+        result = fetch_stock_data("AAPL", start_date="2024-01-01", end_date="2024-01-31")
+        assert len(result) == 1
 
 
 class TestIntegration:

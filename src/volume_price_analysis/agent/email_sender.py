@@ -2,11 +2,14 @@
 
 import json
 import logging
+import re
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import markdown  # type: ignore[import-untyped]
+import nh3
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +53,8 @@ def send_briefing_email(
     # Plain text part
     msg.attach(MIMEText(body_markdown, "plain"))
 
-    # HTML part (convert markdown to HTML)
-    html_body = markdown.markdown(
-        body_markdown,
-        extensions=["tables", "fenced_code"],
-    )
+    # HTML part (convert markdown to HTML, then sanitize)
+    html_body = nh3.clean(markdown.markdown(body_markdown, extensions=["tables", "fenced_code"]))
     # Wrap in minimal styling for email clients
     html_full = f"""\
 <html>
@@ -83,7 +83,7 @@ strong {{ color: #0f3460; }}
 
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
+            server.starttls(context=ssl.create_default_context())
             server.login(from_addr, password)
             server.sendmail(from_addr, recipients, msg.as_string())
         logger.info("Email sent successfully")
@@ -102,7 +102,18 @@ def send_error_email(
 ) -> None:
     """Send an error notification email when the briefing fails critically."""
     subject = "Morning Briefing - ERROR"
-    body = f"The morning briefing agent encountered a critical error:\n\n{error_message}"
+    # Truncate and sanitize error message to avoid leaking sensitive details
+    safe_message = error_message[:500] if error_message else "Unknown error"
+    # Strip potential secrets: URLs with query params, key-like strings
+    safe_message = re.sub(r"https?://\S+", "[URL redacted]", safe_message)
+    safe_message = re.sub(
+        r"(?i)(key|token|password|secret|credential)[=:]\s*\S+", r"\1=[REDACTED]", safe_message
+    )
+    body = (
+        f"The morning briefing agent encountered a critical error:\n\n"
+        f"{safe_message}\n\n"
+        f"Check server logs for full details."
+    )
 
     try:
         recipients = _parse_recipients(to_addr)
@@ -114,7 +125,7 @@ def send_error_email(
         msg.attach(MIMEText(body, "plain"))
 
         with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
+            server.starttls(context=ssl.create_default_context())
             server.login(from_addr, password)
             server.sendmail(from_addr, recipients, msg.as_string())
         logger.info("Error notification email sent")

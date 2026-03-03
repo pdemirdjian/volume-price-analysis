@@ -13,11 +13,12 @@ dependencies = [
     "yfinance==1.2.0",
     "pandas==3.0.1",
     "numpy==2.4.2",
-    "anthropic>=0.52.0",
-    "google-genai>=1.0.0",
-    "markdown>=3.7.0",
-    "holidays>=0.70",
-    "pytickersymbols>=1.17.0",
+    "anthropic~=0.84.0",
+    "google-genai~=1.65.0",
+    "markdown~=3.10.0",
+    "holidays~=0.91",
+    "pytickersymbols~=1.17.0",
+    "nh3~=0.2.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -44,6 +45,7 @@ addopts = [
     "--cov=src/volume_price_analysis",
     "--cov-report=term-missing",
     "--cov-report=html",
+    "--cov-fail-under=80",
 ]
 asyncio_mode = "auto"
 

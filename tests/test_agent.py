@@ -427,6 +427,165 @@ class TestGenerateBriefingInvalidProvider:
             )
 
 
+class TestAgentConfigRepr:
+    """Test that AgentConfig.__repr__ masks secrets."""
+
+    def test_repr_masks_secrets(self):
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="super-secret-api-key-12345",
+            ai_model="gemini-2.5-flash",
+            email_from="sender@test.com",
+            email_password="my-secret-password",
+            email_to="recipient@test.com",
+            email_smtp_host="smtp.gmail.com",
+            email_smtp_port=587,
+            scan_universe="full_market",
+            max_deep_analysis=5,
+        )
+
+        result = repr(config)
+
+        # Secrets must be masked
+        assert "super-secret-api-key-12345" not in result
+        assert "my-secret-password" not in result
+        assert "***" in result
+
+        # Non-secret fields must still be visible
+        assert "gemini" in result
+        assert "gemini-2.5-flash" in result
+        assert "sender@test.com" in result
+        assert "recipient@test.com" in result
+        assert "smtp.gmail.com" in result
+        assert "587" in result
+        assert "full_market" in result
+        assert "5" in result
+
+
+class TestErrorEmailSanitization:
+    """Test error email sanitization logic."""
+
+    def test_error_email_truncates_long_message(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        long_message = "A" * 1000
+
+        send_error_email(
+            error_message=long_message,
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        msg_str = sent_args[0][2]
+        # The 1000-char message should be truncated to 500 chars
+        assert "A" * 501 not in msg_str
+        assert "A" * 500 in msg_str
+
+    def test_error_email_redacts_urls(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        send_error_email(
+            error_message="Failed at https://api.example.com/key=abc123 during request",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        msg_str = sent_args[0][2]
+        assert "https://api.example.com/key=abc123" not in msg_str
+        assert "[URL redacted]" in msg_str
+
+    def test_error_email_redacts_secrets(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        send_error_email(
+            error_message="Error: key=sk-12345 and password: mysecret were exposed",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        msg_str = sent_args[0][2]
+        assert "sk-12345" not in msg_str
+        assert "mysecret" not in msg_str
+        assert "[REDACTED]" in msg_str
+
+    def test_error_email_empty_message(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        send_error_email(
+            error_message="",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        msg_str = sent_args[0][2]
+        assert "Unknown error" in msg_str
+
+
+class TestHtmlSanitization:
+    """Test that nh3 HTML sanitization strips dangerous tags in briefing emails."""
+
+    def test_briefing_email_sanitizes_html(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        # Markdown that contains an XSS script tag
+        malicious_markdown = "# Hello\n\n<script>alert('xss')</script>\n\nSafe content here."
+
+        send_briefing_email(
+            subject="Test Briefing",
+            body_markdown=malicious_markdown,
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        msg_str = sent_args[0][2]
+
+        # Extract the HTML part from the multipart message (after "Content-Type: text/html")
+        html_boundary = msg_str.split("Content-Type: text/html")
+        assert len(html_boundary) > 1, "Expected an HTML part in the multipart email"
+        html_part = html_boundary[1]
+
+        # The script tag must be stripped from the HTML part by nh3
+        assert "<script>" not in html_part
+        assert "alert('xss')" not in html_part
+        # But safe content should remain in the HTML part
+        assert "Safe content here" in html_part
+
+
 class TestSendBriefingEmail:
     """Test email sending (mocked SMTP)."""
 

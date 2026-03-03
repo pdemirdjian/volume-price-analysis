@@ -81,13 +81,23 @@
       "semanticCommitType": "fix"
     },
     {
-      "description": "Automerge GitHub Actions patches",
+      "description": "Automerge GitHub Actions patches and minor updates",
       "matchManagers": [
         "github-actions"
       ],
       "matchUpdateTypes": [
-        "patch"
+        "patch",
+        "minor"
       ],
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Group and automerge pre-commit hook updates",
+      "matchManagers": [
+        "pre-commit"
+      ],
+      "groupName": "pre-commit hooks",
       "automerge": true,
       "minimumReleaseAge": "3 days"
     }
