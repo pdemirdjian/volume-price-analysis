@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.4.0...v2.4.1) (2026-03-03)
+
+
+### Bug Fixes
+
+* split comma-separated EMAIL_TO for multi-recipient delivery ([#122](https://github.com/pdemirdjian/volume-price-analysis/issues/122)) ([576b36e](https://github.com/pdemirdjian/volume-price-analysis/commit/576b36ed4f05e4db9b2f7e60c272f9cbebc9652c))
+
 ## [2.4.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.3.4...v2.4.0) (2026-03-02)
 
 
