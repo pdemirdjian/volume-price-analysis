@@ -453,7 +453,6 @@ class TestSendBriefingEmail:
         assert "text/plain" in msg_str
         assert "text/html" in msg_str
 
-
     def test_sends_to_multiple_recipients(self, mocker):
         mock_smtp = MagicMock()
         mock_smtp_instance = MagicMock()
