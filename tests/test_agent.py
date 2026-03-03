@@ -456,7 +456,7 @@ class TestAgentConfigRepr:
         assert "gemini-2.5-flash" in result
         assert "sender@test.com" in result
         assert "recipient@test.com" in result
-        assert "smtp.gmail.com" in result
+        assert config.email_smtp_host in result
         assert "587" in result
         assert "full_market" in result
         assert "5" in result
