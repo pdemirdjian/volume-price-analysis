@@ -36,7 +36,7 @@ def send_briefing_email(
         body_markdown: Briefing content in markdown format.
         from_addr: Sender email address.
         password: Sender email password (app-specific password for Gmail).
-        to_addr: Recipient email address.
+        to_addr: Comma-separated recipient email address(es).
         smtp_host: SMTP server hostname.
         smtp_port: SMTP server port.
     """
@@ -104,15 +104,15 @@ def send_error_email(
     subject = "Morning Briefing - ERROR"
     body = f"The morning briefing agent encountered a critical error:\n\n{error_message}"
 
-    recipients = _parse_recipients(to_addr)
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-    msg.attach(MIMEText(body, "plain"))
-
     try:
+        recipients = _parse_recipients(to_addr)
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = from_addr
+        msg["To"] = to_addr
+        msg.attach(MIMEText(body, "plain"))
+
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.starttls()
             server.login(from_addr, password)
