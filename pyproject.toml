@@ -18,7 +18,7 @@ dependencies = [
     "markdown~=3.10.0",
     "holidays~=0.91",
     "pytickersymbols~=1.17.0",
-    "nh3~=0.2.0",
+    "nh3~=0.3.3",
 ]
 
 [tool.hatch.build.targets.wheel]
