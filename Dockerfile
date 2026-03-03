@@ -29,4 +29,7 @@ RUN useradd --create-home appuser \
     && chown -R appuser:appuser /app /home/appuser/.cache
 USER appuser
 
+HEALTHCHECK --interval=300s --timeout=5s --retries=3 \
+  CMD python -c "open('/proc/1/cmdline').read()" || exit 1
+
 CMD ["morning-scheduler"]

@@ -27,6 +27,17 @@ class AgentConfig:
     scan_universe: str = "full_market"
     max_deep_analysis: int = 5
 
+    def __repr__(self) -> str:
+        return (
+            f"AgentConfig(ai_provider={self.ai_provider!r}, "
+            f"ai_provider_api_key='***', ai_model={self.ai_model!r}, "
+            f"email_from={self.email_from!r}, email_password='***', "
+            f"email_to={self.email_to!r}, email_smtp_host={self.email_smtp_host!r}, "
+            f"email_smtp_port={self.email_smtp_port!r}, "
+            f"scan_universe={self.scan_universe!r}, "
+            f"max_deep_analysis={self.max_deep_analysis!r})"
+        )
+
     @classmethod
     def from_env(cls) -> AgentConfig:
         """Load configuration from environment variables."""

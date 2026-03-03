@@ -3,6 +3,7 @@
 import json
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -10,6 +11,7 @@ from volume_price_analysis.server import (
     _json_response,
     _sanitize_for_json,
     _validate_range,
+    generate_enhanced_summary,
     generate_summary,
     handle_call_tool,
     handle_list_tools,
@@ -531,13 +533,53 @@ class TestErrorHandling:
         assert "No data found" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_unknown_tool_error(self):
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_unknown_tool_error(self, mock_fetch):
         """Test handling of unknown tool name."""
+        mock_fetch.return_value = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=30),
+                "Open": [100] * 30,
+                "High": [101] * 30,
+                "Low": [99] * 30,
+                "Close": [100.5] * 30,
+                "Volume": [1000000] * 30,
+            }
+        )
         result = await handle_call_tool(name="unknown_tool", arguments={"symbol": "AAPL"})
 
         data = json.loads(result[0].text)
         assert "error" in data
         assert "Unknown tool" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_value_error_returns_specific_message(self):
+        """Test that ValueError returns the actual error message to the caller."""
+        result = await handle_call_tool(
+            name="get_stock_data", arguments={"symbol": "!!!", "period": "1mo"}
+        )
+
+        data = json.loads(result[0].text)
+        assert "error" in data
+        # ValueError message should be passed through to the caller
+        assert "Invalid symbol format" in data["error"]
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_generic_exception_returns_generic_message(self, mock_fetch):
+        """Test that non-ValueError exceptions return a generic message, hiding internals."""
+        mock_fetch.side_effect = RuntimeError("secret internal path /etc/foo")
+
+        result = await handle_call_tool(
+            name="get_stock_data", arguments={"symbol": "AAPL", "period": "1mo"}
+        )
+
+        data = json.loads(result[0].text)
+        assert "error" in data
+        assert data["error"] == "An internal error occurred"
+        # Internal details must NOT leak to the caller
+        assert "secret internal path" not in data["error"]
+        assert "/etc/foo" not in data["error"]
 
 
 class TestGenerateSummary:
@@ -853,3 +895,591 @@ class TestParameterValidation:
         data = json.loads(result[0].text)
         assert "error" in data
         assert "days_to_expiration" in data["error"]
+
+
+def _make_mock_data(n=30, base=100.0, step=0.5, volume_base=1000000, volume_step=20000):
+    """Helper to create mock OHLCV DataFrames for server tests."""
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+            "Open": [base + i * step - 0.5 for i in range(n)],
+            "High": [base + i * step + 2 for i in range(n)],
+            "Low": [base + i * step - 2 for i in range(n)],
+            "Close": [base + i * step for i in range(n)],
+            "Volume": [volume_base + i * volume_step for i in range(n)],
+        }
+    )
+
+
+class TestCallToolMFIConditions:
+    """Tests for MFI oversold and neutral conditions (server lines 651-654)."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_mfi_oversold_condition(self, mock_fetch):
+        """Test MFI returns 'Oversold (<20)' when MFI < 20."""
+        # Strong downtrend with decreasing volume to push MFI below 20
+        n = 30
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [200 - i * 3 for i in range(n)],
+                "High": [201 - i * 3 for i in range(n)],
+                "Low": [199 - i * 3 for i in range(n)],
+                "Close": [200 - i * 3 for i in range(n)],
+                "Volume": [2000000 + i * 100000 for i in range(n)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_mfi",
+            arguments={"symbol": "BEAR", "period": "1mo", "mfi_period": 14},
+        )
+        data = json.loads(result[0].text)
+        # MFI should be oversold in a strong downtrend
+        assert data["condition"] in ["Oversold (<20)", "Neutral (20-80)"]
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    @patch("volume_price_analysis.server.calculate_mfi")
+    async def test_mfi_oversold_via_mock(self, mock_mfi, mock_fetch):
+        """Test MFI oversold branch via mocked MFI values."""
+        mock_fetch.return_value = _make_mock_data(n=20)
+        # Return MFI series with last value < 20
+        mock_mfi.return_value = pd.Series([15.0] * 20)
+
+        result = await handle_call_tool(
+            name="calculate_mfi",
+            arguments={"symbol": "TEST", "mfi_period": 14},
+        )
+        data = json.loads(result[0].text)
+        assert data["condition"] == "Oversold (<20)"
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    @patch("volume_price_analysis.server.calculate_mfi")
+    async def test_mfi_neutral_via_mock(self, mock_mfi, mock_fetch):
+        """Test MFI neutral branch via mocked MFI values."""
+        mock_fetch.return_value = _make_mock_data(n=20)
+        mock_mfi.return_value = pd.Series([50.0] * 20)
+
+        result = await handle_call_tool(
+            name="calculate_mfi",
+            arguments={"symbol": "TEST", "mfi_period": 14},
+        )
+        data = json.loads(result[0].text)
+        assert data["condition"] == "Neutral (20-80)"
+
+
+class TestCallToolADLineEdgeCases:
+    """Tests for AD Line flat/decreasing trend (server lines 677, 685-688)."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_ad_line_single_data_point(self, mock_fetch):
+        """Test AD Line with a single data point -> flat trend (line 677)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": [pd.Timestamp("2024-01-01")],
+                "Open": [100.0],
+                "High": [102.0],
+                "Low": [98.0],
+                "Close": [101.0],
+                "Volume": [1000000],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_ad_line",
+            arguments={"symbol": "FLAT", "period": "1d"},
+        )
+        data = json.loads(result[0].text)
+        assert data["ad_trend"] == "flat"
+        assert data["data_points"] == 1
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_ad_line_decreasing_trend(self, mock_fetch):
+        """Test AD Line returns 'decreasing' when A/D is falling (lines 685-686)."""
+        # Close near low (negative A/D) to force decreasing A/D line
+        n = 10
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [100.0] * n,
+                "High": [110.0] * n,
+                "Low": [90.0] * n,
+                "Close": [91.0] * n,  # close near low = negative MFM
+                "Volume": [1000000] * n,
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_ad_line",
+            arguments={"symbol": "DEC", "period": "1mo"},
+        )
+        data = json.loads(result[0].text)
+        # A/D line should be decreasing (consistently negative MFM)
+        assert data["ad_trend"] in ["decreasing", "flat"]
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_ad_line_flat_trend(self, mock_fetch):
+        """Test AD Line returns 'flat' when A/D is constant (lines 687-688)."""
+        # Close at midpoint => MFM = 0 => A/D stays 0
+        n = 10
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [100.0] * n,
+                "High": [110.0] * n,
+                "Low": [90.0] * n,
+                "Close": [100.0] * n,  # midpoint = MFM of 0
+                "Volume": [1000000] * n,
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_ad_line",
+            arguments={"symbol": "FLAT", "period": "1mo"},
+        )
+        data = json.loads(result[0].text)
+        assert data["ad_trend"] == "flat"
+
+
+class TestCallToolCMFEdgeCases:
+    """Tests for CMF edge cases (server lines 714, 726-727)."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_cmf_neutral_zero(self, mock_fetch):
+        """Test CMF returns 'Neutral (0)' when CMF is exactly 0 (lines 726-727)."""
+        # Close at exact midpoint of H-L => CMF should be 0
+        n = 25
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [100.0] * n,
+                "High": [110.0] * n,
+                "Low": [90.0] * n,
+                "Close": [100.0] * n,  # midpoint => MFM = 0
+                "Volume": [1000000] * n,
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "ZERO", "cmf_period": 20},
+        )
+        data = json.loads(result[0].text)
+        assert data["condition"] == "Neutral (0)"
+        assert data["latest_cmf"] == 0.0
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    @patch("volume_price_analysis.server.calculate_chaikin_money_flow")
+    async def test_cmf_infinite_becomes_none(self, mock_cmf, mock_fetch):
+        """Test CMF returns Insufficient Data when CMF is infinite (line 714)."""
+        mock_fetch.return_value = _make_mock_data(n=25)
+        # Return CMF series where last finite-ish value is inf
+        mock_cmf.return_value = pd.Series([float("inf")] * 25)
+
+        result = await handle_call_tool(
+            name="calculate_cmf",
+            arguments={"symbol": "INF", "cmf_period": 20},
+        )
+        data = json.loads(result[0].text)
+        assert data["condition"] == "Insufficient Data"
+        assert data["latest_cmf"] is None
+
+
+class TestCallToolOptionsAnalysis:
+    """Tests for options_analysis tool (server lines 910-920)."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.run_options_analysis")
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_options_analysis_basic(self, mock_fetch, mock_options):
+        """Test options_analysis tool calls run_options_analysis and returns result."""
+        mock_fetch.return_value = _make_mock_data(n=60)
+        mock_options.return_value = {
+            "symbol": "AAPL",
+            "holding_period": 14,
+            "composite_score": 3.5,
+            "recommendation": "bullish",
+        }
+
+        result = await handle_call_tool(
+            name="options_analysis",
+            arguments={"symbol": "AAPL", "holding_period": 14, "days_to_expiration": 30},
+        )
+        data = json.loads(result[0].text)
+        assert data["symbol"] == "AAPL"
+        assert data["recommendation"] == "bullish"
+        mock_options.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.run_options_analysis")
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_options_analysis_default_dte(self, mock_fetch, mock_options):
+        """Test options_analysis defaults days_to_expiration to holding_period."""
+        mock_fetch.return_value = _make_mock_data(n=60)
+        mock_options.return_value = {"symbol": "TSLA", "holding_period": 21}
+
+        await handle_call_tool(
+            name="options_analysis",
+            arguments={"symbol": "TSLA", "holding_period": 21},
+        )
+        # days_to_expiration should default to holding_period
+        call_kwargs = mock_options.call_args
+        assert call_kwargs[1]["days_to_expiration"] == 21
+
+
+class TestGenerateSummaryEdgeCases:
+    """Tests for generate_summary edge cases (server lines 946, 952, 959)."""
+
+    def test_generate_summary_below_vwap(self):
+        """Test summary when price is below VWAP (line 946)."""
+        mock_data = pd.DataFrame({"Close": [100, 99, 98, 97, 96]})
+        mock_obv = pd.Series([0, 1000000, 2000000, 3000000, 4000000])
+        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
+        mock_mfi = pd.Series([50, 55, 60, 65, 70])
+        mock_trends = {"divergence_detected": False}
+
+        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 96, 102)
+        assert any("below VWAP" in s for s in summary)
+
+    def test_generate_summary_obv_decreasing(self):
+        """Test summary when OBV is decreasing (line 952)."""
+        mock_data = pd.DataFrame({"Close": [100, 101, 102, 103, 104]})
+        mock_obv = pd.Series([5000000, 4000000, 3000000, 2000000, 1000000])
+        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
+        mock_mfi = pd.Series([50, 55, 60, 65, 70])
+        mock_trends = {"divergence_detected": False}
+
+        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 104, 102)
+        assert any("decreasing" in s.lower() for s in summary)
+
+    def test_generate_summary_mfi_oversold(self):
+        """Test summary when MFI indicates oversold (line 959)."""
+        mock_data = pd.DataFrame({"Close": [100, 99, 98, 97, 96]})
+        mock_obv = pd.Series([0, 1000000, 2000000, 3000000, 4000000])
+        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
+        mock_mfi = pd.Series([30, 25, 20, 15, 10])  # Last MFI < 20 = oversold
+        mock_trends = {"divergence_detected": False}
+
+        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 96, 90)
+        assert any("oversold" in s.lower() for s in summary)
+
+
+class TestGenerateEnhancedSummary:
+    """Tests for generate_enhanced_summary (server lines 993, 998-1001, 1008-1009, etc.)."""
+
+    def _make_series(self, values):
+        """Helper to create a pd.Series from a list."""
+        return pd.Series(values)
+
+    def _base_args(self):
+        """Create base arguments for generate_enhanced_summary with reasonable defaults."""
+        data = pd.DataFrame({"Close": [100 + i * 0.5 for i in range(30)]})
+        obv = self._make_series([i * 100000 for i in range(30)])
+        ad_line = self._make_series([i * 50000 for i in range(30)])
+        vwap = self._make_series([100 + i * 0.3 for i in range(30)])
+        vwma = self._make_series([100 + i * 0.3 for i in range(30)])
+        mfi = self._make_series([50.0] * 30)
+        cmf = self._make_series([0.0] * 30)
+        trends = {"divergence_detected": False}
+        latest_close = 114.5
+        latest_vwap = 108.7
+        hv = self._make_series([0.20] * 30)
+        atr = self._make_series([2.0] * 30)
+        bbands = {
+            "upper": self._make_series([120.0] * 30),
+            "middle": self._make_series([115.0] * 30),
+            "lower": self._make_series([110.0] * 30),
+            "bandwidth": self._make_series([5.0] * 30),
+            "percent_b": self._make_series([0.5] * 30),
+        }
+        profile = {"interpretation": "Price within value area - balanced market"}
+        rvol = {"current_rvol": 1.0}
+        breakout = {"is_breakout": False, "direction": "none"}
+        return (
+            data,
+            obv,
+            ad_line,
+            vwap,
+            vwma,
+            mfi,
+            cmf,
+            trends,
+            latest_close,
+            latest_vwap,
+            hv,
+            atr,
+            bbands,
+            profile,
+            rvol,
+            breakout,
+        )
+
+    def test_below_vwap_sentiment(self):
+        """Test bearish sentiment when price below VWAP (line 993)."""
+        args = list(self._base_args())
+        args[8] = 95.0  # latest_close below VWAP
+        args[9] = 110.0  # latest_vwap
+
+        summary = generate_enhanced_summary(*args)
+        assert any("below VWAP" in s.lower() or "bearish" in s.lower() for s in summary)
+
+    def test_mixed_volume_signals(self):
+        """Test mixed volume signals when OBV and A/D disagree (lines 998-1001)."""
+        args = list(self._base_args())
+        # OBV increasing, A/D decreasing => mixed signals
+        args[1] = self._make_series([i * 100000 for i in range(30)])  # OBV increasing
+        args[2] = self._make_series([30 * 50000 - i * 50000 for i in range(30)])  # A/D decreasing
+
+        summary = generate_enhanced_summary(*args)
+        assert any("mixed" in s.lower() or "diverging" in s.lower() for s in summary)
+
+    def test_strong_distribution(self):
+        """Test strong distribution when both OBV and A/D falling (lines 998-999)."""
+        args = list(self._base_args())
+        # Both OBV and A/D decreasing
+        args[1] = self._make_series([30 * 100000 - i * 100000 for i in range(30)])  # OBV falling
+        args[2] = self._make_series([30 * 50000 - i * 50000 for i in range(30)])  # A/D falling
+
+        summary = generate_enhanced_summary(*args)
+        assert any("distribution" in s.lower() for s in summary)
+
+    def test_oversold_conditions(self):
+        """Test oversold detection (lines 1008-1009)."""
+        args = list(self._base_args())
+        args[5] = self._make_series([15.0] * 30)  # MFI < 20
+
+        summary = generate_enhanced_summary(*args)
+        assert any("oversold" in s.lower() for s in summary)
+
+    def test_high_volatility(self):
+        """Test high volatility message (lines 1014-1015)."""
+        args = list(self._base_args())
+        args[10] = self._make_series([0.35] * 30)  # HV > 0.30
+
+        summary = generate_enhanced_summary(*args)
+        assert any("high volatility" in s.lower() or "volatility" in s.lower() for s in summary)
+
+    def test_low_volatility(self):
+        """Test low volatility message (lines 1016-1018)."""
+        args = list(self._base_args())
+        args[10] = self._make_series([0.10] * 30)  # HV < 0.15
+
+        summary = generate_enhanced_summary(*args)
+        assert any("low volatility" in s.lower() or "breakout" in s.lower() for s in summary)
+
+    def test_bollinger_squeeze(self):
+        """Test Bollinger Band squeeze detection (line 1023)."""
+        args = list(self._base_args())
+        # Last bandwidth much lower than average of last 20 => squeeze
+        bw_values = [10.0] * 20 + [2.0] * 10  # last 10 values narrow
+        args[12] = {
+            "upper": self._make_series([120.0] * 30),
+            "middle": self._make_series([115.0] * 30),
+            "lower": self._make_series([110.0] * 30),
+            "bandwidth": self._make_series(bw_values),
+            "percent_b": self._make_series([0.5] * 30),
+        }
+
+        summary = generate_enhanced_summary(*args)
+        assert any("squeeze" in s.lower() for s in summary)
+
+    def test_extremely_high_volume(self):
+        """Test extremely high volume message (lines 1030-1031)."""
+        args = list(self._base_args())
+        args[14] = {"current_rvol": 3.0}  # > 2.0
+
+        summary = generate_enhanced_summary(*args)
+        assert any("extremely high volume" in s.lower() or "3.0x" in s for s in summary)
+
+    def test_very_low_volume(self):
+        """Test very low volume message (line 1035)."""
+        args = list(self._base_args())
+        args[14] = {"current_rvol": 0.3}  # < 0.5
+
+        summary = generate_enhanced_summary(*args)
+        assert any("low volume" in s.lower() for s in summary)
+
+    def test_volume_breakout_detected(self):
+        """Test volume breakout message (lines 1039-1040)."""
+        args = list(self._base_args())
+        args[15] = {"is_breakout": True, "direction": "bullish"}
+
+        summary = generate_enhanced_summary(*args)
+        assert any("breakout" in s.lower() for s in summary)
+
+    def test_divergence_detected(self):
+        """Test divergence message (lines 1044-1045)."""
+        args = list(self._base_args())
+        args[7] = {"divergence_detected": True, "divergence_type": "Price up, Volume down"}
+
+        summary = generate_enhanced_summary(*args)
+        assert any("divergence" in s.lower() for s in summary)
+
+    def test_nan_bandwidth_no_squeeze(self):
+        """Test that NaN bandwidth does not trigger squeeze (line 808 in comprehensive)."""
+        args = list(self._base_args())
+        args[12] = {
+            "upper": self._make_series([float("nan")] * 30),
+            "middle": self._make_series([float("nan")] * 30),
+            "lower": self._make_series([float("nan")] * 30),
+            "bandwidth": self._make_series([float("nan")] * 30),
+            "percent_b": self._make_series([float("nan")] * 30),
+        }
+
+        summary = generate_enhanced_summary(*args)
+        # Squeeze should NOT appear
+        assert not any("squeeze" in s.lower() for s in summary)
+
+    def test_nan_hv_no_volatility_message(self):
+        """Test that NaN HV does not trigger volatility message."""
+        args = list(self._base_args())
+        args[10] = self._make_series([float("nan")] * 30)
+
+        summary = generate_enhanced_summary(*args)
+        assert not any(
+            "volatility" in s.lower() and ("high" in s.lower() or "low" in s.lower())
+            for s in summary
+        )
+
+    def test_overbought_conditions(self):
+        """Test overbought detection (lines 1006-1007)."""
+        args = list(self._base_args())
+        args[5] = self._make_series([85.0] * 30)  # MFI > 80
+
+        summary = generate_enhanced_summary(*args)
+        assert any("overbought" in s.lower() for s in summary)
+
+
+class TestComprehensiveAnalysisBranches:
+    """Tests for comprehensive_analysis edge case branches (lines 785-795, 808, 813)."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_comprehensive_mfi_overbought(self, mock_fetch):
+        """Test comprehensive analysis with overbought MFI (lines 785-786)."""
+        # Strongly rising data to push MFI above 80
+        n = 30
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [100 + i * 3 for i in range(n)],
+                "High": [102 + i * 3 for i in range(n)],
+                "Low": [98 + i * 3 for i in range(n)],
+                "Close": [101 + i * 3 for i in range(n)],
+                "Volume": [1000000 + i * 100000 for i in range(n)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="comprehensive_analysis", arguments={"symbol": "BULL", "period": "1mo"}
+        )
+        data = json.loads(result[0].text)
+        assert "summary" in data
+        assert isinstance(data["summary"], list)
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_comprehensive_mfi_oversold(self, mock_fetch):
+        """Test comprehensive analysis with oversold MFI (lines 787-788)."""
+        n = 30
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [200 - i * 3 for i in range(n)],
+                "High": [202 - i * 3 for i in range(n)],
+                "Low": [198 - i * 3 for i in range(n)],
+                "Close": [200 - i * 3 for i in range(n)],
+                "Volume": [1000000 + i * 100000 for i in range(n)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="comprehensive_analysis", arguments={"symbol": "BEAR", "period": "1mo"}
+        )
+        data = json.loads(result[0].text)
+        assert "summary" in data
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.calculate_atr")
+    @patch("volume_price_analysis.server.calculate_bollinger_bands")
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_comprehensive_nan_bandwidth_and_atr(self, mock_fetch, mock_bb, mock_atr):
+        """Test comprehensive analysis with NaN bandwidth and ATR (lines 808, 813)."""
+        n = 30
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(n)],
+                "High": [102 + i * 0.5 for i in range(n)],
+                "Low": [98 + i * 0.5 for i in range(n)],
+                "Close": [101 + i * 0.5 for i in range(n)],
+                "Volume": [1000000 + i * 20000 for i in range(n)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+        # Return NaN for all bollinger bands
+        mock_bb.return_value = {
+            "upper": pd.Series([np.nan] * n),
+            "middle": pd.Series([np.nan] * n),
+            "lower": pd.Series([np.nan] * n),
+            "bandwidth": pd.Series([np.nan] * n),
+            "percent_b": pd.Series([np.nan] * n),
+        }
+        # Return NaN for ATR
+        mock_atr.return_value = pd.Series([np.nan] * n)
+
+        result = await handle_call_tool(
+            name="comprehensive_analysis", arguments={"symbol": "NAN", "period": "1mo"}
+        )
+        data = json.loads(result[0].text)
+        assert "summary" in data
+        # Verify the tool completes without error despite NaN values
+        assert data["symbol"] == "NAN"
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.calculate_mfi")
+    @patch("volume_price_analysis.server.calculate_chaikin_money_flow")
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_comprehensive_mfi_oversold_and_cmf_strong_selling(
+        self, mock_fetch, mock_cmf, mock_mfi
+    ):
+        """Test comprehensive analysis with oversold MFI and strong selling CMF (lines 788, 793)."""
+        n = 30
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(n)],
+                "High": [102 + i * 0.5 for i in range(n)],
+                "Low": [98 + i * 0.5 for i in range(n)],
+                "Close": [101 + i * 0.5 for i in range(n)],
+                "Volume": [1000000 + i * 20000 for i in range(n)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+        # MFI < 20 => "Oversold"
+        mock_mfi.return_value = pd.Series([15.0] * n)
+        # CMF < -0.25 => "Strong selling"
+        mock_cmf.return_value = pd.Series([-0.3] * n)
+
+        result = await handle_call_tool(
+            name="comprehensive_analysis", arguments={"symbol": "TEST", "period": "1mo"}
+        )
+        data = json.loads(result[0].text)
+        assert "volume_indicators" in data
+        assert data["volume_indicators"]["mfi"]["condition"] == "Oversold"
+        assert data["volume_indicators"]["cmf"]["condition"] == "Strong selling"

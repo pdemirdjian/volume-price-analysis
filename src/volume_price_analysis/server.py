@@ -922,9 +922,17 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             raise ValueError(f"Unknown tool: {name}")
 
+    except ValueError as e:
+        logger.warning("Tool %s validation error: %s", name, str(e))
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
     except Exception as e:
         logger.error("Tool %s failed: %s", name, str(e), exc_info=True)
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"error": "An internal error occurred"}, indent=2),
+            )
+        ]
 
 
 def generate_summary(data, obv, vwap, mfi, trends, latest_close, latest_vwap):

@@ -211,3 +211,46 @@ class TestRunScan:
         result = await run_scan(symbols=["BADTICKER"])
         assert result["summary"]["errors"] >= 1
         assert result["summary"]["total_candidates"] == 0
+
+    @pytest.mark.asyncio
+    async def test_rejects_too_many_symbols(self):
+        """Passing more than 500 symbols should raise ValueError."""
+        symbols = [f"SYM{i}" for i in range(501)]
+        with pytest.raises(ValueError, match="Maximum is 500"):
+            await run_scan(symbols=symbols)
+
+    @pytest.mark.asyncio
+    async def test_accepts_max_symbols(self, mocker):
+        """Passing exactly 500 symbols should NOT raise a symbol-limit error."""
+        import pandas as pd
+
+        small_data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=10),
+                "Open": [100] * 10,
+                "High": [101] * 10,
+                "Low": [99] * 10,
+                "Close": [100] * 10,
+                "Volume": [1000000] * 10,
+            }
+        )
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=small_data,
+        )
+
+        symbols = [f"SYM{i}" for i in range(500)]
+        result = await run_scan(symbols=symbols)
+        # Should complete without the "Too many symbols" error
+        assert result["scan_parameters"]["symbols_in_universe"] == 500
+
+    @pytest.mark.asyncio
+    async def test_scan_timeout(self, mocker):
+        """When asyncio.wait_for raises TimeoutError, run_scan should raise ValueError."""
+        mocker.patch(
+            "volume_price_analysis.analysis.asyncio.wait_for",
+            side_effect=TimeoutError,
+        )
+
+        with pytest.raises(ValueError, match="timed out"):
+            await run_scan(symbols=["AAPL"])

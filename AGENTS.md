@@ -20,6 +20,7 @@ Finance (yfinance) and exposes analysis capabilities to AI assistants.
   - `markdown`: Email HTML rendering
   - `holidays`: NYSE market holiday detection
   - `pytickersymbols`: Stock symbol universe (~200 symbols)
+  - `nh3`: HTML sanitization for email content
 - **Package Management**: `uv` (recommended) or `pip`
 - **Deployment**: Docker container with Python asyncio scheduler, CI/CD via
   GitHub Actions to ghcr.io
@@ -151,6 +152,20 @@ Required for the morning briefing agent (not needed for MCP server). See
 | `MAX_DEEP_ANALYSIS` | No | Max candidates for deep analysis (default: `5`) |
 
 Store these in `.env` (gitignored) or pass via Docker `--env-file`.
+
+## CI Pipeline
+
+Workflows in `.github/workflows/`:
+
+- **ci.yml**: Test matrix (ubuntu/macos/windows), ruff lint+format, mypy,
+  Trivy filesystem scan, Hadolint, CodeQL SAST, dependency-review (PRs only),
+  Docker build + Trivy image scan
+- **pr-title.yml**: Conventional commit PR title validation
+  (`feat:`, `fix:`, `chore:`, etc.)
+- **docker.yml**: Publish to ghcr.io on release
+- **release.yml**: Automated releases via release-please
+
+Coverage threshold: 80% (`--cov-fail-under=80` in pyproject.toml)
 
 ## Code Style
 

@@ -266,6 +266,8 @@ async def run_scan(
 
     # Determine symbols to scan
     if symbols and len(symbols) > 0:
+        if len(symbols) > 500:
+            raise ValueError(f"Too many symbols ({len(symbols)}). Maximum is 500.")
         scan_symbols = [s.upper() for s in symbols]
         universe_used = "custom"
     elif universe.lower() in UNIVERSES:
@@ -297,7 +299,11 @@ async def run_scan(
         for sym in scan_symbols
     ]
 
-    results = await asyncio.gather(*tasks)
+    try:
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=600)
+    except TimeoutError:
+        logger.error("Scan timed out after 600 seconds")
+        raise ValueError("Scan timed out after 10 minutes") from None
 
     # Process results
     candidates = []
