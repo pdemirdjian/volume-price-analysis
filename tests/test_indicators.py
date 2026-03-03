@@ -2379,7 +2379,7 @@ class TestCompositeScoreBranches:
         try:
             result = calculate_composite_score(data, holding_period=1)
             assert result["score_breakdown"]["obv_momentum"] == 0
-        except (IndexError, ValueError):
+        except IndexError, ValueError:
             # If the function can't handle very short data, that's expected
             pass
 
@@ -2399,7 +2399,7 @@ class TestCompositeScoreBranches:
         try:
             result = calculate_composite_score(data, holding_period=1)
             assert result["score_breakdown"]["ad_momentum"] == 0
-        except (IndexError, ValueError):
+        except IndexError, ValueError:
             pass
 
     def test_mfi_score_negative_one(self):
