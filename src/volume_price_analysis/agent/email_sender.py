@@ -40,10 +40,12 @@ def send_briefing_email(
         smtp_host: SMTP server hostname.
         smtp_port: SMTP server port.
     """
+    recipients = _parse_recipients(to_addr)
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = from_addr
-    msg["To"] = to_addr
+    msg["To"] = ", ".join(recipients)
 
     # Plain text part
     msg.attach(MIMEText(body_markdown, "plain"))
@@ -77,8 +79,6 @@ strong {{ color: #0f3460; }}
 </html>"""
     msg.attach(MIMEText(html_full, "html"))
 
-    recipients = _parse_recipients(to_addr)
-
     logger.info("Sending briefing email to %s via %s:%d", recipients, smtp_host, smtp_port)
 
     try:
@@ -110,7 +110,7 @@ def send_error_email(
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = from_addr
-        msg["To"] = to_addr
+        msg["To"] = ", ".join(recipients)
         msg.attach(MIMEText(body, "plain"))
 
         with smtplib.SMTP(smtp_host, smtp_port) as server:
