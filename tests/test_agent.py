@@ -1,6 +1,10 @@
 """Tests for the morning briefing agent."""
 
-from unittest.mock import MagicMock
+import asyncio
+import signal
+import smtplib
+from datetime import datetime, time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -10,11 +14,22 @@ from volume_price_analysis.agent.email_sender import (
     _parse_recipients,
     send_briefing_email,
     send_error_email,
+    send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
     _fallback_briefing,
     _get_top_symbols,
+    main,
     run_morning_briefing,
+)
+from volume_price_analysis.agent.scheduler import (
+    ET,
+    _next_run,
+    _run_loop,
+    run_scheduler,
+)
+from volume_price_analysis.agent.scheduler import (
+    main as scheduler_main,
 )
 
 
@@ -816,3 +831,1051 @@ class TestRunMorningBriefing:
         mock_send.assert_called_once()
         body = mock_send.call_args.kwargs.get("body_markdown", "")
         assert "Fallback" in body
+
+
+class TestSendBriefingEmailSmtpFailure:
+    """Test that send_briefing_email re-raises SMTPException (lines 90-92)."""
+
+    def test_raises_smtp_exception(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp_instance.sendmail.side_effect = smtplib.SMTPException("Connection refused")
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        with pytest.raises(smtplib.SMTPException, match="Connection refused"):
+            send_briefing_email(
+                subject="Test Briefing",
+                body_markdown="# Hello",
+                from_addr="sender@test.com",
+                password="test-pass",
+                to_addr="recipient@test.com",
+            )
+
+    def test_logs_smtp_exception(self, mocker, caplog):
+        import logging
+
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp_instance.sendmail.side_effect = smtplib.SMTPException("Auth failed")
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
+            with pytest.raises(smtplib.SMTPException):
+                send_briefing_email(
+                    subject="Test",
+                    body_markdown="content",
+                    from_addr="a@b.com",
+                    password="pass",
+                    to_addr="c@d.com",
+                )
+
+        assert "Failed to send briefing email" in caplog.text
+
+
+class TestSendErrorEmailFailure:
+    """Test that send_error_email swallows exceptions (lines 132-133)."""
+
+    def test_swallows_smtp_exception(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp_instance.sendmail.side_effect = smtplib.SMTPException("Network error")
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        # Should NOT raise - the exception is caught and logged
+        send_error_email(
+            error_message="Something broke",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+    def test_logs_failure_to_send_error_email(self, mocker, caplog):
+        import logging
+
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp_instance.sendmail.side_effect = Exception("Unexpected failure")
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
+            send_error_email(
+                error_message="Something broke",
+                from_addr="sender@test.com",
+                password="test-pass",
+                to_addr="recipient@test.com",
+            )
+
+        assert "Failed to send error notification email" in caplog.text
+
+
+class TestSendRawDataEmail:
+    """Test send_raw_data_email function (lines 147-159)."""
+
+    def test_sends_scan_results_as_json(self, mocker):
+        mock_send = mocker.patch(
+            "volume_price_analysis.agent.email_sender.send_briefing_email",
+        )
+
+        scan_results = {"summary": {"total_candidates": 5, "bullish": 3}}
+
+        send_raw_data_email(
+            scan_results=scan_results,
+            deep_analyses=[],
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+            date_str="2026-03-02",
+        )
+
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args.kwargs
+        assert call_kwargs["subject"] == "Morning Market Data (Raw) - 2026-03-02"
+        assert call_kwargs["from_addr"] == "sender@test.com"
+        assert call_kwargs["password"] == "test-pass"
+        assert call_kwargs["to_addr"] == "recipient@test.com"
+        body = call_kwargs["body_markdown"]
+        assert "Morning Market Scan Results" in body
+        assert "total_candidates" in body
+        assert "5" in body
+
+    def test_includes_deep_analyses(self, mocker):
+        mock_send = mocker.patch(
+            "volume_price_analysis.agent.email_sender.send_briefing_email",
+        )
+
+        scan_results = {"summary": {"total_candidates": 1}}
+        deep_analyses = [
+            {"symbol": "AAPL", "score": 4.5},
+            {"symbol": "MSFT", "score": 3.8},
+        ]
+
+        send_raw_data_email(
+            scan_results=scan_results,
+            deep_analyses=deep_analyses,
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+            date_str="2026-03-02",
+        )
+
+        mock_send.assert_called_once()
+        body = mock_send.call_args.kwargs["body_markdown"]
+        assert "Deep Analysis Results" in body
+        assert "## AAPL" in body
+        assert "## MSFT" in body
+        assert "4.5" in body
+        assert "3.8" in body
+
+    def test_no_deep_analysis_section_when_empty(self, mocker):
+        mock_send = mocker.patch(
+            "volume_price_analysis.agent.email_sender.send_briefing_email",
+        )
+
+        send_raw_data_email(
+            scan_results={"summary": {}},
+            deep_analyses=[],
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        body = mock_send.call_args.kwargs["body_markdown"]
+        assert "Deep Analysis Results" not in body
+
+    def test_handles_unknown_symbol(self, mocker):
+        mock_send = mocker.patch(
+            "volume_price_analysis.agent.email_sender.send_briefing_email",
+        )
+
+        send_raw_data_email(
+            scan_results={},
+            deep_analyses=[{"score": 2.0}],  # no "symbol" key
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        body = mock_send.call_args.kwargs["body_markdown"]
+        assert "## Unknown" in body
+
+    def test_passes_smtp_params(self, mocker):
+        mock_send = mocker.patch(
+            "volume_price_analysis.agent.email_sender.send_briefing_email",
+        )
+
+        send_raw_data_email(
+            scan_results={},
+            deep_analyses=[],
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+            smtp_host="custom.smtp.com",
+            smtp_port=465,
+        )
+
+        call_kwargs = mock_send.call_args.kwargs
+        assert call_kwargs["smtp_host"] == "custom.smtp.com"
+        assert call_kwargs["smtp_port"] == 465
+
+
+# ---------------------------------------------------------------------------
+# Scheduler tests
+# ---------------------------------------------------------------------------
+
+
+class TestNextRun:
+    """Test _next_run scheduling logic."""
+
+    def test_skips_holiday_that_lands_on_weekend(self):
+        """Line 76: holiday on Friday -> skip to Saturday -> advance past weekend."""
+        # Good Friday 2025-04-18 is a Friday NYSE holiday.
+        # Set now to Thursday 2025-04-17 at 9:00 (after 08:30 target).
+        tz = ET
+        target = time(8, 30)
+        now = datetime(2025, 4, 17, 9, 0, tzinfo=tz)
+
+        result = _next_run(target, tz, now=now, skip_holidays=True)
+
+        # Friday 2025-04-18 is a holiday -> skip to Saturday -> skip weekend -> Monday
+        assert result.date() == datetime(2025, 4, 21, tzinfo=tz).date()
+        assert result.weekday() == 0  # Monday
+
+
+class TestRunLoop:
+    """Test _run_loop scheduling loop."""
+
+    @pytest.mark.asyncio
+    async def test_config_validation_failure_exits(self, mocker):
+        """Lines 90-93: config validation errors cause SystemExit(1)."""
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=AgentConfig(ai_provider="gemini"),  # missing required fields
+        )
+        stop_event = asyncio.Event()
+
+        with pytest.raises(SystemExit):
+            await _run_loop(time(8, 30), ET, stop_event)
+
+    @pytest.mark.asyncio
+    async def test_holiday_log_with_skip_holidays_true(self, mocker):
+        """Lines 103-110: log when skip_holidays=True and next run is on a holiday date."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        # Return a date that IS a holiday (Good Friday 2025) to trigger the defensive branch
+        holiday_dt = datetime(2025, 4, 18, 8, 30, tzinfo=ET)
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler._next_run",
+            return_value=holiday_dt,
+        )
+
+        mock_logger = mocker.patch("volume_price_analysis.agent.scheduler.logger")
+
+        stop_event = asyncio.Event()
+
+        # Schedule stop_event.set() to fire during the await inside the loop body
+        async def set_stop_soon():
+            await asyncio.sleep(0)
+            stop_event.set()
+
+        asyncio.create_task(set_stop_soon())
+
+        await _run_loop(time(8, 30), ET, stop_event, skip_holidays=True)
+
+        # Check that the "skipping" log message was emitted
+        log_calls = [str(c) for c in mock_logger.info.call_args_list]
+        assert any("skipping" in c.lower() for c in log_calls)
+
+    @pytest.mark.asyncio
+    async def test_holiday_log_with_skip_holidays_false(self, mocker):
+        """Lines 111-116: log 'still running' when skip_holidays=False on a holiday."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        # Return a holiday date
+        holiday_dt = datetime(2025, 4, 18, 8, 30, tzinfo=ET)
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler._next_run",
+            return_value=holiday_dt,
+        )
+
+        mock_logger = mocker.patch("volume_price_analysis.agent.scheduler.logger")
+
+        stop_event = asyncio.Event()
+
+        async def set_stop_soon():
+            await asyncio.sleep(0)
+            stop_event.set()
+
+        asyncio.create_task(set_stop_soon())
+
+        await _run_loop(time(8, 30), ET, stop_event, skip_holidays=False)
+
+        log_calls = [str(c) for c in mock_logger.info.call_args_list]
+        assert any("still running" in c.lower() for c in log_calls)
+
+    @pytest.mark.asyncio
+    async def test_stop_event_breaks_loop(self, mocker):
+        """Line 127: stop_event set during wait_for causes break."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        stop_event = asyncio.Event()
+
+        # Schedule stop to fire during the await inside the loop
+        async def set_stop_soon():
+            await asyncio.sleep(0)
+            stop_event.set()
+
+        asyncio.create_task(set_stop_soon())
+
+        # Should complete without hanging
+        await _run_loop(time(8, 30), ET, stop_event)
+
+    @pytest.mark.asyncio
+    async def test_successful_briefing_run(self, mocker):
+        """Line 135: successful briefing log message."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        # Make _next_run return a time in the past so delay=0 and timer expires immediately
+        past_dt = datetime(2020, 1, 6, 8, 30, tzinfo=ET)  # Monday
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler._next_run",
+            return_value=past_dt,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.datetime",
+            wraps=datetime,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.datetime.now",
+            return_value=datetime(2020, 1, 6, 9, 0, tzinfo=ET),
+        )
+
+        stop_event = asyncio.Event()
+
+        # After briefing runs, set stop to exit loop on next iteration
+        async def briefing_side_effect(cfg):
+            stop_event.set()
+
+        mock_run_briefing = AsyncMock(side_effect=briefing_side_effect)
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.run_morning_briefing",
+            mock_run_briefing,
+        )
+
+        mock_logger = mocker.patch("volume_price_analysis.agent.scheduler.logger")
+
+        await _run_loop(time(8, 30), ET, stop_event)
+
+        mock_run_briefing.assert_called_once_with(config)
+        log_calls = [str(c) for c in mock_logger.info.call_args_list]
+        assert any("completed successfully" in c.lower() for c in log_calls)
+
+    @pytest.mark.asyncio
+    async def test_briefing_failure_sends_error_email(self, mocker):
+        """Lines 136-148: briefing failure triggers error email."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        past_dt = datetime(2020, 1, 6, 8, 30, tzinfo=ET)
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler._next_run",
+            return_value=past_dt,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.datetime",
+            wraps=datetime,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.datetime.now",
+            return_value=datetime(2020, 1, 6, 9, 0, tzinfo=ET),
+        )
+
+        stop_event = asyncio.Event()
+
+        async def briefing_side_effect(cfg):
+            stop_event.set()
+            raise RuntimeError("Briefing exploded")
+
+        mock_run_briefing = AsyncMock(side_effect=briefing_side_effect)
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.run_morning_briefing",
+            mock_run_briefing,
+        )
+
+        mock_send_error = mocker.patch(
+            "volume_price_analysis.agent.scheduler.send_error_email",
+        )
+
+        await _run_loop(time(8, 30), ET, stop_event)
+
+        mock_send_error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_error_email_failure_is_logged(self, mocker):
+        """Lines 149-150: exception when sending error email is logged."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        past_dt = datetime(2020, 1, 6, 8, 30, tzinfo=ET)
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler._next_run",
+            return_value=past_dt,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.datetime",
+            wraps=datetime,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.datetime.now",
+            return_value=datetime(2020, 1, 6, 9, 0, tzinfo=ET),
+        )
+
+        stop_event = asyncio.Event()
+
+        async def briefing_side_effect(cfg):
+            stop_event.set()
+            raise RuntimeError("Briefing exploded")
+
+        mock_run_briefing = AsyncMock(side_effect=briefing_side_effect)
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.run_morning_briefing",
+            mock_run_briefing,
+        )
+
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.send_error_email",
+            side_effect=Exception("SMTP down"),
+        )
+
+        mock_logger = mocker.patch("volume_price_analysis.agent.scheduler.logger")
+
+        await _run_loop(time(8, 30), ET, stop_event)
+
+        # logger.exception should have been called for the error email failure
+        log_calls = [str(c) for c in mock_logger.exception.call_args_list]
+        assert any("error email" in c.lower() for c in log_calls)
+
+
+class TestRunScheduler:
+    """Test run_scheduler signal handling setup."""
+
+    @pytest.mark.asyncio
+    async def test_unix_signal_handler(self, mocker):
+        """Lines 172-173: Unix signal handler sets stop_event."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        # Track the signal handler that gets registered
+        registered_handlers = {}
+        loop = asyncio.get_running_loop()
+
+        def capture_handler(sig, handler):
+            registered_handlers[sig] = handler
+
+        mocker.patch.object(loop, "add_signal_handler", side_effect=capture_handler)
+
+        # Mock _run_loop to not actually run
+        mock_run_loop = AsyncMock()
+        mocker.patch("volume_price_analysis.agent.scheduler._run_loop", mock_run_loop)
+
+        # Force non-win32 path
+        mock_sys = mocker.patch("volume_price_analysis.agent.scheduler.sys")
+        mock_sys.platform = "linux"
+
+        await run_scheduler(time(8, 30), ET)
+
+        # Verify signal handlers were registered for SIGTERM and SIGINT
+        assert signal.SIGTERM in registered_handlers
+        assert signal.SIGINT in registered_handlers
+
+        # Call the handler to exercise lines 172-173
+        handler = registered_handlers[signal.SIGTERM]
+        handler()
+
+    @pytest.mark.asyncio
+    async def test_win32_signal_handler(self, mocker):
+        """Lines 165-166: Windows signal handler uses call_soon_threadsafe."""
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+            return_value=config,
+        )
+
+        # Mock _run_loop to not actually run
+        mock_run_loop = AsyncMock()
+        mocker.patch("volume_price_analysis.agent.scheduler._run_loop", mock_run_loop)
+
+        # Force win32 path
+        mock_sys = mocker.patch("volume_price_analysis.agent.scheduler.sys")
+        mock_sys.platform = "win32"
+
+        # Track signal.signal calls
+        registered_handlers = {}
+
+        def capture_signal(sig, handler):
+            registered_handlers[sig] = handler
+
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.signal.signal",
+            side_effect=capture_signal,
+        )
+
+        await run_scheduler(time(8, 30), ET)
+
+        # On win32 path, signal.signal should have been called for SIGINT
+        assert signal.SIGINT in registered_handlers
+
+        # Call the handler to exercise lines 165-166
+        handler = registered_handlers[signal.SIGINT]
+        handler(signal.SIGINT, None)
+
+
+class TestSchedulerMain:
+    """Test the scheduler main() CLI entry point."""
+
+    def test_default_time(self, mocker):
+        """Lines 192-220: main() parses args and calls asyncio.run."""
+        mocker.patch("sys.argv", ["morning-scheduler"])
+        mock_run = mocker.patch("volume_price_analysis.agent.scheduler.asyncio.run")
+
+        scheduler_main()
+
+        mock_run.assert_called_once()
+        # It should be a coroutine from run_scheduler
+        call_args = mock_run.call_args[0][0]
+        assert asyncio.iscoroutine(call_args)
+        call_args.close()  # Clean up unawaited coroutine
+
+    def test_custom_time(self, mocker):
+        """Lines 207-215: main() parses custom --time argument."""
+        mocker.patch("sys.argv", ["morning-scheduler", "--time", "10:45"])
+        mock_run = mocker.patch("volume_price_analysis.agent.scheduler.asyncio.run")
+
+        scheduler_main()
+
+        mock_run.assert_called_once()
+        coro = mock_run.call_args[0][0]
+        coro.close()
+
+    def test_skip_holidays_flag(self, mocker):
+        """Lines 198-202: main() parses --skip-holidays flag."""
+        mocker.patch("sys.argv", ["morning-scheduler", "--skip-holidays"])
+        mock_run = mocker.patch("volume_price_analysis.agent.scheduler.asyncio.run")
+
+        scheduler_main()
+
+        mock_run.assert_called_once()
+        coro = mock_run.call_args[0][0]
+        coro.close()
+
+    def test_invalid_time_format_exits(self, mocker):
+        """Lines 216-218: invalid --time causes sys.exit(1)."""
+        mocker.patch("sys.argv", ["morning-scheduler", "--time", "not-a-time"])
+        mock_exit = mocker.patch(
+            "volume_price_analysis.agent.scheduler.sys.exit", side_effect=SystemExit(1)
+        )
+
+        with pytest.raises(SystemExit):
+            scheduler_main()
+
+        mock_exit.assert_called_once_with(1)
+
+    def test_invalid_time_bad_hour(self, mocker):
+        """Lines 211-212: hour out of range causes exit."""
+        mocker.patch("sys.argv", ["morning-scheduler", "--time", "25:00"])
+        mock_exit = mocker.patch(
+            "volume_price_analysis.agent.scheduler.sys.exit", side_effect=SystemExit(1)
+        )
+
+        with pytest.raises(SystemExit):
+            scheduler_main()
+
+        mock_exit.assert_called_once_with(1)
+
+    def test_invalid_time_bad_minute(self, mocker):
+        """Lines 213-214: minute out of range causes exit."""
+        mocker.patch("sys.argv", ["morning-scheduler", "--time", "08:99"])
+        mock_exit = mocker.patch(
+            "volume_price_analysis.agent.scheduler.sys.exit", side_effect=SystemExit(1)
+        )
+
+        with pytest.raises(SystemExit):
+            scheduler_main()
+
+        mock_exit.assert_called_once_with(1)
+
+    def test_invalid_time_missing_colon(self, mocker):
+        """Lines 208-209: time without colon separator causes exit."""
+        mocker.patch("sys.argv", ["morning-scheduler", "--time", "0830"])
+        mock_exit = mocker.patch(
+            "volume_price_analysis.agent.scheduler.sys.exit", side_effect=SystemExit(1)
+        )
+
+        with pytest.raises(SystemExit):
+            scheduler_main()
+
+        mock_exit.assert_called_once_with(1)
+
+
+# ---------------------------------------------------------------------------
+# Morning agent coverage: lines 82-83, 127-129, 212-252, 256
+# ---------------------------------------------------------------------------
+
+
+class TestDeepAnalysisException:
+    """Test exception handling during deep analysis loop (lines 82-83)."""
+
+    @pytest.mark.asyncio
+    async def test_exception_in_fetch_is_caught_and_logged(self, mocker, capsys):
+        """When fetch_stock_data raises, the exception is caught and analysis continues."""
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value={
+                "summary": {
+                    "total_candidates": 2,
+                    "bullish_setups": 1,
+                    "bearish_setups": 1,
+                    "high_conviction": 0,
+                    "errors": 0,
+                },
+                "high_conviction_setups": [],
+                "top_bullish": [{"symbol": "AAPL"}],
+                "top_bearish": [{"symbol": "TSLA"}],
+            },
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
+            side_effect=Exception("Yahoo Finance unavailable"),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="# Briefing with no deep data",
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+            max_deep_analysis=2,
+        )
+
+        # Should NOT raise despite fetch_stock_data failing for every symbol
+        await run_morning_briefing(config, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "Briefing with no deep data" in captured.out
+
+    @pytest.mark.asyncio
+    async def test_exception_in_options_analysis_is_caught(self, mocker, capsys):
+        """When run_options_analysis raises, the exception is caught and analysis continues."""
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value={
+                "summary": {
+                    "total_candidates": 1,
+                    "bullish_setups": 1,
+                    "bearish_setups": 0,
+                    "high_conviction": 0,
+                    "errors": 0,
+                },
+                "high_conviction_setups": [],
+                "top_bullish": [{"symbol": "AAPL"}],
+                "top_bearish": [],
+            },
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
+            return_value=MagicMock(),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_options_analysis",
+            side_effect=ValueError("Bad data"),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="# Briefing after analysis error",
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+            max_deep_analysis=1,
+        )
+
+        await run_morning_briefing(config, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "Briefing after analysis error" in captured.out
+
+
+class TestDryRunNoAi:
+    """Test dry_run=True + no_ai=True path (lines 127-129)."""
+
+    @pytest.mark.asyncio
+    async def test_prints_json_to_stdout(self, mocker, capsys):
+        """dry_run + no_ai prints scan JSON and deep analyses JSON to stdout."""
+        scan_data = {
+            "summary": {
+                "total_candidates": 1,
+                "bullish_setups": 1,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [{"symbol": "MSFT"}],
+            "top_bearish": [],
+        }
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value=scan_data,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
+            return_value=MagicMock(),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_options_analysis",
+            return_value={
+                "symbol": "MSFT",
+                "composite_signal": {"score": 4.0},
+            },
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+            max_deep_analysis=1,
+        )
+
+        await run_morning_briefing(config, dry_run=True, no_ai=True)
+
+        captured = capsys.readouterr()
+        # scan_results JSON printed (line 127)
+        assert "total_candidates" in captured.out
+        # deep analysis JSON printed (lines 128-129)
+        assert "MSFT" in captured.out
+        assert "composite_signal" in captured.out
+
+    @pytest.mark.asyncio
+    async def test_prints_json_with_no_candidates(self, mocker, capsys):
+        """dry_run + no_ai with no candidates still prints scan JSON."""
+        scan_data = {
+            "summary": {
+                "total_candidates": 0,
+                "bullish_setups": 0,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value=scan_data,
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+
+        await run_morning_briefing(config, dry_run=True, no_ai=True)
+
+        captured = capsys.readouterr()
+        assert "total_candidates" in captured.out
+
+
+class TestMain:
+    """Test the main() entry point (lines 212-252, 256)."""
+
+    def test_main_dry_run_no_ai_succeeds(self, mocker):
+        """main() with --dry-run --no-ai parses args and runs briefing."""
+        mocker.patch("sys.argv", ["morning-briefing", "--dry-run", "--no-ai"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="test-key",
+                email_from="a@b.com",
+                email_password="pass",
+                email_to="c@d.com",
+            ),
+        )
+        mock_run = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+        )
+
+        main()
+
+        mock_run.assert_called_once()
+
+    def test_main_config_validation_failure_exits(self, mocker):
+        """Config validation errors cause sys.exit(1)."""
+        mocker.patch("sys.argv", ["morning-briefing"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="",
+                email_from="",
+                email_password="",
+                email_to="",
+            ),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_no_ai_skips_api_key_errors(self, mocker):
+        """--no-ai filters out API_KEY validation errors."""
+        mocker.patch("sys.argv", ["morning-briefing", "--no-ai"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="",
+                email_from="a@b.com",
+                email_password="pass",
+                email_to="c@d.com",
+            ),
+        )
+        mock_run = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+        )
+
+        main()
+
+        mock_run.assert_called_once()
+
+    def test_main_dry_run_with_ai_needs_api_key(self, mocker):
+        """--dry-run without --no-ai still validates AI config."""
+        mocker.patch("sys.argv", ["morning-briefing", "--dry-run"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="",
+                email_from="",
+                email_password="",
+                email_to="",
+            ),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_main_dry_run_no_ai_skips_all_validation(self, mocker):
+        """--dry-run + --no-ai skips all config validation."""
+        mocker.patch("sys.argv", ["morning-briefing", "--dry-run", "--no-ai"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="",
+                email_from="",
+                email_password="",
+                email_to="",
+            ),
+        )
+        mock_run = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+        )
+
+        main()
+
+        mock_run.assert_called_once()
+
+    def test_main_dry_run_with_valid_ai_config_succeeds(self, mocker):
+        """--dry-run with valid AI config passes validation."""
+        mocker.patch("sys.argv", ["morning-briefing", "--dry-run"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="valid-key",
+                email_from="",
+                email_password="",
+                email_to="",
+            ),
+        )
+        mock_run = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+        )
+
+        main()
+
+        mock_run.assert_called_once()
+
+    def test_main_critical_failure_sends_error_email(self, mocker):
+        """Critical exception triggers send_error_email and sys.exit(1)."""
+        mocker.patch("sys.argv", ["morning-briefing"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="test-key",
+                email_from="a@b.com",
+                email_password="pass",
+                email_to="c@d.com",
+            ),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+            side_effect=RuntimeError("Critical failure"),
+        )
+        mock_send_error = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.send_error_email",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+        mock_send_error.assert_called_once()
+        assert "Critical failure" in mock_send_error.call_args.kwargs["error_message"]
+
+    def test_main_critical_failure_dry_run_no_error_email(self, mocker):
+        """dry-run critical failure does NOT send error email."""
+        mocker.patch("sys.argv", ["morning-briefing", "--dry-run", "--no-ai"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="test-key",
+                email_from="a@b.com",
+                email_password="pass",
+                email_to="c@d.com",
+            ),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+            side_effect=RuntimeError("Critical failure"),
+        )
+        mock_send_error = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.send_error_email",
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+        mock_send_error.assert_not_called()
+
+    def test_main_critical_failure_missing_email_password_skips_error_email(self, mocker):
+        """Missing email_password means error email is not sent on failure."""
+        mocker.patch("sys.argv", ["morning-briefing", "--no-ai"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="test-key",
+                email_from="a@b.com",
+                email_password="",
+                email_to="c@d.com",
+            ),
+        )
+
+        # email_password is empty, validation will fail at lines 225-228
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
