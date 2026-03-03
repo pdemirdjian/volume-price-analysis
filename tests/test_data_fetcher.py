@@ -278,6 +278,31 @@ class TestInputValidation:
             fetch_stock_data("AAPL", start_date="2024-01-01", end_date="01/02/2024")
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_period_ignored_when_dates_provided(self, mock_ticker):
+        """Test that an invalid period is ignored when both dates are provided."""
+        mock_data = pd.DataFrame(
+            {
+                "Open": [100],
+                "High": [101],
+                "Low": [99],
+                "Close": [100.5],
+                "Volume": [1000000],
+            },
+            index=pd.date_range(start="2024-01-01", periods=1, freq="D"),
+        )
+        mock_data.index.name = "Date"
+
+        mock_ticker_instance = Mock()
+        mock_ticker_instance.history.return_value = mock_data
+        mock_ticker.return_value = mock_ticker_instance
+
+        # Should NOT raise even though period is invalid — dates take priority
+        result = fetch_stock_data(
+            "AAPL", start_date="2024-01-01", end_date="2024-01-31", period="bogus"
+        )
+        assert len(result) == 1
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_valid_date_formats_accepted(self, mock_ticker):
         """Test that valid YYYY-MM-DD date formats are accepted."""
         mock_data = pd.DataFrame(

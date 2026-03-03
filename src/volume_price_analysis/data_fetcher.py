@@ -67,17 +67,17 @@ def fetch_stock_data(
             "Symbols must be 1-10 alphanumeric characters (may include . - ^)"
         )
 
-    # Validate period
-    if period not in VALID_PERIODS:
-        raise ValueError(
-            f"Invalid period: '{period}'. Must be one of: {', '.join(sorted(VALID_PERIODS))}"
-        )
-
     # Validate date formats
     if start_date and not DATE_PATTERN.match(start_date):
         raise ValueError(f"Invalid start_date format: '{start_date}'. Must be YYYY-MM-DD")
     if end_date and not DATE_PATTERN.match(end_date):
         raise ValueError(f"Invalid end_date format: '{end_date}'. Must be YYYY-MM-DD")
+
+    # Validate period only when date range is not provided
+    if not (start_date and end_date) and period not in VALID_PERIODS:
+        raise ValueError(
+            f"Invalid period: '{period}'. Must be one of: {', '.join(sorted(VALID_PERIODS))}"
+        )
 
     logger.debug("Fetching data for %s (period=%s, timeout=%ds)", symbol, period, timeout)
     ticker = yf.Ticker(symbol)

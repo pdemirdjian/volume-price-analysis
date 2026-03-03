@@ -97,6 +97,10 @@
       "matchManagers": [
         "pre-commit"
       ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "pre-commit hooks",
       "automerge": true,
       "minimumReleaseAge": "3 days"
