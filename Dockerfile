@@ -30,6 +30,6 @@ RUN useradd --create-home appuser \
 USER appuser
 
 HEALTHCHECK --interval=300s --timeout=5s --retries=3 \
-  CMD pgrep -f morning-scheduler || exit 1
+  CMD python -c "open('/proc/1/cmdline').read()" || exit 1
 
 CMD ["morning-scheduler"]
