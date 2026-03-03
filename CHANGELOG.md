@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.4.1...v2.4.2) (2026-03-03)
+
+
+### Bug Fixes
+
+* comprehensive security hardening from audit ([#125](https://github.com/pdemirdjian/volume-price-analysis/issues/125)) ([88c3846](https://github.com/pdemirdjian/volume-price-analysis/commit/88c38468e5783e3611a16a12dca21571f3b22d7d))
+
 ## [2.4.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.4.0...v2.4.1) (2026-03-03)
 
 
