@@ -533,8 +533,19 @@ class TestErrorHandling:
         assert "No data found" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_unknown_tool_error(self):
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_unknown_tool_error(self, mock_fetch):
         """Test handling of unknown tool name."""
+        mock_fetch.return_value = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=30),
+                "Open": [100] * 30,
+                "High": [101] * 30,
+                "Low": [99] * 30,
+                "Close": [100.5] * 30,
+                "Volume": [1000000] * 30,
+            }
+        )
         result = await handle_call_tool(name="unknown_tool", arguments={"symbol": "AAPL"})
 
         data = json.loads(result[0].text)
