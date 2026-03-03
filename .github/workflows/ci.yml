@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload Ruff SARIF
         if: matrix.os == 'ubuntu-latest' && (success() || failure())
-        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4.32.4
+        uses: github/codeql-action/upload-sarif@c793b717bc78562f491db7b0e93a3a178b099162 # v4.32.5
         with:
           sarif_file: ruff.sarif
           category: ruff
@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload Hadolint SARIF
         if: success() || failure()
-        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4.32.4
+        uses: github/codeql-action/upload-sarif@c793b717bc78562f491db7b0e93a3a178b099162 # v4.32.5
         with:
           sarif_file: hadolint.sarif
           category: hadolint
@@ -109,7 +109,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
+        uses: aquasecurity/trivy-action@97e0b3872f55f89b95b2f65b3dbab56962816478 # 0.34.2
         with:
           image-ref: volume-price-analysis:ci
           exit-code: "1"
@@ -118,7 +118,7 @@ jobs:
 
       - name: Scan image with Trivy (SARIF)
         if: success() || failure()
-        uses: aquasecurity/trivy-action@e368e328979b113139d6f9068e03accaed98a518 # 0.34.1
+        uses: aquasecurity/trivy-action@97e0b3872f55f89b95b2f65b3dbab56962816478 # 0.34.2
         with:
           image-ref: volume-price-analysis:ci
           exit-code: "0"
@@ -129,7 +129,7 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: success() || failure()
-        uses: github/codeql-action/upload-sarif@89a39a4e59826350b863aa6b6252a07ad50cf83e # v4.32.4
+        uses: github/codeql-action/upload-sarif@c793b717bc78562f491db7b0e93a3a178b099162 # v4.32.5
         with:
           sarif_file: trivy.sarif
           category: trivy
