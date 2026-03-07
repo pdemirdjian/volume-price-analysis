@@ -1879,3 +1879,180 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
+
+    def test_main_degraded_briefing_exits_code_2(self, mocker):
+        """When run_morning_briefing returns False (degraded), main() exits with code 2."""
+        mocker.patch("sys.argv", ["morning-briefing"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="test-key",
+                email_from="a@b.com",
+                email_password="pass",
+                email_to="c@d.com",
+            ),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=False,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2
+
+
+class TestSubjectHeaderInjection:
+    """Test that SMTP header injection via subject is prevented."""
+
+    def test_newlines_stripped_from_subject(self, mocker):
+        mock_smtp = MagicMock()
+        mock_smtp_instance = MagicMock()
+        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
+        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+
+        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+
+        send_briefing_email(
+            subject="Test\r\nBcc: evil@attacker.com\r\nSubject: Injected",
+            body_markdown="# Hello",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+        )
+
+        sent_args = mock_smtp_instance.sendmail.call_args
+        msg_str = sent_args[0][2]
+        # Newlines removed: no injected Bcc header on its own line
+        assert "\nBcc:" not in msg_str
+        assert "\r\nBcc:" not in msg_str
+
+
+class TestEmailFormatValidation:
+    """Test email address format validation in AgentConfig.validate()."""
+
+    def test_invalid_email_from_format(self):
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="not-an-email",
+            email_password="pass",
+            email_to="valid@example.com",
+        )
+        errors = config.validate()
+        assert any("EMAIL_FROM" in e and "not a valid email" in e for e in errors)
+
+    def test_invalid_email_to_format(self):
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="valid@example.com",
+            email_password="pass",
+            email_to="bad-address,also-bad",
+        )
+        errors = config.validate()
+        assert any("EMAIL_TO" in e and "not a valid email" in e for e in errors)
+
+    def test_valid_emails_pass_validation(self):
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="user@example.com",
+            email_password="pass",
+            email_to="a@b.co,c@d.org",
+        )
+        errors = config.validate()
+        assert not errors
+
+    def test_missing_dot_after_at(self):
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="key",
+            email_from="user@localhost",
+            email_password="pass",
+            email_to="valid@example.com",
+        )
+        errors = config.validate()
+        assert any("not a valid email" in e for e in errors)
+
+
+class TestRunMorningBriefingDegradedReturn:
+    """Test that run_morning_briefing returns False when fallback is used."""
+
+    @pytest.mark.asyncio
+    async def test_ai_failure_returns_false(self, mocker):
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value={
+                "summary": {
+                    "total_candidates": 1,
+                    "bullish_setups": 1,
+                    "bearish_setups": 0,
+                    "high_conviction": 0,
+                    "errors": 0,
+                },
+                "high_conviction_setups": [],
+                "top_bullish": [{"symbol": "AAPL"}],
+                "top_bearish": [],
+            },
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
+            return_value=MagicMock(),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_options_analysis",
+            return_value={"symbol": "AAPL", "composite_signal": {"score": 3.0}},
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            side_effect=Exception("API Error"),
+        )
+        mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+            max_deep_analysis=1,
+        )
+
+        result = await run_morning_briefing(config, dry_run=False, no_ai=False)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_successful_briefing_returns_true(self, mocker):
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value={
+                "summary": {
+                    "total_candidates": 0,
+                    "bullish_setups": 0,
+                    "bearish_setups": 0,
+                    "high_conviction": 0,
+                    "errors": 0,
+                },
+                "high_conviction_setups": [],
+                "top_bullish": [],
+                "top_bearish": [],
+            },
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="# Briefing",
+        )
+        mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+
+        result = await run_morning_briefing(config, dry_run=False, no_ai=False)
+        assert result is True

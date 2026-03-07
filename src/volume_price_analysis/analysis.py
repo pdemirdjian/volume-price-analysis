@@ -65,10 +65,10 @@ def _build_sp500_symbols() -> list[str]:
         return sorted(set(symbols))
     except Exception:
         logger.warning(
-            "Failed to load S&P 500 symbols from pytickersymbols, using ETFs only",
+            "Failed to load S&P 500 symbols from pytickersymbols, using fallback symbols",
             exc_info=True,
         )
-        return []
+        return ["AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA"]
 
 
 _ETF_LIST: list[str] = [
@@ -263,6 +263,11 @@ async def run_scan(
         Dictionary with scan results including candidates, summary, and errors.
     """
     direction = direction.lower()
+    valid_directions = ("bullish", "bearish", "any")
+    if direction not in valid_directions:
+        raise ValueError(
+            f"Invalid direction '{direction}'. Must be one of: {', '.join(valid_directions)}"
+        )
 
     # Determine symbols to scan
     if symbols and len(symbols) > 0:
@@ -323,8 +328,8 @@ async def run_scan(
     # Sort by absolute composite score (highest first)
     candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
 
-    # Separate into bullish and bearish
-    bullish = [c for c in candidates if c["composite_score"] > 0]
+    # Separate into bullish and bearish (zero-score goes to bullish)
+    bullish = [c for c in candidates if c["composite_score"] >= 0]
     bearish = [c for c in candidates if c["composite_score"] < 0]
 
     # Find highest conviction setups
@@ -377,6 +382,13 @@ def run_options_analysis(
     Returns:
         Dictionary with full options analysis results.
     """
+    if data.empty:
+        raise ValueError(f"Empty DataFrame provided for symbol '{symbol}'")
+    required_columns = {"Open", "High", "Low", "Close", "Volume", "Date"}
+    missing = required_columns - set(data.columns)
+    if missing:
+        raise ValueError(f"DataFrame missing required columns: {', '.join(sorted(missing))}")
+
     if days_to_expiration is None:
         days_to_expiration = holding_period
 

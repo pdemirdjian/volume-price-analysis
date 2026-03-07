@@ -7,12 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mcp.types import CallToolResult
+
 from volume_price_analysis.server import (
     _json_response,
     _sanitize_for_json,
     _validate_range,
     generate_enhanced_summary,
-    generate_summary,
     handle_call_tool,
     handle_list_tools,
 )
@@ -528,7 +529,9 @@ class TestErrorHandling:
             name="get_stock_data", arguments={"symbol": "INVALID", "period": "1mo"}
         )
 
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "No data found" in data["error"]
 
@@ -548,7 +551,9 @@ class TestErrorHandling:
         )
         result = await handle_call_tool(name="unknown_tool", arguments={"symbol": "AAPL"})
 
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "Unknown tool" in data["error"]
 
@@ -559,7 +564,9 @@ class TestErrorHandling:
             name="get_stock_data", arguments={"symbol": "!!!", "period": "1mo"}
         )
 
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         # ValueError message should be passed through to the caller
         assert "Invalid symbol format" in data["error"]
@@ -574,46 +581,48 @@ class TestErrorHandling:
             name="get_stock_data", arguments={"symbol": "AAPL", "period": "1mo"}
         )
 
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert data["error"] == "An internal error occurred"
         # Internal details must NOT leak to the caller
         assert "secret internal path" not in data["error"]
         assert "/etc/foo" not in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_empty_symbol_returns_error(self):
+        """Test that an empty symbol parameter returns a validation error."""
+        result = await handle_call_tool(
+            name="get_stock_data", arguments={"symbol": "", "period": "1mo"}
+        )
 
-class TestGenerateSummary:
-    """Tests for summary generation."""
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
+        assert "error" in data
+        assert "symbol" in data["error"].lower()
 
-    def test_generate_summary_bullish(self):
-        """Test summary generation for bullish conditions."""
-        mock_data = pd.DataFrame({"Close": [100, 101, 102, 103, 104]})
-        mock_obv = pd.Series([0, 1000000, 2000000, 3000000, 4000000])
-        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
-        mock_mfi = pd.Series([50, 55, 60, 65, 70])
-        mock_trends = {"divergence_detected": False}
+    @pytest.mark.asyncio
+    async def test_missing_symbol_returns_error(self):
+        """Test that a missing symbol parameter returns a validation error."""
+        result = await handle_call_tool(
+            name="get_stock_data", arguments={"period": "1mo"}
+        )
 
-        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 104, 102)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
 
-        assert len(summary) > 0
-        assert any("above VWAP" in s for s in summary)
-        assert any("increasing" in s.lower() for s in summary)
+    @pytest.mark.asyncio
+    async def test_unknown_tool_returns_error_with_flag(self):
+        """Test that an unknown tool name returns isError=True."""
+        result = await handle_call_tool(
+            name="nonexistent_tool", arguments={"symbol": "AAPL"}
+        )
 
-    def test_generate_summary_with_divergence(self):
-        """Test summary generation with divergence."""
-        mock_data = pd.DataFrame({"Close": [100, 101, 102, 103, 104]})
-        mock_obv = pd.Series([0, 1000000, 2000000, 3000000, 4000000])
-        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
-        mock_mfi = pd.Series([50, 55, 60, 65, 85])
-        mock_trends = {
-            "divergence_detected": True,
-            "divergence_type": "Price up, Volume down",
-        }
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
 
-        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 104, 102)
-
-        assert any("divergence" in s.lower() for s in summary)
-        assert any("overbought" in s.lower() for s in summary)
 
 
 class TestScanCandidates:
@@ -807,7 +816,9 @@ class TestParameterValidation:
             name="calculate_volume_profile",
             arguments={"symbol": "AAPL", "num_bins": 0},
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "num_bins" in data["error"]
 
@@ -818,7 +829,9 @@ class TestParameterValidation:
             name="calculate_mfi",
             arguments={"symbol": "AAPL", "mfi_period": -5},
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "mfi_period" in data["error"]
 
@@ -829,7 +842,9 @@ class TestParameterValidation:
             name="calculate_cmf",
             arguments={"symbol": "AAPL", "cmf_period": 250},
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "cmf_period" in data["error"]
 
@@ -840,7 +855,9 @@ class TestParameterValidation:
             name="analyze_volume_trends",
             arguments={"symbol": "AAPL", "window": 999},
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "window" in data["error"]
 
@@ -851,7 +868,9 @@ class TestParameterValidation:
             name="scan_candidates",
             arguments={"symbols": ["AAPL"], "holding_period": 0},
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "holding_period" in data["error"]
 
@@ -862,7 +881,9 @@ class TestParameterValidation:
             name="scan_candidates",
             arguments={"symbols": ["AAPL"], "max_results": 0},
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "max_results" in data["error"]
 
@@ -877,7 +898,9 @@ class TestParameterValidation:
                 "days_to_expiration": 30,
             },
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "holding_period" in data["error"]
 
@@ -892,7 +915,9 @@ class TestParameterValidation:
                 "days_to_expiration": 0,
             },
         )
-        data = json.loads(result[0].text)
+        assert isinstance(result, CallToolResult)
+        assert result.isError is True
+        data = json.loads(result.content[0].text)
         assert "error" in data
         assert "days_to_expiration" in data["error"]
 
@@ -1139,42 +1164,6 @@ class TestCallToolOptionsAnalysis:
         call_kwargs = mock_options.call_args
         assert call_kwargs[1]["days_to_expiration"] == 21
 
-
-class TestGenerateSummaryEdgeCases:
-    """Tests for generate_summary edge cases (server lines 946, 952, 959)."""
-
-    def test_generate_summary_below_vwap(self):
-        """Test summary when price is below VWAP (line 946)."""
-        mock_data = pd.DataFrame({"Close": [100, 99, 98, 97, 96]})
-        mock_obv = pd.Series([0, 1000000, 2000000, 3000000, 4000000])
-        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
-        mock_mfi = pd.Series([50, 55, 60, 65, 70])
-        mock_trends = {"divergence_detected": False}
-
-        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 96, 102)
-        assert any("below VWAP" in s for s in summary)
-
-    def test_generate_summary_obv_decreasing(self):
-        """Test summary when OBV is decreasing (line 952)."""
-        mock_data = pd.DataFrame({"Close": [100, 101, 102, 103, 104]})
-        mock_obv = pd.Series([5000000, 4000000, 3000000, 2000000, 1000000])
-        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
-        mock_mfi = pd.Series([50, 55, 60, 65, 70])
-        mock_trends = {"divergence_detected": False}
-
-        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 104, 102)
-        assert any("decreasing" in s.lower() for s in summary)
-
-    def test_generate_summary_mfi_oversold(self):
-        """Test summary when MFI indicates oversold (line 959)."""
-        mock_data = pd.DataFrame({"Close": [100, 99, 98, 97, 96]})
-        mock_obv = pd.Series([0, 1000000, 2000000, 3000000, 4000000])
-        mock_vwap = pd.Series([100, 100.5, 101, 101.5, 102])
-        mock_mfi = pd.Series([30, 25, 20, 15, 10])  # Last MFI < 20 = oversold
-        mock_trends = {"divergence_detected": False}
-
-        summary = generate_summary(mock_data, mock_obv, mock_vwap, mock_mfi, mock_trends, 96, 90)
-        assert any("oversold" in s.lower() for s in summary)
 
 
 class TestGenerateEnhancedSummary:

@@ -7,4 +7,9 @@ Your job:
 4. Review scheduler.py for reliability: proper handling of timezone edge cases, missed schedules, and graceful shutdown on SIGTERM
 5. Verify morning_agent.py orchestration handles partial failures (scan succeeds but AI fails, AI succeeds but email fails) with appropriate logging and non-zero exit codes
 
-Focus only on src/volume_price_analysis/agent/ and tests/test_agent.py, tests/test_scheduler.py. Do not modify other files.
+Focus only on src/volume_price_analysis/agent/ and tests/test_agent.py, tests/test_scheduler.py. Do not modify any files.
+
+When finished, send your findings to the team lead using SendMessage. Structure your report with:
+- Critical/Medium/Low issues (file path, line number, description, impact)
+- What looks good
+- Overall assessment

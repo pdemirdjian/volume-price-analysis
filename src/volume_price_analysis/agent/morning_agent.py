@@ -31,7 +31,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def run_morning_briefing(config: AgentConfig, dry_run: bool = False, no_ai: bool = False):
+async def run_morning_briefing(
+    config: AgentConfig, dry_run: bool = False, no_ai: bool = False
+) -> bool:
     """
     Execute the full morning briefing pipeline.
 
@@ -39,6 +41,9 @@ async def run_morning_briefing(config: AgentConfig, dry_run: bool = False, no_ai
     2. Run deep options analysis on top candidates
     3. Generate AI briefing (unless --no-ai)
     4. Send email (unless --dry-run)
+
+    Returns:
+        True if the briefing completed normally, False if a fallback was used (degraded).
     """
     start_time = time.monotonic()
     now = datetime.now(UTC)
@@ -86,6 +91,7 @@ async def run_morning_briefing(config: AgentConfig, dry_run: bool = False, no_ai
     logger.info("Analysis complete in %.1fs", elapsed_analysis)
 
     # Step 3: Generate briefing
+    degraded = False
     if no_ai:
         logger.info("Step 3: Skipping AI (--no-ai mode)")
         briefing = None
@@ -106,6 +112,8 @@ async def run_morning_briefing(config: AgentConfig, dry_run: bool = False, no_ai
         except Exception:
             logger.exception("AI briefing generation failed")
             briefing = _fallback_briefing(scan_results, deep_analyses)
+            degraded = True
+            logger.warning("Using fallback briefing — AI provider was unavailable")
 
     # Step 4: Deliver
     elapsed_total = time.monotonic() - start_time
@@ -154,6 +162,7 @@ async def run_morning_briefing(config: AgentConfig, dry_run: bool = False, no_ai
         )
 
     logger.info("Morning briefing complete in %.1fs", elapsed_total)
+    return not degraded
 
 
 def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
@@ -236,7 +245,11 @@ def main():
             sys.exit(1)
 
     try:
-        asyncio.run(run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai))
+        success = asyncio.run(
+            run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai)
+        )
+        if not success:
+            sys.exit(2)
     except Exception as e:
         logger.exception("Morning briefing failed critically")
         # Try to send error notification

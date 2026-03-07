@@ -10,6 +10,7 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
+    CallToolResult,
     TextContent,
     Tool,
 )
@@ -522,7 +523,7 @@ def _validate_range(
 
 
 @server.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolResult:
     """Handle tool execution requests."""
     logger.info("Tool called: %s", name)
     logger.debug("Tool arguments: %s", arguments)
@@ -534,6 +535,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # Extract common parameters for single-symbol tools
         symbol = arguments.get("symbol", "").upper()
+        if not symbol.strip():
+            raise ValueError("symbol parameter is required")
         start_date = arguments.get("start_date")
         end_date = arguments.get("end_date")
 
@@ -582,12 +585,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             obv = calculate_obv(data)
             data["OBV"] = obv
 
+            lookback = min(5, len(obv))
             cols = ["Date", "Close", "Volume", "OBV"]
             result = {
                 "symbol": symbol,
                 "indicator": "On-Balance Volume (OBV)",
                 "latest_obv": float(obv.iloc[-1]),
-                "obv_trend": "increasing" if obv.iloc[-1] > obv.iloc[-5] else "decreasing",
+                "obv_trend": "increasing" if obv.iloc[-1] > obv.iloc[-lookback] else "decreasing",
                 "data_points": len(obv),
                 "recent_values": data[cols].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
@@ -773,8 +777,9 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
 
             # Pre-calculate values for clarity
-            obv_increasing = obv.iloc[-1] > obv.iloc[-5]
-            ad_increasing = ad_line.iloc[-1] > ad_line.iloc[-5]
+            lookback = min(5, len(data))
+            obv_increasing = obv.iloc[-1] > obv.iloc[-lookback]
+            ad_increasing = ad_line.iloc[-1] > ad_line.iloc[-lookback]
             obv_flow = "into" if obv_increasing else "out of"
             ad_action = "buying" if ad_increasing else "selling"
             mfi_val = mfi.iloc[-1]
@@ -830,7 +835,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     },
                     "vpt": {
                         "value": float(vpt.iloc[-1]),
-                        "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-5] else "decreasing",
+                        "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-lookback] else "decreasing",
                     },
                     "mfi": {"value": float(mfi_val), "condition": mfi_condition},
                     "cmf": {
@@ -924,45 +929,22 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     except ValueError as e:
         logger.warning("Tool %s validation error: %s", name, str(e))
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))],
+            isError=True,
+        )
     except Exception as e:
         logger.error("Tool %s failed: %s", name, str(e), exc_info=True)
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps({"error": "An internal error occurred"}, indent=2),
-            )
-        ]
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "An internal error occurred"}, indent=2),
+                )
+            ],
+            isError=True,
+        )
 
-
-def generate_summary(data, obv, vwap, mfi, trends, latest_close, latest_vwap):
-    """Generate a human-readable summary of the analysis."""
-    summary = []
-
-    # Price vs VWAP
-    if latest_close > latest_vwap:
-        summary.append("Price is trading above VWAP, indicating bullish sentiment")
-    else:
-        summary.append("Price is trading below VWAP, indicating bearish sentiment")
-
-    # OBV Trend
-    if obv.iloc[-1] > obv.iloc[-5]:
-        summary.append("OBV is increasing, suggesting accumulation")
-    else:
-        summary.append("OBV is decreasing, suggesting distribution")
-
-    # MFI Condition
-    latest_mfi = mfi.iloc[-1]
-    if latest_mfi > 80:
-        summary.append("MFI indicates overbought conditions")
-    elif latest_mfi < 20:
-        summary.append("MFI indicates oversold conditions")
-
-    # Divergence
-    if trends["divergence_detected"]:
-        summary.append(f"⚠️  Price-volume divergence detected: {trends['divergence_type']}")
-
-    return summary
 
 
 def generate_enhanced_summary(

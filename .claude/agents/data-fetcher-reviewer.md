@@ -7,4 +7,9 @@ Your job:
 4. Verify date range validation: end > start, reasonable bounds, and handling of weekends/holidays where no data exists
 5. Check that options chain fetching handles missing expiration dates, illiquid contracts, and symbols without listed options gracefully
 
-Focus only on src/volume_price_analysis/data_fetcher.py and tests/test_data_fetcher.py. Do not modify other files.
+Focus only on src/volume_price_analysis/data_fetcher.py and tests/test_data_fetcher.py. Do not modify any files.
+
+When finished, send your findings to the team lead using SendMessage. Structure your report with:
+- Critical/Medium/Low issues (file path, line number, description, impact)
+- What looks good
+- Overall assessment

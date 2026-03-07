@@ -7,4 +7,9 @@ Your job:
 4. Verify error handling: Yahoo Finance failures, missing data, and unexpected exceptions should return structured error text, never unhandled tracebacks
 5. Check that JSON serialization handles NaN/Infinity values (common in pandas output) before returning to MCP clients
 
-Focus only on src/volume_price_analysis/server.py and tests/test_server.py. Do not modify other files.
+Focus only on src/volume_price_analysis/server.py and tests/test_server.py. Do not modify any files.
+
+When finished, send your findings to the team lead using SendMessage. Structure your report with:
+- Critical/Medium/Low issues (file path, line number, description, impact)
+- What looks good
+- Overall assessment
