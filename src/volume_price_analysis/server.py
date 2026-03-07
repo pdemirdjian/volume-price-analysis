@@ -835,7 +835,9 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                     },
                     "vpt": {
                         "value": float(vpt.iloc[-1]),
-                        "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-lookback] else "decreasing",
+                        "trend": (
+                            "increasing" if vpt.iloc[-1] > vpt.iloc[-lookback] else "decreasing"
+                        ),
                     },
                     "mfi": {"value": float(mfi_val), "condition": mfi_condition},
                     "cmf": {

@@ -82,11 +82,11 @@ def fetch_stock_data(
         try:
             parsed_start = datetime.date.fromisoformat(start_date)
         except ValueError:
-            raise ValueError(f"Invalid calendar date for start_date: '{start_date}'")
+            raise ValueError(f"Invalid calendar date for start_date: '{start_date}'") from None
         try:
             parsed_end = datetime.date.fromisoformat(end_date)
         except ValueError:
-            raise ValueError(f"Invalid calendar date for end_date: '{end_date}'")
+            raise ValueError(f"Invalid calendar date for end_date: '{end_date}'") from None
         if parsed_end < parsed_start:
             raise ValueError("end_date must be on or after start_date")
 
@@ -124,7 +124,9 @@ def fetch_stock_data(
     critical_columns = {"Close", "Volume"}
     missing_critical = critical_columns - set(data.columns)
     if missing_critical:
-        raise ValueError(f"Data for {symbol} is missing critical columns: {sorted(missing_critical)}")
+        raise ValueError(
+            f"Data for {symbol} is missing critical columns: {sorted(missing_critical)}"
+        )
     data = data[[c for c in columns_to_keep if c in data.columns]]
 
     return data
