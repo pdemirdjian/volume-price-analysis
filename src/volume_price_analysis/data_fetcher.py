@@ -1,5 +1,6 @@
 """Stock data fetching functionality using yfinance."""
 
+import datetime
 import logging
 import re
 
@@ -67,11 +68,27 @@ def fetch_stock_data(
             "Symbols must be 1-10 alphanumeric characters (may include . - ^)"
         )
 
-    # Validate date formats
+    # Validate that both dates are provided together
+    if bool(start_date) != bool(end_date):
+        raise ValueError("Both start_date and end_date must be provided together")
+
+    # Validate date formats and calendar validity
     if start_date and not DATE_PATTERN.match(start_date):
         raise ValueError(f"Invalid start_date format: '{start_date}'. Must be YYYY-MM-DD")
     if end_date and not DATE_PATTERN.match(end_date):
         raise ValueError(f"Invalid end_date format: '{end_date}'. Must be YYYY-MM-DD")
+
+    if start_date and end_date:
+        try:
+            parsed_start = datetime.date.fromisoformat(start_date)
+        except ValueError:
+            raise ValueError(f"Invalid calendar date for start_date: '{start_date}'") from None
+        try:
+            parsed_end = datetime.date.fromisoformat(end_date)
+        except ValueError:
+            raise ValueError(f"Invalid calendar date for end_date: '{end_date}'") from None
+        if parsed_end < parsed_start:
+            raise ValueError("end_date must be on or after start_date")
 
     # Validate period only when date range is not provided
     if not (start_date and end_date) and period not in VALID_PERIODS:
@@ -82,11 +99,16 @@ def fetch_stock_data(
     logger.debug("Fetching data for %s (period=%s, timeout=%ds)", symbol, period, timeout)
     ticker = yf.Ticker(symbol)
 
-    if start_date and end_date:
-        logger.debug("Using date range: %s to %s", start_date, end_date)
-        data = ticker.history(start=start_date, end=end_date, timeout=timeout)
-    else:
-        data = ticker.history(period=period, timeout=timeout)
+    try:
+        if start_date and end_date:
+            logger.debug("Using date range: %s to %s", start_date, end_date)
+            data = ticker.history(start=start_date, end=end_date, timeout=timeout)
+        else:
+            data = ticker.history(period=period, timeout=timeout)
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Failed to fetch data for {symbol}: {e}") from e
 
     if data.empty:
         logger.warning("No data returned for symbol: %s", symbol)
@@ -99,7 +121,13 @@ def fetch_stock_data(
 
     # Keep only the columns we need
     columns_to_keep = ["Date", "Open", "High", "Low", "Close", "Volume"]
-    data = data[columns_to_keep]
+    critical_columns = {"Open", "High", "Low", "Close", "Volume"}
+    missing_critical = critical_columns - set(data.columns)
+    if missing_critical:
+        raise ValueError(
+            f"Data for {symbol} is missing critical columns: {sorted(missing_critical)}"
+        )
+    data = data[[c for c in columns_to_keep if c in data.columns]]
 
     return data
 

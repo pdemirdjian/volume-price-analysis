@@ -302,6 +302,82 @@ class TestInputValidation:
         )
         assert len(result) == 1
 
+    def test_reversed_date_range_raises_error(self):
+        """Test that end_date before start_date raises ValueError."""
+        with pytest.raises(ValueError, match="end_date must be on or after start_date"):
+            fetch_stock_data("AAPL", start_date="2024-06-01", end_date="2024-01-01")
+
+    @pytest.mark.parametrize(
+        "bad_date",
+        ["2024-13-45", "2024-02-30", "2024-00-01"],
+    )
+    def test_invalid_calendar_dates_raise_error(self, bad_date):
+        """Test that syntactically valid but impossible calendar dates raise ValueError."""
+        with pytest.raises(ValueError, match="Invalid calendar date"):
+            fetch_stock_data("AAPL", start_date=bad_date, end_date="2025-01-01")
+
+    def test_only_start_date_raises_error(self):
+        """Test that providing only start_date raises ValueError."""
+        with pytest.raises(ValueError, match="Both start_date and end_date must be provided"):
+            fetch_stock_data("AAPL", start_date="2024-01-01")
+
+    def test_only_end_date_raises_error(self):
+        """Test that providing only end_date raises ValueError."""
+        with pytest.raises(ValueError, match="Both start_date and end_date must be provided"):
+            fetch_stock_data("AAPL", end_date="2024-01-31")
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_network_error_wrapped_in_valueerror(self, mock_ticker):
+        """Test that yfinance network errors are wrapped in ValueError."""
+        mock_ticker_instance = Mock()
+        mock_ticker_instance.history.side_effect = ConnectionError("Network unreachable")
+        mock_ticker.return_value = mock_ticker_instance
+
+        with pytest.raises(ValueError, match="Failed to fetch data for AAPL"):
+            fetch_stock_data("AAPL")
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_missing_critical_columns_raises_error(self, mock_ticker):
+        """Test that missing OHLCV columns raise ValueError."""
+        mock_data = pd.DataFrame(
+            {"Close": [100.5], "Volume": [1000000]},
+            index=pd.date_range(start="2024-01-01", periods=1, freq="D"),
+        )
+        mock_data.index.name = "Date"
+
+        mock_ticker_instance = Mock()
+        mock_ticker_instance.history.return_value = mock_data
+        mock_ticker.return_value = mock_ticker_instance
+
+        with pytest.raises(ValueError, match="missing critical columns"):
+            fetch_stock_data("AAPL")
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_extra_columns_are_stripped(self, mock_ticker):
+        """Test that extra yfinance columns (Dividends, Stock Splits) are stripped."""
+        mock_data = pd.DataFrame(
+            {
+                "Open": [100],
+                "High": [101],
+                "Low": [99],
+                "Close": [100.5],
+                "Volume": [1000000],
+                "Dividends": [0.0],
+                "Stock Splits": [0.0],
+            },
+            index=pd.date_range(start="2024-01-01", periods=1, freq="D"),
+        )
+        mock_data.index.name = "Date"
+
+        mock_ticker_instance = Mock()
+        mock_ticker_instance.history.return_value = mock_data
+        mock_ticker.return_value = mock_ticker_instance
+
+        result = fetch_stock_data("AAPL")
+        assert "Close" in result.columns
+        assert "Dividends" not in result.columns
+        assert "Stock Splits" not in result.columns
+
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_valid_date_formats_accepted(self, mock_ticker):
         """Test that valid YYYY-MM-DD date formats are accepted."""

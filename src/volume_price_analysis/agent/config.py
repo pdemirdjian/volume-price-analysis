@@ -83,8 +83,14 @@ class AgentConfig:
         # Validate email
         if not self.email_from:
             errors.append("EMAIL_FROM is required")
+        elif "@" not in self.email_from or "." not in self.email_from.split("@")[-1]:
+            errors.append(f"EMAIL_FROM={self.email_from!r} is not a valid email address")
         if not self.email_password:
             errors.append("EMAIL_PASSWORD is required")
         if not self.email_to:
             errors.append("EMAIL_TO is required")
+        else:
+            for addr in (a.strip() for a in self.email_to.split(",") if a.strip()):
+                if "@" not in addr or "." not in addr.split("@")[-1]:
+                    errors.append(f"EMAIL_TO address {addr!r} is not a valid email address")
         return errors

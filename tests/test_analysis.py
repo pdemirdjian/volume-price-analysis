@@ -4,6 +4,7 @@ import pytest
 
 from volume_price_analysis.analysis import (
     UNIVERSES,
+    _build_sp500_symbols,
     analyze_single_symbol,
     run_options_analysis,
     run_scan,
@@ -34,6 +35,21 @@ class TestUniverses:
         """full_market should have ~550 symbols (S&P 500 + ETFs, deduplicated)."""
         assert len(UNIVERSES["full_market"]) >= 450
         assert len(UNIVERSES["full_market"]) <= 600
+
+
+class TestBuildSp500Symbols:
+    """Test _build_sp500_symbols fallback behavior."""
+
+    def test_fallback_on_failure(self, mocker):
+        """When pytickersymbols fails, should return hardcoded fallback symbols."""
+        mocker.patch(
+            "volume_price_analysis.analysis.PyTickerSymbols",
+            side_effect=RuntimeError("simulated failure"),
+        )
+        result = _build_sp500_symbols()
+        assert len(result) > 0
+        assert "AAPL" in result
+        assert "MSFT" in result
 
 
 class TestRunOptionsAnalysis:
@@ -94,6 +110,21 @@ class TestRunOptionsAnalysis:
         result = run_options_analysis("TEST", uptrend_data)
         # In a clear uptrend, VWAP position should be "above"
         assert result["price_indicators"]["vwap"]["position"] == "above"
+
+    def test_empty_dataframe_raises(self):
+        """Empty DataFrame should raise ValueError."""
+        import pandas as pd
+
+        with pytest.raises(ValueError, match="Empty DataFrame"):
+            run_options_analysis("TEST", pd.DataFrame())
+
+    def test_missing_columns_raises(self):
+        """DataFrame missing required columns should raise ValueError."""
+        import pandas as pd
+
+        df = pd.DataFrame({"Close": [100], "Volume": [1000]})
+        with pytest.raises(ValueError, match="missing required columns"):
+            run_options_analysis("TEST", df)
 
 
 class TestAnalyzeSingleSymbol:
@@ -243,6 +274,41 @@ class TestRunScan:
         result = await run_scan(symbols=symbols)
         # Should complete without the "Too many symbols" error
         assert result["scan_parameters"]["symbols_in_universe"] == 500
+
+    @pytest.mark.asyncio
+    async def test_zero_score_candidate_in_bullish(self, mocker):
+        """A candidate with composite_score == 0 should appear in top_bullish when min_score=0."""
+        mocker.patch(
+            "volume_price_analysis.analysis.analyze_single_symbol",
+            return_value={
+                "symbol": "FLAT",
+                "composite_score": 0.0,
+                "recommendation": "neutral",
+                "signal_quality": "low",
+                "adx": 25.0,
+                "trend_strength": "weak",
+                "trend_direction": "neutral",
+                "rsi": 50.0,
+                "rsi_divergence": "none",
+                "iv_percentile": 50.0,
+                "iv_implication": "average",
+                "expected_move_pct": 3.0,
+                "rvol": 1.0,
+                "latest_price": 100.0,
+                "key_levels": {"upper_target": 103.0, "lower_target": 97.0},
+            },
+        )
+
+        result = await run_scan(symbols=["FLAT"], min_score=0, min_adx=0)
+        assert result["summary"]["total_candidates"] == 1
+        assert len(result["top_bullish"]) == 1
+        assert result["top_bullish"][0]["symbol"] == "FLAT"
+
+    @pytest.mark.asyncio
+    async def test_invalid_direction_raises(self):
+        """An invalid direction value should raise ValueError."""
+        with pytest.raises(ValueError, match="Invalid direction"):
+            await run_scan(symbols=["AAPL"], direction="bulish")
 
     @pytest.mark.asyncio
     async def test_scan_timeout(self, mocker):

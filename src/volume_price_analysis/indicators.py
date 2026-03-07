@@ -29,6 +29,7 @@ def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
     # Apply Wilder's recursive smoothing from the next position onward
     for i in range(seed_end + 1, len(values)):
         if np.isnan(values[i]):
+            arr[i] = arr[i - 1]
             continue
         arr[i] = (arr[i - 1] * (period - 1) + values[i]) / period
 
@@ -75,7 +76,9 @@ def calculate_vwap(data: pd.DataFrame) -> pd.Series:
         Series containing VWAP values
     """
     typical_price = (data["High"] + data["Low"] + data["Close"]) / 3
-    vwap = (typical_price * data["Volume"]).cumsum() / data["Volume"].cumsum()
+    cum_vol = data["Volume"].cumsum()
+    vwap = (typical_price * data["Volume"]).cumsum() / cum_vol
+    vwap = vwap.where(cum_vol != 0, np.nan)
     return vwap
 
 
@@ -468,6 +471,17 @@ def detect_volume_breakout(
     Returns:
         Dictionary with breakout detection results
     """
+    if len(data) < 2:
+        return {
+            "is_breakout": False,
+            "current_volume": int(data["Volume"].iloc[-1]) if len(data) else 0,
+            "threshold_volume": 0,
+            "multiplier_above_avg": 0.0,
+            "direction": "none",
+            "recent_breakouts": 0,
+            "signal": "No breakout",
+        }
+
     avg_volume = data["Volume"].rolling(window=period).mean()
     current_volume = data["Volume"].iloc[-1]
     threshold = avg_volume.iloc[-1] * threshold_multiplier

@@ -2120,22 +2120,20 @@ class TestCompositeScore:
 class TestWilderSmoothMidSeriesNaN:
     """Tests for _wilder_smooth handling NaN values mid-series (line 32)."""
 
-    def test_nan_mid_series_is_skipped(self):
-        """Test that NaN values mid-series are skipped in recursion."""
-        # Values with a NaN in the middle after the seed
+    def test_nan_mid_series_carries_forward(self):
+        """Test that NaN values mid-series carry forward and subsequent values recover."""
         series = pd.Series([1.0, 2.0, 3.0, np.nan, 5.0, 6.0])
         result = _wilder_smooth(series, period=3)
 
         # Seed at index 2: mean(1, 2, 3) = 2.0
         assert result.iloc[2] == pytest.approx(2.0)
-        # Index 3: NaN in input -> should be skipped (continue), output carries forward NaN
-        # Actually the 'continue' skips the assignment, so arr[3] stays NaN
-        # But arr[4] uses arr[3] which is NaN... let's check the actual behavior
-        # The continue means arr[i] stays NaN, and arr[i-1] for the next iteration is NaN
-        # Let's just verify the function runs without error and handles it
+        # Index 3: NaN in input -> carry forward previous value (2.0)
+        assert result.iloc[3] == pytest.approx(2.0)
+        # Index 4: smoothed = (2.0 * 2 + 5.0) / 3 = 3.0
+        assert result.iloc[4] == pytest.approx(3.0)
+        # Index 5: smoothed = (3.0 * 2 + 6.0) / 3 = 4.0
+        assert result.iloc[5] == pytest.approx(4.0)
         assert len(result) == 6
-        # The seed position should be set
-        assert not pd.isna(result.iloc[2])
 
 
 class TestMFIEqualTypicalPrice:
@@ -3145,3 +3143,42 @@ class TestRSIDivergenceActualDetection:
         # but the function should run without error and produce valid output
         assert isinstance(result["bearish_divergence"], bool)
         assert result["divergence_type"] in {"bullish", "bearish", "none"}
+
+
+class TestVwapZeroVolume:
+    """Test VWAP with zero volume at the start."""
+
+    def test_zero_volume_at_start_returns_nan(self):
+        """VWAP should return NaN when cumulative volume is zero, not inf."""
+        data = pd.DataFrame(
+            {
+                "High": [11.0, 12.0, 13.0],
+                "Low": [9.0, 10.0, 11.0],
+                "Close": [10.0, 11.0, 12.0],
+                "Volume": [0, 0, 100],
+            }
+        )
+        result = calculate_vwap(data)
+        # First two rows have zero cumulative volume -> should be NaN, not inf
+        assert pd.isna(result.iloc[0])
+        assert pd.isna(result.iloc[1])
+        # Third row has volume -> should be a valid number
+        assert not pd.isna(result.iloc[2])
+
+
+class TestDetectVolumeBreakoutSingleRow:
+    """Test detect_volume_breakout with a single-row DataFrame."""
+
+    def test_single_row_returns_default(self):
+        """Single-row DataFrame should return a safe default, not crash."""
+        data = pd.DataFrame(
+            {
+                "Close": [100.0],
+                "Volume": [1000],
+            }
+        )
+        result = detect_volume_breakout(data)
+        assert result["is_breakout"] is False
+        assert result["direction"] == "none"
+        assert result["current_volume"] == 1000
+        assert result["signal"] == "No breakout"

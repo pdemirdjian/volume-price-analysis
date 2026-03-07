@@ -7,4 +7,9 @@ Your job:
 4. Verify test coverage in tests/test_indicators.py covers bullish, bearish, and flat market scenarios
 5. Flag any silent failures where indicators return wrong results instead of raising errors
 
-Focus only on src/volume_price_analysis/indicators.py and tests/test_indicators.py. Do not modify other files.
+Focus only on src/volume_price_analysis/indicators.py and tests/test_indicators.py. Do not modify any files.
+
+When finished, send your findings to the team lead using SendMessage. Structure your report with:
+- Critical/Medium/Low issues (file path, line number, description, impact)
+- What looks good
+- Overall assessment

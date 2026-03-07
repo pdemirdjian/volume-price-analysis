@@ -45,6 +45,9 @@ def send_briefing_email(
     """
     recipients = _parse_recipients(to_addr)
 
+    # Sanitize subject to prevent SMTP header injection
+    subject = subject.replace("\r", "").replace("\n", "")
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = from_addr

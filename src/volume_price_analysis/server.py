@@ -10,6 +10,7 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
+    CallToolResult,
     TextContent,
     Tool,
 )
@@ -58,7 +59,7 @@ def _json_response(result: dict) -> str:
 server = Server("volume-price-analysis")
 
 
-async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
+async def _handle_scan_candidates(arguments: dict) -> CallToolResult:
     """Handle scan_candidates tool - delegates to analysis.run_scan."""
     holding_period = arguments.get("holding_period", 14)
     _validate_range(holding_period, "holding_period", 1, 90)
@@ -77,7 +78,7 @@ async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
         max_results=max_results,
     )
 
-    return [TextContent(type="text", text=_json_response(result))]
+    return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
 
 @server.list_tools()
@@ -522,7 +523,7 @@ def _validate_range(
 
 
 @server.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
     """Handle tool execution requests."""
     logger.info("Tool called: %s", name)
     logger.debug("Tool arguments: %s", arguments)
@@ -532,8 +533,26 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "scan_candidates":
             return await _handle_scan_candidates(arguments)
 
+        # Validate tool name before extracting parameters
+        single_symbol_tools = {
+            "get_stock_data",
+            "calculate_obv",
+            "calculate_vwap",
+            "calculate_volume_profile",
+            "calculate_mfi",
+            "calculate_ad_line",
+            "calculate_cmf",
+            "analyze_volume_trends",
+            "comprehensive_analysis",
+            "options_analysis",
+        }
+        if name not in single_symbol_tools:
+            raise ValueError(f"Unknown tool: {name}")
+
         # Extract common parameters for single-symbol tools
         symbol = arguments.get("symbol", "").upper()
+        if not symbol.strip():
+            raise ValueError("symbol parameter is required")
         start_date = arguments.get("start_date")
         end_date = arguments.get("end_date")
 
@@ -576,23 +595,24 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "sample_data": data.tail(5).to_dict(orient="records"),
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_obv":
             obv = calculate_obv(data)
             data["OBV"] = obv
 
+            lookback = min(5, len(obv))
             cols = ["Date", "Close", "Volume", "OBV"]
             result = {
                 "symbol": symbol,
                 "indicator": "On-Balance Volume (OBV)",
                 "latest_obv": float(obv.iloc[-1]),
-                "obv_trend": "increasing" if obv.iloc[-1] > obv.iloc[-5] else "decreasing",
+                "obv_trend": "increasing" if obv.iloc[-1] > obv.iloc[-lookback] else "decreasing",
                 "data_points": len(obv),
                 "recent_values": data[cols].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_vwap":
             vwap = calculate_vwap(data)
@@ -612,7 +632,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "VWAP"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_volume_profile":
             num_bins = arguments.get("num_bins", 20)
@@ -637,7 +657,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ],
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_mfi":
             mfi_period = arguments.get("mfi_period", 14)
@@ -661,7 +681,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "MFI"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_ad_line":
             ad_line = calculate_accumulation_distribution(data)
@@ -698,7 +718,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 .to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_cmf":
             cmf_period = arguments.get("cmf_period", 20)
@@ -734,7 +754,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "recent_values": data[["Date", "Close", "CMF"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "analyze_volume_trends":
             window = arguments.get("window", 20)
@@ -742,7 +762,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             result = {"symbol": symbol, "analysis": "Volume Trend Analysis", **trends}
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "comprehensive_analysis":
             # Calculate all volume indicators
@@ -773,8 +793,9 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
 
             # Pre-calculate values for clarity
-            obv_increasing = obv.iloc[-1] > obv.iloc[-5]
-            ad_increasing = ad_line.iloc[-1] > ad_line.iloc[-5]
+            lookback = min(5, len(data))
+            obv_increasing = obv.iloc[-1] > obv.iloc[-lookback]
+            ad_increasing = ad_line.iloc[-1] > ad_line.iloc[-lookback]
             obv_flow = "into" if obv_increasing else "out of"
             ad_action = "buying" if ad_increasing else "selling"
             mfi_val = mfi.iloc[-1]
@@ -830,7 +851,9 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                     },
                     "vpt": {
                         "value": float(vpt.iloc[-1]),
-                        "trend": "increasing" if vpt.iloc[-1] > vpt.iloc[-5] else "decreasing",
+                        "trend": (
+                            "increasing" if vpt.iloc[-1] > vpt.iloc[-lookback] else "decreasing"
+                        ),
                     },
                     "mfi": {"value": float(mfi_val), "condition": mfi_condition},
                     "cmf": {
@@ -904,7 +927,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ),
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "options_analysis":
             holding_period = arguments.get("holding_period", 14)
@@ -917,52 +940,27 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
                 days_to_expiration=days_to_expiration,
             )
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
-        else:
-            raise ValueError(f"Unknown tool: {name}")
+        raise AssertionError(f"Unhandled tool: {name}")  # pragma: no cover
 
     except ValueError as e:
         logger.warning("Tool %s validation error: %s", name, str(e))
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))],
+            isError=True,
+        )
     except Exception as e:
         logger.error("Tool %s failed: %s", name, str(e), exc_info=True)
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps({"error": "An internal error occurred"}, indent=2),
-            )
-        ]
-
-
-def generate_summary(data, obv, vwap, mfi, trends, latest_close, latest_vwap):
-    """Generate a human-readable summary of the analysis."""
-    summary = []
-
-    # Price vs VWAP
-    if latest_close > latest_vwap:
-        summary.append("Price is trading above VWAP, indicating bullish sentiment")
-    else:
-        summary.append("Price is trading below VWAP, indicating bearish sentiment")
-
-    # OBV Trend
-    if obv.iloc[-1] > obv.iloc[-5]:
-        summary.append("OBV is increasing, suggesting accumulation")
-    else:
-        summary.append("OBV is decreasing, suggesting distribution")
-
-    # MFI Condition
-    latest_mfi = mfi.iloc[-1]
-    if latest_mfi > 80:
-        summary.append("MFI indicates overbought conditions")
-    elif latest_mfi < 20:
-        summary.append("MFI indicates oversold conditions")
-
-    # Divergence
-    if trends["divergence_detected"]:
-        summary.append(f"⚠️  Price-volume divergence detected: {trends['divergence_type']}")
-
-    return summary
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "An internal error occurred"}, indent=2),
+                )
+            ],
+            isError=True,
+        )
 
 
 def generate_enhanced_summary(
