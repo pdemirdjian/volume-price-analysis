@@ -78,7 +78,7 @@ async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
         max_results=max_results,
     )
 
-    return [TextContent(type="text", text=_json_response(result))]
+    return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
 
 @server.list_tools()
@@ -523,7 +523,7 @@ def _validate_range(
 
 
 @server.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolResult:
+async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
     """Handle tool execution requests."""
     logger.info("Tool called: %s", name)
     logger.debug("Tool arguments: %s", arguments)
@@ -532,6 +532,22 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
         # scan_candidates handles its own data fetching per symbol
         if name == "scan_candidates":
             return await _handle_scan_candidates(arguments)
+
+        # Validate tool name before extracting parameters
+        single_symbol_tools = {
+            "get_stock_data",
+            "calculate_obv",
+            "calculate_vwap",
+            "calculate_volume_profile",
+            "calculate_mfi",
+            "calculate_ad_line",
+            "calculate_cmf",
+            "analyze_volume_trends",
+            "comprehensive_analysis",
+            "options_analysis",
+        }
+        if name not in single_symbol_tools:
+            raise ValueError(f"Unknown tool: {name}")
 
         # Extract common parameters for single-symbol tools
         symbol = arguments.get("symbol", "").upper()
@@ -579,7 +595,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 "sample_data": data.tail(5).to_dict(orient="records"),
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_obv":
             obv = calculate_obv(data)
@@ -596,7 +612,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 "recent_values": data[cols].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_vwap":
             vwap = calculate_vwap(data)
@@ -616,7 +632,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 "recent_values": data[["Date", "Close", "VWAP"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_volume_profile":
             num_bins = arguments.get("num_bins", 20)
@@ -641,7 +657,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 ],
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_mfi":
             mfi_period = arguments.get("mfi_period", 14)
@@ -665,7 +681,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 "recent_values": data[["Date", "Close", "MFI"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_ad_line":
             ad_line = calculate_accumulation_distribution(data)
@@ -702,7 +718,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 .to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "calculate_cmf":
             cmf_period = arguments.get("cmf_period", 20)
@@ -738,7 +754,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 "recent_values": data[["Date", "Close", "CMF"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "analyze_volume_trends":
             window = arguments.get("window", 20)
@@ -746,7 +762,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
 
             result = {"symbol": symbol, "analysis": "Volume Trend Analysis", **trends}
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "comprehensive_analysis":
             # Calculate all volume indicators
@@ -911,7 +927,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 ),
             }
 
-            return [TextContent(type="text", text=_json_response(result))]
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         elif name == "options_analysis":
             holding_period = arguments.get("holding_period", 14)
@@ -924,10 +940,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
                 days_to_expiration=days_to_expiration,
             )
 
-            return [TextContent(type="text", text=_json_response(result))]
-
-        else:
-            raise ValueError(f"Unknown tool: {name}")
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
     except ValueError as e:
         logger.warning("Tool %s validation error: %s", name, str(e))

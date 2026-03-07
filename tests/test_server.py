@@ -91,8 +91,8 @@ class TestCallToolGetStockData:
         )
 
         # Parse result
-        assert len(result) == 1
-        data = json.loads(result[0].text)
+        assert len(result.content) == 1
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "AAPL"
         assert data["data_points"] == 5
@@ -120,7 +120,7 @@ class TestCallToolGetStockData:
             arguments={"symbol": "MSFT", "start_date": "2024-01-01", "end_date": "2024-01-03"},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["symbol"] == "MSFT"
         assert "2024-01-01 to 2024-01-03" in data["period"]
 
@@ -148,7 +148,7 @@ class TestCallToolOBV:
             name="calculate_obv", arguments={"symbol": "AAPL", "period": "1mo"}
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "AAPL"
         assert data["indicator"] == "On-Balance Volume (OBV)"
@@ -180,7 +180,7 @@ class TestCallToolVWAP:
             name="calculate_vwap", arguments={"symbol": "TSLA", "period": "1mo"}
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "TSLA"
         assert data["indicator"] == "Volume Weighted Average Price (VWAP)"
@@ -214,7 +214,7 @@ class TestCallToolVolumeProfile:
             arguments={"symbol": "NVDA", "period": "1mo", "num_bins": 15},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "NVDA"
         assert data["indicator"] == "Volume Profile"
@@ -248,7 +248,7 @@ class TestCallToolMFI:
             arguments={"symbol": "AMD", "period": "1mo", "mfi_period": 14},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "AMD"
         assert "Money Flow Index" in data["indicator"]
@@ -281,7 +281,7 @@ class TestCallToolADLine:
             arguments={"symbol": "IBM", "period": "1mo"},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "IBM"
         assert "Accumulation/Distribution Line" in data["indicator"]
@@ -310,7 +310,7 @@ class TestCallToolADLine:
             arguments={"symbol": "IBM", "start_date": "2024-01-01", "end_date": "2024-01-02"},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "IBM"
         assert "Accumulation/Distribution Line" in data["indicator"]
@@ -344,7 +344,7 @@ class TestCallToolCMF:
             arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "GOOG"
         assert "Chaikin Money Flow" in data["indicator"]
@@ -373,7 +373,7 @@ class TestCallToolCMF:
             arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 20},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "GOOG"
         assert data["latest_cmf"] is None
@@ -401,7 +401,7 @@ class TestCallToolCMF:
             arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "GOOG"
         assert data["condition"] == "Selling Pressure (<0)"
@@ -428,7 +428,7 @@ class TestCallToolCMF:
             arguments={"symbol": "GOOG"},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "GOOG"
         assert "CMF-20" in data["indicator"]
@@ -464,7 +464,7 @@ class TestCallToolVolumeTrends:
             arguments={"symbol": "INTC", "period": "1mo", "window": 20},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "INTC"
         assert data["analysis"] == "Volume Trend Analysis"
@@ -497,7 +497,7 @@ class TestCallToolComprehensive:
             name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "1mo"}
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         assert data["symbol"] == "SPY"
         assert "period" in data
@@ -679,7 +679,7 @@ class TestScanCandidates:
             },
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         # Verify scan completed
         assert "scan_parameters" in data
@@ -733,7 +733,7 @@ class TestScanCandidates:
             arguments={"symbols": ["AAPL", "INVALID", "MSFT"]},
         )
 
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
 
         # Scan should complete despite one symbol error
         assert "summary" in data
@@ -955,7 +955,7 @@ class TestCallToolMFIConditions:
             name="calculate_mfi",
             arguments={"symbol": "BEAR", "period": "1mo", "mfi_period": 14},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         # MFI should be oversold in a strong downtrend
         assert data["condition"] in ["Oversold (<20)", "Neutral (20-80)"]
 
@@ -972,7 +972,7 @@ class TestCallToolMFIConditions:
             name="calculate_mfi",
             arguments={"symbol": "TEST", "mfi_period": 14},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["condition"] == "Oversold (<20)"
 
     @pytest.mark.asyncio
@@ -987,7 +987,7 @@ class TestCallToolMFIConditions:
             name="calculate_mfi",
             arguments={"symbol": "TEST", "mfi_period": 14},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["condition"] == "Neutral (20-80)"
 
 
@@ -1014,7 +1014,7 @@ class TestCallToolADLineEdgeCases:
             name="calculate_ad_line",
             arguments={"symbol": "FLAT", "period": "1d"},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["ad_trend"] == "flat"
         assert data["data_points"] == 1
 
@@ -1040,7 +1040,7 @@ class TestCallToolADLineEdgeCases:
             name="calculate_ad_line",
             arguments={"symbol": "DEC", "period": "1mo"},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         # A/D line should be decreasing (consistently negative MFM)
         assert data["ad_trend"] in ["decreasing", "flat"]
 
@@ -1066,7 +1066,7 @@ class TestCallToolADLineEdgeCases:
             name="calculate_ad_line",
             arguments={"symbol": "FLAT", "period": "1mo"},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["ad_trend"] == "flat"
 
 
@@ -1095,7 +1095,7 @@ class TestCallToolCMFEdgeCases:
             name="calculate_cmf",
             arguments={"symbol": "ZERO", "cmf_period": 20},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["condition"] == "Neutral (0)"
         assert data["latest_cmf"] == 0.0
 
@@ -1112,7 +1112,7 @@ class TestCallToolCMFEdgeCases:
             name="calculate_cmf",
             arguments={"symbol": "INF", "cmf_period": 20},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["condition"] == "Insufficient Data"
         assert data["latest_cmf"] is None
 
@@ -1137,7 +1137,7 @@ class TestCallToolOptionsAnalysis:
             name="options_analysis",
             arguments={"symbol": "AAPL", "holding_period": 14, "days_to_expiration": 30},
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert data["symbol"] == "AAPL"
         assert data["recommendation"] == "bullish"
         mock_options.assert_called_once()
@@ -1369,7 +1369,7 @@ class TestComprehensiveAnalysisBranches:
         result = await handle_call_tool(
             name="comprehensive_analysis", arguments={"symbol": "BULL", "period": "1mo"}
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert "summary" in data
         assert isinstance(data["summary"], list)
 
@@ -1393,7 +1393,7 @@ class TestComprehensiveAnalysisBranches:
         result = await handle_call_tool(
             name="comprehensive_analysis", arguments={"symbol": "BEAR", "period": "1mo"}
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert "summary" in data
 
     @pytest.mark.asyncio
@@ -1428,7 +1428,7 @@ class TestComprehensiveAnalysisBranches:
         result = await handle_call_tool(
             name="comprehensive_analysis", arguments={"symbol": "NAN", "period": "1mo"}
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert "summary" in data
         # Verify the tool completes without error despite NaN values
         assert data["symbol"] == "NAN"
@@ -1461,7 +1461,7 @@ class TestComprehensiveAnalysisBranches:
         result = await handle_call_tool(
             name="comprehensive_analysis", arguments={"symbol": "TEST", "period": "1mo"}
         )
-        data = json.loads(result[0].text)
+        data = json.loads(result.content[0].text)
         assert "volume_indicators" in data
         assert data["volume_indicators"]["mfi"]["condition"] == "Oversold"
         assert data["volume_indicators"]["cmf"]["condition"] == "Strong selling"

@@ -338,9 +338,9 @@ class TestInputValidation:
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_missing_critical_columns_raises_error(self, mock_ticker):
-        """Test that missing Close or Volume columns raise ValueError."""
+        """Test that missing OHLCV columns raise ValueError."""
         mock_data = pd.DataFrame(
-            {"Open": [100], "High": [101], "Low": [99]},
+            {"Close": [100.5], "Volume": [1000000]},
             index=pd.date_range(start="2024-01-01", periods=1, freq="D"),
         )
         mock_data.index.name = "Date"
@@ -353,10 +353,18 @@ class TestInputValidation:
             fetch_stock_data("AAPL")
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_missing_non_critical_columns_still_works(self, mock_ticker):
-        """Test that missing non-critical columns (e.g. Open) don't cause errors."""
+    def test_extra_columns_are_stripped(self, mock_ticker):
+        """Test that extra yfinance columns (Dividends, Stock Splits) are stripped."""
         mock_data = pd.DataFrame(
-            {"Close": [100.5], "Volume": [1000000], "High": [101], "Low": [99]},
+            {
+                "Open": [100],
+                "High": [101],
+                "Low": [99],
+                "Close": [100.5],
+                "Volume": [1000000],
+                "Dividends": [0.0],
+                "Stock Splits": [0.0],
+            },
             index=pd.date_range(start="2024-01-01", periods=1, freq="D"),
         )
         mock_data.index.name = "Date"
@@ -367,8 +375,8 @@ class TestInputValidation:
 
         result = fetch_stock_data("AAPL")
         assert "Close" in result.columns
-        assert "Volume" in result.columns
-        assert "Open" not in result.columns
+        assert "Dividends" not in result.columns
+        assert "Stock Splits" not in result.columns
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_valid_date_formats_accepted(self, mock_ticker):

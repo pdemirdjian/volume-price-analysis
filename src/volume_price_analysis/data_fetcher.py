@@ -121,7 +121,7 @@ def fetch_stock_data(
 
     # Keep only the columns we need
     columns_to_keep = ["Date", "Open", "High", "Low", "Close", "Volume"]
-    critical_columns = {"Close", "Volume"}
+    critical_columns = {"Open", "High", "Low", "Close", "Volume"}
     missing_critical = critical_columns - set(data.columns)
     if missing_critical:
         raise ValueError(

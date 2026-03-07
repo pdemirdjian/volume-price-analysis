@@ -1206,6 +1206,7 @@ class TestRunLoop:
         # After briefing runs, set stop to exit loop on next iteration
         async def briefing_side_effect(cfg):
             stop_event.set()
+            return True
 
         mock_run_briefing = AsyncMock(side_effect=briefing_side_effect)
         mocker.patch(
