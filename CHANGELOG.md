@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.4.3...v2.5.0) (2026-03-07)
+
+
+### Features
+
+* add team review agents and fix 19 issues across all modules ([#130](https://github.com/pdemirdjian/volume-price-analysis/issues/130)) ([93ae820](https://github.com/pdemirdjian/volume-price-analysis/commit/93ae820613715a5483b5744e3170e240e5cbbb1b))
+
 ## [2.4.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.4.2...v2.4.3) (2026-03-03)
 
 
