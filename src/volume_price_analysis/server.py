@@ -59,7 +59,7 @@ def _json_response(result: dict) -> str:
 server = Server("volume-price-analysis")
 
 
-async def _handle_scan_candidates(arguments: dict) -> list[TextContent]:
+async def _handle_scan_candidates(arguments: dict) -> CallToolResult:
     """Handle scan_candidates tool - delegates to analysis.run_scan."""
     holding_period = arguments.get("holding_period", 14)
     _validate_range(holding_period, "holding_period", 1, 90)
@@ -941,6 +941,8 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             )
 
             return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
+
+        raise AssertionError(f"Unhandled tool: {name}")  # pragma: no cover
 
     except ValueError as e:
         logger.warning("Tool %s validation error: %s", name, str(e))
