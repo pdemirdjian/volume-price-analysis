@@ -606,9 +606,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_missing_symbol_returns_error(self):
         """Test that a missing symbol parameter returns a validation error."""
-        result = await handle_call_tool(
-            name="get_stock_data", arguments={"period": "1mo"}
-        )
+        result = await handle_call_tool(name="get_stock_data", arguments={"period": "1mo"})
 
         assert isinstance(result, CallToolResult)
         assert result.isError is True
@@ -616,13 +614,10 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_unknown_tool_returns_error_with_flag(self):
         """Test that an unknown tool name returns isError=True."""
-        result = await handle_call_tool(
-            name="nonexistent_tool", arguments={"symbol": "AAPL"}
-        )
+        result = await handle_call_tool(name="nonexistent_tool", arguments={"symbol": "AAPL"})
 
         assert isinstance(result, CallToolResult)
         assert result.isError is True
-
 
 
 class TestScanCandidates:
@@ -1163,7 +1158,6 @@ class TestCallToolOptionsAnalysis:
         # days_to_expiration should default to holding_period
         call_kwargs = mock_options.call_args
         assert call_kwargs[1]["days_to_expiration"] == 21
-
 
 
 class TestGenerateEnhancedSummary:

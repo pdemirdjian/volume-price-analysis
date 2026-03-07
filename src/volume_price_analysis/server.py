@@ -948,7 +948,6 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent] | Ca
         )
 
 
-
 def generate_enhanced_summary(
     data,
     obv,

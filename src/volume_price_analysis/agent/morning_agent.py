@@ -245,9 +245,7 @@ def main():
             sys.exit(1)
 
     try:
-        success = asyncio.run(
-            run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai)
-        )
+        success = asyncio.run(run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai))
         if not success:
             sys.exit(2)
     except Exception as e:
