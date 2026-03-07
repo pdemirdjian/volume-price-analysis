@@ -11,12 +11,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  lint:
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -40,11 +36,11 @@ jobs:
         run: uv run ruff check src/ tests/
 
       - name: Run linting (SARIF)
-        if: matrix.os == 'ubuntu-latest' && (success() || failure())
+        if: success() || failure()
         run: uv run ruff check --output-format sarif -o ruff.sarif src/ tests/ || true
 
       - name: Upload Ruff SARIF
-        if: matrix.os == 'ubuntu-latest' && (success() || failure())
+        if: success() || failure()
         uses: github/codeql-action/upload-sarif@c793b717bc78562f491db7b0e93a3a178b099162 # v4.32.5
         with:
           sarif_file: ruff.sarif
@@ -53,12 +49,35 @@ jobs:
       - name: Run type checking
         run: uv run mypy src/
 
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
       - name: Run tests
         run: uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing
 
   test-gate:
     if: always()
-    needs: test
+    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
