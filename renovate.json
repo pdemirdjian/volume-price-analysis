@@ -39,13 +39,6 @@
       "groupName": "non-major dependencies"
     },
     {
-      "description": "Require approval for major updates",
-      "matchUpdateTypes": [
-        "major"
-      ],
-      "dependencyDashboardApproval": true
-    },
-    {
       "description": "Group and automerge non-major dev dependencies",
       "matchDepTypes": [
         "dev"
