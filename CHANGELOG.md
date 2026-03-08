@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.1...v2.5.2) (2026-03-08)
+
+
+### Bug Fixes
+
+* use github app token for release-please ([#144](https://github.com/pdemirdjian/volume-price-analysis/issues/144)) ([e8b0ab4](https://github.com/pdemirdjian/volume-price-analysis/commit/e8b0ab4d137bb259fa1a2a73600ed1ee0b1bfd4c))
+
 ## [2.5.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.0...v2.5.1) (2026-03-07)
 
 
