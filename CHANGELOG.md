@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.5.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.2...v2.5.3) (2026-03-20)
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([#150](https://github.com/pdemirdjian/volume-price-analysis/issues/150)) ([9c8f8ce](https://github.com/pdemirdjian/volume-price-analysis/commit/9c8f8ceecf85d32141a29898a9f0d07235b23d16))
+* **deps:** update non-major dependencies ([#157](https://github.com/pdemirdjian/volume-price-analysis/issues/157)) ([7786372](https://github.com/pdemirdjian/volume-price-analysis/commit/778637265eec42f5b2c1558d7ead3c5ff7f6ff1c))
+* **docker:** patch OS-level CVEs in base image ([#160](https://github.com/pdemirdjian/volume-price-analysis/issues/160)) ([3bdc109](https://github.com/pdemirdjian/volume-price-analysis/commit/3bdc10980fa1f5976243b2f7d335263dace34b80))
+
 ## [2.5.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.1...v2.5.2) (2026-03-08)
 
 
