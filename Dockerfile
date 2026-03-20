@@ -20,6 +20,9 @@ WORKDIR /app
 COPY --from=builder /app/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Patch OS-level vulnerabilities from the base image
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # Remove system pip (unused — uv manages deps) to fix CVE-2026-1703 and reduce attack surface
 RUN /usr/local/bin/python -m pip uninstall -y pip
 
