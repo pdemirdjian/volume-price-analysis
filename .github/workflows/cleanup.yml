@@ -3,17 +3,84 @@ name: Cleanup
 on:
   schedule:
     - cron: "0 6 * * 0" # Weekly, Sunday 6 AM UTC
+  workflow_dispatch: # Allow manual runs
 
 permissions:
   packages: write
+
+env:
+  PACKAGE_NAME: volume-price-analysis
+  MIN_VERSIONS_TO_KEEP: 10
 
 jobs:
   prune-images:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: volume-price-analysis
-          package-type: container
-          min-versions-to-keep: 10
-          delete-only-untagged-versions: true
+      - name: Prune untagged container images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          api_base="repos/${{ github.repository }}/packages/container/${PACKAGE_NAME}/versions"
+
+          echo "::group::Fetching all package versions"
+          all_versions=$(gh api "${api_base}" --paginate --jq '
+            .[] | {id, created_at, tags: .metadata.container.tags}
+          ' | jq -s '.')
+          total=$(echo "${all_versions}" | jq 'length')
+          echo "Found ${total} total version(s)"
+          echo "::endgroup::"
+
+          # Filter to untagged versions, sorted oldest-first
+          untagged=$(echo "${all_versions}" | jq '
+            [.[] | select(.tags | length == 0)]
+            | sort_by(.created_at)
+          ')
+          untagged_count=$(echo "${untagged}" | jq 'length')
+          echo "Found ${untagged_count} untagged version(s)"
+
+          # Ensure we always keep at least MIN_VERSIONS_TO_KEEP total versions
+          # (tagged + untagged combined)
+          tagged_count=$((total - untagged_count))
+          max_deletable=$((total - MIN_VERSIONS_TO_KEEP))
+          if [ "${max_deletable}" -lt 0 ]; then
+            max_deletable=0
+          fi
+
+          to_delete=$(echo "${untagged}" | jq --argjson max "${max_deletable}" '.[:$max]')
+          delete_count=$(echo "${to_delete}" | jq 'length')
+
+          if [ "${delete_count}" -eq 0 ]; then
+            echo "Nothing to delete (${tagged_count} tagged, ${untagged_count} untagged, min-keep=${MIN_VERSIONS_TO_KEEP})"
+            exit 0
+          fi
+
+          echo "Will delete ${delete_count} of ${untagged_count} untagged version(s) (keeping ${tagged_count} tagged + $((untagged_count - delete_count)) untagged ≥ ${MIN_VERSIONS_TO_KEEP} total)"
+
+          deleted=0
+          failed=0
+          echo "::group::Deleting versions"
+          for version_id in $(echo "${to_delete}" | jq -r '.[].id'); do
+            created_at=$(echo "${to_delete}" | jq -r --argjson id "${version_id}" '.[] | select(.id == $id) | .created_at')
+            if gh api --method DELETE "${api_base}/${version_id}" 2>/dev/null; then
+              echo "Deleted version ${version_id} (created ${created_at})"
+              deleted=$((deleted + 1))
+            else
+              echo "::warning::Failed to delete version ${version_id} (created ${created_at})"
+              failed=$((failed + 1))
+            fi
+          done
+          echo "::endgroup::"
+
+          echo "### Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Deleted**: ${deleted} untagged version(s)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${failed}" -gt 0 ]; then
+            echo "- **Failed**: ${failed} version(s)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "- **Remaining**: $((total - deleted)) version(s)" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${failed}" -gt 0 ]; then
+            echo "::error::Failed to delete ${failed} version(s)"
+            exit 1
+          fi
