@@ -19,18 +19,33 @@ jobs:
       - name: Prune untagged container images
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          api_base="repos/${{ github.repository }}/packages/container/${PACKAGE_NAME}/versions"
+          # Validate MIN_VERSIONS_TO_KEEP is a positive integer
+          if ! [[ "${MIN_VERSIONS_TO_KEEP}" =~ ^[0-9]+$ ]] || [ "${MIN_VERSIONS_TO_KEEP}" -lt 1 ]; then
+            echo "::error::MIN_VERSIONS_TO_KEEP must be a positive integer, got: '${MIN_VERSIONS_TO_KEEP}'"
+            exit 1
+          fi
+
+          api_base="repos/${GH_REPO}/packages/container/${PACKAGE_NAME}/versions"
 
           echo "::group::Fetching all package versions"
-          all_versions=$(gh api "${api_base}" --paginate --jq '
-            .[] | {id, created_at, tags: .metadata.container.tags}
-          ' | jq -s '.')
+          if ! api_output=$(gh api "${api_base}" --paginate 2>&1); then
+            echo "::error::Failed to fetch package versions for '${PACKAGE_NAME}': ${api_output}"
+            exit 1
+          fi
+
+          all_versions=$(echo "${api_output}" | jq -s '[.[][]] | [.[] | {id, created_at, tags: (.metadata.container.tags // [])}]')
           total=$(echo "${all_versions}" | jq 'length')
           echo "Found ${total} total version(s)"
           echo "::endgroup::"
+
+          if [ "${total}" -eq 0 ]; then
+            echo "::warning::No versions found for package '${PACKAGE_NAME}'. Verify the package name and token permissions."
+            exit 0
+          fi
 
           # Filter to untagged versions, sorted oldest-first
           untagged=$(echo "${all_versions}" | jq '
@@ -40,8 +55,8 @@ jobs:
           untagged_count=$(echo "${untagged}" | jq 'length')
           echo "Found ${untagged_count} untagged version(s)"
 
-          # Ensure we always keep at least MIN_VERSIONS_TO_KEEP total versions
-          # (tagged + untagged combined)
+          # Never delete so many untagged versions that total remaining drops below MIN_VERSIONS_TO_KEEP.
+          # Note: tagged versions are never deleted; only untagged versions are candidates.
           tagged_count=$((total - untagged_count))
           max_deletable=$((total - MIN_VERSIONS_TO_KEEP))
           if [ "${max_deletable}" -lt 0 ]; then
@@ -56,21 +71,21 @@ jobs:
             exit 0
           fi
 
-          echo "Will delete ${delete_count} of ${untagged_count} untagged version(s) (keeping ${tagged_count} tagged + $((untagged_count - delete_count)) untagged ≥ ${MIN_VERSIONS_TO_KEEP} total)"
+          echo "Will delete ${delete_count} of ${untagged_count} untagged version(s) (keeping ${tagged_count} tagged + $((untagged_count - delete_count)) untagged >= ${MIN_VERSIONS_TO_KEEP} total)"
 
           deleted=0
           failed=0
           echo "::group::Deleting versions"
-          for version_id in $(echo "${to_delete}" | jq -r '.[].id'); do
-            created_at=$(echo "${to_delete}" | jq -r --argjson id "${version_id}" '.[] | select(.id == $id) | .created_at')
-            if gh api --method DELETE "${api_base}/${version_id}" 2>/dev/null; then
+          while IFS=$'\t' read -r version_id created_at; do
+            [ -z "${version_id}" ] && continue
+            if delete_output=$(gh api --method DELETE "${api_base}/${version_id}" 2>&1); then
               echo "Deleted version ${version_id} (created ${created_at})"
               deleted=$((deleted + 1))
             else
-              echo "::warning::Failed to delete version ${version_id} (created ${created_at})"
+              echo "::warning::Failed to delete version ${version_id} (created ${created_at}): ${delete_output}"
               failed=$((failed + 1))
             fi
-          done
+          done < <(echo "${to_delete}" | jq -r '.[] | [(.id | tostring), .created_at] | @tsv')
           echo "::endgroup::"
 
           echo "### Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
@@ -78,7 +93,13 @@ jobs:
           if [ "${failed}" -gt 0 ]; then
             echo "- **Failed**: ${failed} version(s)" >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "- **Remaining**: $((total - deleted)) version(s)" >> "$GITHUB_STEP_SUMMARY"
+          remaining=$((total - deleted))
+          echo -n "- **Remaining**: ${remaining} version(s)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${failed}" -gt 0 ]; then
+            echo " (includes ${failed} that could not be deleted)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [ "${failed}" -gt 0 ]; then
             echo "::error::Failed to delete ${failed} version(s)"
