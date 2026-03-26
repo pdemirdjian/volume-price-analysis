@@ -19,7 +19,7 @@ jobs:
       - name: Prune untagged container images
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
 
@@ -29,7 +29,8 @@ jobs:
             exit 1
           fi
 
-          api_base="repos/${GH_REPO}/packages/container/${PACKAGE_NAME}/versions"
+          # GHCR packages are user-scoped, not repo-scoped
+          api_base="users/${GH_OWNER}/packages/container/${PACKAGE_NAME}/versions"
 
           echo "::group::Fetching all package versions"
           if ! api_output=$(gh api "${api_base}" --paginate 2>&1); then
@@ -68,6 +69,9 @@ jobs:
 
           if [ "${delete_count}" -eq 0 ]; then
             echo "Nothing to delete (${tagged_count} tagged, ${untagged_count} untagged, min-keep=${MIN_VERSIONS_TO_KEEP})"
+            echo "### Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Deleted**: 0 untagged version(s)" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Remaining**: ${total} version(s)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
