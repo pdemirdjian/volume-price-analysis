@@ -29,7 +29,7 @@ jobs:
             exit 1
           fi
 
-          # GHCR packages are user-scoped, not repo-scoped
+          # Use the user-scoped packages endpoint (not repo-scoped, which 404s for this package)
           api_base="users/${GH_OWNER}/packages/container/${PACKAGE_NAME}/versions"
 
           echo "::group::Fetching all package versions"
@@ -45,6 +45,8 @@ jobs:
 
           if [ "${total}" -eq 0 ]; then
             echo "::warning::No versions found for package '${PACKAGE_NAME}'. Verify the package name and token permissions."
+            echo "### Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
+            echo "No versions found for package \`${PACKAGE_NAME}\`. No cleanup performed." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
