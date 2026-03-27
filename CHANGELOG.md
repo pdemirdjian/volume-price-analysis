@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.3...v2.5.4) (2026-03-26)
+
+
+### Bug Fixes
+
+* replace abandoned actions/delete-package-versions with gh CLI ([#167](https://github.com/pdemirdjian/volume-price-analysis/issues/167)) ([a5d7b15](https://github.com/pdemirdjian/volume-price-analysis/commit/a5d7b155f5cd3f5fb1dccfb3c67fdd4d17bb20e4))
+
 ## [2.5.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.2...v2.5.3) (2026-03-20)
 
 
