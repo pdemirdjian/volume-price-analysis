@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.9](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.8...v2.5.9) (2026-04-07)
+
+
+### Bug Fixes
+
+* **deps:** upgrade curl-cffi to 0.15.0 to patch CVE-2026-33752 ([#184](https://github.com/pdemirdjian/volume-price-analysis/issues/184)) ([d9b2b96](https://github.com/pdemirdjian/volume-price-analysis/commit/d9b2b96839b8f0cbd5ce2732f02956e0a6136425))
+
 ## [2.5.8](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.7...v2.5.8) (2026-04-06)
 
 
