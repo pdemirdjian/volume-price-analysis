@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "curl-cffi", specifier = ">=0.15.0" }]
+overrides = [{ name = "curl-cffi", specifier = ">=0.15.0,<0.16" }]
 
 [[package]]
 name = "annotated-types"

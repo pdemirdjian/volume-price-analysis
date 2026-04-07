@@ -79,9 +79,11 @@ disallow_untyped_defs = false
 ignore_missing_imports = true
 
 [tool.uv]
-# Security override: force curl-cffi>=0.15.0 to patch CVE-2026-33752 (SSRF via redirect).
-# yfinance 1.2.0 pins curl_cffi<0.14 but 0.15.0 is compatible and contains the fix.
-override-dependencies = ["curl-cffi>=0.15.0"]
+# Security override: force curl-cffi>=0.15.0,<0.16 to patch CVE-2026-33752 (SSRF via redirect).
+# yfinance 1.2.0 pins curl_cffi<0.14, blocking the fix. Capped at <0.16 to match this project's
+# tight-pinning policy and limit unvetted compatibility risk with yfinance.
+# NOTE: this override is uv-only; pip installs remain constrained by yfinance's <0.14 upper bound.
+override-dependencies = ["curl-cffi>=0.15.0,<0.16"]
 
 [project.scripts]
 volume-price-analysis = "volume_price_analysis.server:main"
