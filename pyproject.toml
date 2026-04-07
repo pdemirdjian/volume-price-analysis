@@ -78,6 +78,11 @@ warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
 
+[tool.uv]
+# Security override: force curl-cffi>=0.15.0 to patch CVE-2026-33752 (SSRF via redirect).
+# yfinance 1.2.0 pins curl_cffi<0.14 but 0.15.0 is compatible and contains the fix.
+override-dependencies = ["curl-cffi>=0.15.0"]
+
 [project.scripts]
 volume-price-analysis = "volume_price_analysis.server:main"
 morning-briefing = "volume_price_analysis.agent.morning_agent:main"
