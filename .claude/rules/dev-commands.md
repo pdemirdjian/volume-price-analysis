@@ -21,6 +21,6 @@ docker run --env-file .env volume-price-analysis
 
 ## CLI Entry Points (pyproject.toml)
 
-- `volume-price-analysis` → `server:main` — MCP server
-- `morning-briefing` → `morning_agent:main` — single briefing run
-- `morning-scheduler` → `scheduler:main` — asyncio scheduler (used in Docker)
+- `volume-price-analysis` → `volume_price_analysis.server:main` — MCP server
+- `morning-briefing` → `volume_price_analysis.agent.morning_agent:main` — single briefing run
+- `morning-scheduler` → `volume_price_analysis.agent.scheduler:main` — asyncio scheduler (used in Docker)
