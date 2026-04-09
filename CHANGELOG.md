@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.5.9](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.8...v2.5.9) (2026-04-07)
+
+
+### Bug Fixes
+
+* **deps:** upgrade curl-cffi to 0.15.0 to patch CVE-2026-33752 ([#184](https://github.com/pdemirdjian/volume-price-analysis/issues/184)) ([d9b2b96](https://github.com/pdemirdjian/volume-price-analysis/commit/d9b2b96839b8f0cbd5ce2732f02956e0a6136425))
+
+## [2.5.8](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.7...v2.5.8) (2026-04-06)
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([#181](https://github.com/pdemirdjian/volume-price-analysis/issues/181)) ([4c2ef80](https://github.com/pdemirdjian/volume-price-analysis/commit/4c2ef804a10da1aa8682bfafa435ec30817e7315))
+
+## [2.5.7](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.6...v2.5.7) (2026-04-02)
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([#176](https://github.com/pdemirdjian/volume-price-analysis/issues/176)) ([29ebb08](https://github.com/pdemirdjian/volume-price-analysis/commit/29ebb0809f42b04c39798e324c014ffe59835976))
+
+## [2.5.6](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.5...v2.5.6) (2026-04-01)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=0.87.0 [security] ([#172](https://github.com/pdemirdjian/volume-price-analysis/issues/172)) ([a16b2f4](https://github.com/pdemirdjian/volume-price-analysis/commit/a16b2f482e150f74fbdd54702f5888d24db21029))
+
+## [2.5.5](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.4...v2.5.5) (2026-03-30)
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([#170](https://github.com/pdemirdjian/volume-price-analysis/issues/170)) ([f98fd02](https://github.com/pdemirdjian/volume-price-analysis/commit/f98fd02de73a67e8e5c96626a87e9015dac7c204))
+
+## [2.5.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.3...v2.5.4) (2026-03-26)
+
+
+### Bug Fixes
+
+* replace abandoned actions/delete-package-versions with gh CLI ([#167](https://github.com/pdemirdjian/volume-price-analysis/issues/167)) ([a5d7b15](https://github.com/pdemirdjian/volume-price-analysis/commit/a5d7b155f5cd3f5fb1dccfb3c67fdd4d17bb20e4))
+
 ## [2.5.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.2...v2.5.3) (2026-03-20)
 
 
