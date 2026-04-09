@@ -1,6 +1,6 @@
 # Environment Variables
 
-Required for the morning briefing agent only. Not needed for the MCP server. See `agent/config.py` `AgentConfig.from_env()` for full list.
+Required for the morning briefing agent only. Not needed for the MCP server. See `src/volume_price_analysis/agent/config.py` `AgentConfig.from_env()` for full list.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
