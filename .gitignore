@@ -76,5 +76,6 @@ pip-delete-this-directory.txt
 !.claude/settings.json
 !.claude/agents/
 !.claude/skills/
+!.claude/rules/
 .serena/
 .worktrees/
