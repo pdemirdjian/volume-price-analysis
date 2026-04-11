@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.10](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.9...v2.5.10) (2026-04-11)
+
+
+### Bug Fixes
+
+* **deps:** update non-major dependencies ([#191](https://github.com/pdemirdjian/volume-price-analysis/issues/191)) ([88ac619](https://github.com/pdemirdjian/volume-price-analysis/commit/88ac619f5314fdc50fa81bafda3e528839a266b8))
+
 ## [2.5.9](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.8...v2.5.9) (2026-04-07)
 
 
