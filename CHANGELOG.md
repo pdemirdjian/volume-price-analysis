@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.12](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.11...v2.5.12) (2026-04-13)
+
+
+### Bug Fixes
+
+* **renovate:** revert lock file maintenance to chore commit type ([#203](https://github.com/pdemirdjian/volume-price-analysis/issues/203)) ([d6fd280](https://github.com/pdemirdjian/volume-price-analysis/commit/d6fd28048848705c0987d6784660556e39780ad4))
+
 ## [2.5.11](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.10...v2.5.11) (2026-04-13)
 
 
