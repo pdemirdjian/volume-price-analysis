@@ -27,7 +27,8 @@
     "automerge": true,
     "schedule": [
       "before 6am on monday"
-    ]
+    ],
+    "semanticCommitType": "fix"
   },
   "packageRules": [
     {
@@ -74,13 +75,14 @@
       "semanticCommitType": "fix"
     },
     {
-      "description": "Use fix commit type for Docker base image version updates",
+      "description": "Use fix commit type for Docker base image updates",
       "matchManagers": [
         "dockerfile"
       ],
       "matchUpdateTypes": [
         "minor",
-        "patch"
+        "patch",
+        "digest"
       ],
       "semanticCommitType": "fix"
     },
