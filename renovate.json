@@ -74,6 +74,17 @@
       "semanticCommitType": "fix"
     },
     {
+      "description": "Use fix commit type for Docker base image version updates",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "semanticCommitType": "fix"
+    },
+    {
       "description": "Automerge GitHub Actions patches and minor updates",
       "matchManagers": [
         "github-actions"
