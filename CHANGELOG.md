@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.5.11](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.10...v2.5.11) (2026-04-13)
+
+
+### Bug Fixes
+
+* **deps:** lock file maintenance ([#196](https://github.com/pdemirdjian/volume-price-analysis/issues/196)) ([6baf4a6](https://github.com/pdemirdjian/volume-price-analysis/commit/6baf4a60ede97a9838a33167b9774f9346587b71))
+* **deps:** update python:3.14-slim docker digest to bc389f7 ([#194](https://github.com/pdemirdjian/volume-price-analysis/issues/194)) ([3fa0558](https://github.com/pdemirdjian/volume-price-analysis/commit/3fa0558563f304d3e297c91adfd0c870e47490bd))
+* **renovate:** use fix commit type for container-affecting updates ([#198](https://github.com/pdemirdjian/volume-price-analysis/issues/198)) ([70a5aff](https://github.com/pdemirdjian/volume-price-analysis/commit/70a5aff297f9292c88734d93705f262598b7050c))
+
 ## [2.5.10](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.9...v2.5.10) (2026-04-11)
 
 
