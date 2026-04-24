@@ -1,5 +1,5 @@
 # ── Stage 1: build ──
-FROM python:3.14-slim@sha256:bc389f7dfcb21413e72a28f491985326994795e34d2b86c8ae2f417b4e7818aa AS builder
+FROM python:3.14.4-slim-trixie@sha256:5c9b9aeee369d854acd666375ebb2a9a45a8ac9d264973bed69dbb28cf48f648 AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY src/ src/
 RUN uv sync --no-dev --frozen --no-editable
 
 # ── Stage 2: runtime ──
-FROM python:3.14-slim@sha256:bc389f7dfcb21413e72a28f491985326994795e34d2b86c8ae2f417b4e7818aa
+FROM python:3.14.4-slim-trixie@sha256:5c9b9aeee369d854acd666375ebb2a9a45a8ac9d264973bed69dbb28cf48f648
 
 WORKDIR /app
 COPY --from=builder /app/.venv .venv
