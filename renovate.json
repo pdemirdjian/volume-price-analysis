@@ -92,7 +92,7 @@
       ]
     },
     {
-      "description": "Use fix commit type for Docker base image updates",
+      "description": "Automerge non-major Docker base image updates with 3-day soak; use fix commit type to trigger releases",
       "matchManagers": [
         "dockerfile"
       ],
@@ -101,7 +101,9 @@
         "patch",
         "digest"
       ],
-      "semanticCommitType": "fix"
+      "semanticCommitType": "fix",
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
     },
     {
       "description": "Skip digest-only Dockerfile PRs; rely on apt-get upgrade at build time and Trivy scan for OS CVEs. Version bumps (major/minor/patch) still flow through.",
