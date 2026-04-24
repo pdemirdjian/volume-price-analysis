@@ -86,6 +86,17 @@
       "semanticCommitType": "fix"
     },
     {
+      "description": "Skip digest-only Dockerfile PRs; rely on apt-get upgrade at build time and Trivy scan for OS CVEs. Version bumps (major/minor/patch) still flow through.",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "digest",
+        "pinDigest"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Automerge GitHub Actions patches and minor updates",
       "matchManagers": [
         "github-actions"
