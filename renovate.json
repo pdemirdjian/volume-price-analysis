@@ -4,9 +4,6 @@
     "config:best-practices",
     ":semanticCommits"
   ],
-  "schedule": [
-    "before 6am on monday"
-  ],
   "timezone": "America/Los_Angeles",
   "labels": [
     "dependencies"
@@ -74,7 +71,28 @@
       "semanticCommitType": "fix"
     },
     {
-      "description": "Use fix commit type for Docker base image updates",
+      "description": "Automerge non-major production dependencies with 3-day soak",
+      "matchDepTypes": [
+        "project.dependencies"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Batch major-version bumps into the Monday review window",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "schedule": [
+        "before 6am on monday"
+      ]
+    },
+    {
+      "description": "Automerge non-major Docker base image updates with 3-day soak; use fix commit type to trigger releases",
       "matchManagers": [
         "dockerfile"
       ],
@@ -83,7 +101,20 @@
         "patch",
         "digest"
       ],
-      "semanticCommitType": "fix"
+      "semanticCommitType": "fix",
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Skip digest-only Dockerfile PRs; rely on apt-get upgrade at build time and Trivy scan for OS CVEs. Version bumps (major/minor/patch) still flow through.",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "digest",
+        "pinDigest"
+      ],
+      "enabled": false
     },
     {
       "description": "Automerge GitHub Actions patches and minor updates",
