@@ -4,9 +4,6 @@
     "config:best-practices",
     ":semanticCommits"
   ],
-  "schedule": [
-    "before 6am on monday"
-  ],
   "timezone": "America/Los_Angeles",
   "labels": [
     "dependencies"
@@ -72,6 +69,27 @@
         "project.dependencies"
       ],
       "semanticCommitType": "fix"
+    },
+    {
+      "description": "Automerge non-major production dependencies with 3-day soak",
+      "matchDepTypes": [
+        "project.dependencies"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true,
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Batch major-version bumps into the Monday review window",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "schedule": [
+        "before 6am on monday"
+      ]
     },
     {
       "description": "Use fix commit type for Docker base image updates",
