@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.19](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.18...v2.5.19) (2026-05-11)
+
+
+### Bug Fixes
+
+* **deps:** update ghcr.io/astral-sh/uv docker tag to v0.11.13 ([#246](https://github.com/pdemirdjian/volume-price-analysis/issues/246)) ([5230e9e](https://github.com/pdemirdjian/volume-price-analysis/commit/5230e9ec1c3a0c84feaaf9b608cc538ddc7f3964))
+
 ## [2.5.18](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.17...v2.5.18) (2026-05-09)
 
 
