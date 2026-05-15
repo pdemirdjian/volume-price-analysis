@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.20](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.19...v2.5.20) (2026-05-15)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=0.101.0 ([#250](https://github.com/pdemirdjian/volume-price-analysis/issues/250)) ([bac8aad](https://github.com/pdemirdjian/volume-price-analysis/commit/bac8aad48289139928f9bd930d0b5af65d8d5810))
+* **deps:** update dependency pandas to v3.0.3 ([#252](https://github.com/pdemirdjian/volume-price-analysis/issues/252)) ([5109481](https://github.com/pdemirdjian/volume-price-analysis/commit/51094817b22a71747ddab8c74fd1ac92866b36ab))
+
 ## [2.5.19](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.18...v2.5.19) (2026-05-11)
 
 
