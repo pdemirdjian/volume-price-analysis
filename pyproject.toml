@@ -14,7 +14,7 @@ dependencies = [
     "pandas==3.0.3",
     "numpy==2.4.4",
     "anthropic~=0.101.0",
-    "google-genai~=2.1.0",
+    "google-genai~=2.2.0",
     "markdown~=3.10.0",
     "holidays~=0.91",
     "pytickersymbols~=1.17.0",
