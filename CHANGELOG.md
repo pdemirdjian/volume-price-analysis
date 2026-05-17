@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.22](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.21...v2.5.22) (2026-05-17)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=0.102.0 ([#257](https://github.com/pdemirdjian/volume-price-analysis/issues/257)) ([1e9efda](https://github.com/pdemirdjian/volume-price-analysis/commit/1e9efda250defdf2dfd9d8eb048694624dc0e2df))
+* **deps:** update python docker tag to v3.14.5 ([#259](https://github.com/pdemirdjian/volume-price-analysis/issues/259)) ([bc8eeac](https://github.com/pdemirdjian/volume-price-analysis/commit/bc8eeacd8bdd88642ef77e99370170dbbfcb176e))
+
 ## [2.5.21](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.20...v2.5.21) (2026-05-16)
 
 
