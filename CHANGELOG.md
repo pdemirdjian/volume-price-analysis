@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.24](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.23...v2.5.24) (2026-05-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency numpy to v2.4.6 ([#267](https://github.com/pdemirdjian/volume-price-analysis/issues/267)) ([c422dbc](https://github.com/pdemirdjian/volume-price-analysis/commit/c422dbcdb33d1fd1eca108f7ef3e23350d0b5c5a))
+
 ## [2.5.23](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.22...v2.5.23) (2026-05-19)
 
 
