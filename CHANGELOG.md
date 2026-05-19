@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.5.23](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.22...v2.5.23) (2026-05-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=2.3.0 ([#260](https://github.com/pdemirdjian/volume-price-analysis/issues/260)) ([956cd0e](https://github.com/pdemirdjian/volume-price-analysis/commit/956cd0e128e616f6c2b2b0dc9b6a41b96a6c5709))
+* **deps:** update dependency google-genai to ~=2.4.0 ([#266](https://github.com/pdemirdjian/volume-price-analysis/issues/266)) ([1b512ba](https://github.com/pdemirdjian/volume-price-analysis/commit/1b512ba93b2df1e282edeaafa40fe95ab98d137f))
+* **deps:** update dependency numpy to v2.4.5 ([#263](https://github.com/pdemirdjian/volume-price-analysis/issues/263)) ([000724f](https://github.com/pdemirdjian/volume-price-analysis/commit/000724f975a3750eec21416f48ed22b236d6e3fb))
+* **deps:** update ghcr.io/astral-sh/uv docker tag to v0.11.15 ([#265](https://github.com/pdemirdjian/volume-price-analysis/issues/265)) ([37f3536](https://github.com/pdemirdjian/volume-price-analysis/commit/37f3536cd2ba5ffb0f069d538f352e5cc2e328a3))
+
 ## [2.5.22](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.21...v2.5.22) (2026-05-17)
 
 
