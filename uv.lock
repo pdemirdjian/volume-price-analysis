@@ -391,7 +391,7 @@ requests = [
 
 [[package]]
 name = "google-genai"
-version = "2.4.0"
+version = "2.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -405,9 +405,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/91/15fff1b7c22dc0b5b44fa348f151379721353d06a3da22dbbe15bf2c4dd9/google_genai-2.4.0.tar.gz", hash = "sha256:3f8d4bd618be2801e805dc698726731a70f34b438ea25a6c92800eef5b1f513e", size = 552025, upload-time = "2026-05-18T00:25:14.556Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/08/c7f3a6f49bb6674891ce6fb9e9eeeb7a7522cb51f3422afff5d5a59bf347/google_genai-2.5.0.tar.gz", hash = "sha256:643d8158a718eecb8d14d4155ed973f43034f8ae757ac922fb6b093dd374e2af", size = 552293, upload-time = "2026-05-20T18:59:00.473Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/c8/1b49f6bb69dc7e291ba5d14926937bec4dffcc09ee875822636bd5ef3cf4/google_genai-2.4.0-py3-none-any.whl", hash = "sha256:48df1c44190b05b834fee9cffd360af6d6fd7f68164588e7ebd670fa34f71ee1", size = 818207, upload-time = "2026-05-18T00:25:12.426Z" },
+    { url = "https://files.pythonhosted.org/packages/52/a7/b90fcd62461d74e08ded24e8265af5d2e53c0fd2dcc309a14687fdf2077a/google_genai-2.5.0-py3-none-any.whl", hash = "sha256:bba50cdb3a14cb3dea7b3e43a8f23b50191fd77bd19097df98b051ce1a619352", size = 818214, upload-time = "2026-05-20T18:58:58.435Z" },
 ]
 
 [[package]]
@@ -1294,7 +1294,7 @@ wheels = [
 
 [[package]]
 name = "volume-price-analysis-mcp"
-version = "2.5.24"
+version = "2.5.25"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -1322,7 +1322,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = "~=0.103.0" },
-    { name = "google-genai", specifier = "~=2.4.0" },
+    { name = "google-genai", specifier = "~=2.5.0" },
     { name = "holidays", specifier = "~=0.91" },
     { name = "markdown", specifier = "~=3.10.0" },
     { name = "mcp", specifier = "==1.27.1" },
