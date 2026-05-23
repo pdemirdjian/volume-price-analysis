@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.25](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.24...v2.5.25) (2026-05-23)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=0.103.0 ([#270](https://github.com/pdemirdjian/volume-price-analysis/issues/270)) ([0e8337c](https://github.com/pdemirdjian/volume-price-analysis/commit/0e8337cc8574b3f3dbc1de5b92539f7b6a2eaf5b))
+
 ## [2.5.24](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.23...v2.5.24) (2026-05-19)
 
 
