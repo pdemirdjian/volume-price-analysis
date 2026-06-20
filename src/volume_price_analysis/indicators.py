@@ -96,6 +96,10 @@ def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str
     Returns:
         Dictionary with 'price_levels' and 'volumes' lists
     """
+    if len(data) == 0:
+        # No data -> return a well-formed, all-zero profile (no NaN price levels).
+        return {"price_levels": [0.0] * num_bins, "volumes": [0.0] * num_bins}
+
     min_price = data["Low"].min()
     max_price = data["High"].max()
 
@@ -156,7 +160,8 @@ def calculate_vpt(data: pd.DataFrame) -> pd.Series:
     for i in range(1, len(data)):
         prev_close = data["Close"].iloc[i - 1]
         curr_close = data["Close"].iloc[i]
-        price_change_pct = (curr_close - prev_close) / prev_close
+        # Guard div-by-zero: a zero previous close has no defined pct change -> 0.
+        price_change_pct = (curr_close - prev_close) / prev_close if prev_close != 0 else 0.0
         vpt.append(vpt[-1] + data["Volume"].iloc[i] * price_change_pct)
 
     return pd.Series(vpt, index=data.index)
@@ -205,8 +210,16 @@ def calculate_mfi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     positive_mf = positive_flow.rolling(window=period).sum()
     negative_mf = negative_flow.rolling(window=period).sum()
 
-    mfr = positive_mf / negative_mf
+    # Guard division by zero in the money-flow ratio. Computing the ratio only
+    # where negative_mf > 0 avoids inf/NaN; the two .where() passes then assign
+    # the conventional values for the degenerate windows:
+    #   - negative_mf == 0 with positive flow -> fully overbought (MFI = 100)
+    #   - flat window (no flow either way)     -> neutral (MFI = 50)
+    # Leading insufficient-history values (rolling sum still NaN) stay NaN.
+    mfr = positive_mf / negative_mf.where(negative_mf > 0)
     mfi = 100 - (100 / (1 + mfr))
+    mfi = mfi.where(~((negative_mf == 0) & (positive_mf > 0)), 100.0)
+    mfi = mfi.where(~((negative_mf == 0) & (positive_mf == 0)), 50.0)
 
     return mfi
 
@@ -222,15 +235,33 @@ def analyze_volume_trends(data: pd.DataFrame, window: int = 20) -> dict[str, Any
     Returns:
         Dictionary with volume trend analysis
     """
-    avg_volume = data["Volume"].rolling(window=window).mean()
+    n = len(data)
+    if n == 0:
+        # No data -> safe, well-formed defaults (mirrors detect_volume_breakout).
+        return {
+            "current_volume": 0,
+            "average_volume": 0,
+            "volume_vs_average": "0.00%",
+            "volume_trend": "decreasing",
+            "price_direction": "down",
+            "divergence_detected": False,
+            "divergence_type": "None",
+        }
+
+    # min_periods=1 keeps the average defined when len(data) < window (avoids
+    # int(NaN)); for len(data) >= window the last value is unchanged.
+    avg_volume = data["Volume"].rolling(window=window, min_periods=1).mean()
     current_volume = data["Volume"].iloc[-1]
     current_avg = avg_volume.iloc[-1]
 
     # Calculate volume trend
     volume_increasing = data["Volume"].iloc[-5:].is_monotonic_increasing
 
-    # Calculate price-volume divergence
-    price_direction = "up" if data["Close"].iloc[-1] > data["Close"].iloc[-window] else "down"
+    # Calculate price-volume divergence. Clamp the lookback to available history so
+    # len(data) < window can't IndexError; for len(data) >= window this is exactly
+    # iloc[-window] (unchanged behavior).
+    prior_close = data["Close"].iloc[max(-window, -n)]
+    price_direction = "up" if data["Close"].iloc[-1] > prior_close else "down"
     volume_direction = "up" if current_volume > current_avg else "down"
 
     divergence = (price_direction == "up" and volume_direction == "down") or (
@@ -241,10 +272,15 @@ def analyze_volume_trends(data: pd.DataFrame, window: int = 20) -> dict[str, Any
         f"Price {price_direction}, Volume {volume_direction}" if divergence else "None"
     )
 
+    # Guard against zero average volume (e.g. all-zero volume) -> avoid inf/NaN string.
+    volume_vs_average = (
+        f"{((current_volume / current_avg - 1) * 100):.2f}%" if current_avg else "0.00%"
+    )
+
     return {
         "current_volume": int(current_volume),
         "average_volume": int(current_avg),
-        "volume_vs_average": f"{((current_volume / current_avg - 1) * 100):.2f}%",
+        "volume_vs_average": volume_vs_average,
         "volume_trend": "increasing" if volume_increasing else "decreasing",
         "price_direction": price_direction,
         "divergence_detected": divergence,
@@ -657,9 +693,10 @@ def calculate_enhanced_volume_profile(
         "current_price": float(current_price),
         "position": position,
         "interpretation": interpretation,
-        "poc_distance_pct": float(((current_price / poc) - 1) * 100),
-        "vah_distance_pct": float(((current_price / vah) - 1) * 100),
-        "val_distance_pct": float(((current_price / val) - 1) * 100),
+        # Guard div-by-zero when a level is 0 (e.g. all-zero / degenerate prices).
+        "poc_distance_pct": float(((current_price / poc) - 1) * 100) if poc else 0.0,
+        "vah_distance_pct": float(((current_price / vah) - 1) * 100) if vah else 0.0,
+        "val_distance_pct": float(((current_price / val) - 1) * 100) if val else 0.0,
     }
 
 

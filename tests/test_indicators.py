@@ -3182,3 +3182,138 @@ class TestDetectVolumeBreakoutSingleRow:
         assert result["direction"] == "none"
         assert result["current_volume"] == 1000
         assert result["signal"] == "No breakout"
+
+
+# ============================================================================
+# A6: INDICATOR EDGE-CASE HARDENING (HOM-37)
+#
+# Indicators must degrade gracefully on short / degenerate input instead of
+# raising (IndexError / int(NaN)) or emitting silent garbage (NaN / inf).
+# Additive only: behavior for normal-sized, well-formed inputs is unchanged.
+# ============================================================================
+
+
+class TestAnalyzeVolumeTrendsEdgeCases:
+    """analyze_volume_trends should not crash on short / degenerate input."""
+
+    def test_fewer_rows_than_window_no_crash(self):
+        """len(data) < window must not raise IndexError or int(NaN) ValueError."""
+        data = pd.DataFrame({"Close": [100.0, 101.0, 102.0], "Volume": [1000, 1100, 1200]})
+        result = analyze_volume_trends(data, window=20)
+
+        assert isinstance(result["current_volume"], int)
+        assert isinstance(result["average_volume"], int)
+        assert result["price_direction"] in ("up", "down")
+        assert "%" in result["volume_vs_average"]
+        assert isinstance(result["divergence_detected"], bool)
+
+    def test_zero_average_volume_no_inf(self):
+        """All-zero volume must not yield inf/NaN in the volume_vs_average string."""
+        data = pd.DataFrame({"Close": [100.0] * 25, "Volume": [0] * 25})
+        result = analyze_volume_trends(data, window=20)
+
+        assert result["average_volume"] == 0
+        assert result["current_volume"] == 0
+        assert "inf" not in result["volume_vs_average"].lower()
+        assert "nan" not in result["volume_vs_average"].lower()
+
+    def test_empty_frame_returns_safe_defaults(self):
+        """Empty frame must return safe defaults, not raise."""
+        empty = pd.DataFrame(columns=["Close", "Volume"])
+        result = analyze_volume_trends(empty, window=20)
+
+        assert result["current_volume"] == 0
+        assert result["average_volume"] == 0
+        assert result["divergence_detected"] is False
+
+    def test_sufficient_history_unchanged(self):
+        """Regression guard: len > window keeps the original close[-1] vs close[-window]."""
+        closes = [100.0 + i for i in range(30)]
+        data = pd.DataFrame({"Close": closes, "Volume": [1_000_000] * 30})
+        result = analyze_volume_trends(data, window=20)
+
+        # close[-1]=129 > close[-20]=110 -> "up"
+        assert result["price_direction"] == "up"
+        assert result["average_volume"] == 1_000_000
+
+
+class TestVolumeProfileEmptyFrame:
+    """calculate_volume_profile must not emit NaN price levels for an empty frame."""
+
+    def test_empty_frame_no_nan(self):
+        empty = pd.DataFrame(columns=["High", "Low", "Close", "Volume"])
+        profile = calculate_volume_profile(empty, num_bins=20)
+
+        assert len(profile["price_levels"]) == 20
+        assert len(profile["volumes"]) == 20
+        assert not any(np.isnan(profile["price_levels"]))
+        assert sum(profile["volumes"]) == 0
+
+
+class TestVPTZeroPrevClose:
+    """calculate_vpt must treat a zero previous close as 0% change, not div-by-zero."""
+
+    def test_zero_prev_close_no_inf(self):
+        data = pd.DataFrame({"Close": [0.0, 5.0, 6.0], "Volume": [1000, 1000, 1000]})
+        vpt = calculate_vpt(data)
+
+        assert not np.isinf(vpt).any()
+        assert not vpt.isna().any()
+        assert vpt.iloc[0] == 0
+        # Step 0 -> 5: undefined pct change guarded to 0 -> no contribution
+        assert vpt.iloc[1] == pytest.approx(0.0)
+        # Step 5 -> 6: pct change = 0.2, volume 1000 -> +200
+        assert vpt.iloc[2] == pytest.approx(200.0)
+
+
+class TestMFIFlatWindow:
+    """calculate_mfi must return neutral 50 for a fully flat window, not NaN."""
+
+    def test_flat_typical_price_window_is_neutral(self):
+        data = pd.DataFrame(
+            {
+                "High": [102.0] * 20,
+                "Low": [98.0] * 20,
+                "Close": [100.0] * 20,
+                "Volume": [1_000_000] * 20,
+            }
+        )
+        mfi = calculate_mfi(data, period=14)
+
+        # Warmup region stays NaN; settled flat window -> 50 (neutral)
+        assert mfi.iloc[:13].isna().all()
+        assert mfi.iloc[-1] == pytest.approx(50.0)
+
+    def test_all_positive_flow_window_is_100(self):
+        # Strictly rising typical price -> only positive money flow -> MFI 100
+        data = pd.DataFrame(
+            {
+                "High": [100.0 + i for i in range(20)],
+                "Low": [98.0 + i for i in range(20)],
+                "Close": [99.0 + i for i in range(20)],
+                "Volume": [1_000_000] * 20,
+            }
+        )
+        mfi = calculate_mfi(data, period=14)
+
+        assert mfi.iloc[-1] == pytest.approx(100.0)
+
+
+class TestEnhancedVolumeProfilePOCZero:
+    """calculate_enhanced_volume_profile must guard distance pct when POC/VAH/VAL == 0."""
+
+    def test_zero_price_levels_no_div_by_zero(self):
+        data = pd.DataFrame(
+            {
+                "High": [0.0] * 5,
+                "Low": [0.0] * 5,
+                "Close": [0.0] * 5,
+                "Volume": [1000] * 5,
+            }
+        )
+        result = calculate_enhanced_volume_profile(data)
+
+        assert result["poc"] == 0.0
+        assert result["poc_distance_pct"] == 0.0
+        assert result["vah_distance_pct"] == 0.0
+        assert result["val_distance_pct"] == 0.0
