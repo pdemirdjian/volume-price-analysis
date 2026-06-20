@@ -30,6 +30,7 @@ from .indicators import (
     calculate_vpt,
     calculate_vwap,
     calculate_vwma,
+    composite_adx_period,
     detect_volume_breakout,
 )
 
@@ -166,14 +167,17 @@ def analyze_single_symbol(
 
     # Calculate composite score and key indicators
     composite = calculate_composite_score(sym_data, holding_period)
-    adx_data = calculate_adx(sym_data, 14)
+    # Reuse the ADX the composite already computed (adaptive to holding_period) so the
+    # reported adx, the min_adx filter, and signal_quality all reference the same value
+    # instead of a separate, fixed-period ADX(14). See HOM-48.
+    adx_summary = composite["adx_summary"]
     iv_pct_data = calculate_iv_percentile(sym_data, 20)
     expected_move = calculate_expected_move(sym_data, holding_period, 20)
     rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
     rvol = calculate_relative_volume(sym_data, 20)
 
     score = composite["composite_score"]
-    adx = adx_data["adx"]
+    adx = adx_summary["adx"]
     iv_pct = iv_pct_data["iv_percentile"]
 
     # Apply filters
@@ -197,8 +201,9 @@ def analyze_single_symbol(
         "recommendation": composite["recommendation"],
         "signal_quality": composite["signal_quality"],
         "adx": round(adx, 1),
-        "trend_strength": adx_data["trend_strength"],
-        "trend_direction": adx_data["trend_direction"],
+        "adx_period": adx_summary["period"],
+        "trend_strength": adx_summary["trend_strength"],
+        "trend_direction": adx_summary["trend_direction"],
         "rsi": round(rsi_data["rsi"], 1),
         "rsi_divergence": rsi_data["divergence_type"],
         # iv_percentile kept for backward compat; hv_percentile is the honest name
@@ -363,7 +368,10 @@ async def run_scan(
     bullish = [c for c in candidates if c["composite_score"] >= 0]
     bearish = [c for c in candidates if c["composite_score"] < 0]
 
-    # Find highest conviction setups
+    # Find highest conviction setups. NOTE: c["adx"] is the composite's adaptive-period
+    # ADX (ADX(10) for holding_period<=14, else ADX(14)) -- coherent with min_adx and
+    # signal_quality. The 28 gate is read against that period; adx_period is reported in
+    # scan_parameters so clients can interpret it. See HOM-48.
     high_conviction = [
         c
         for c in candidates
@@ -380,6 +388,9 @@ async def run_scan(
             "min_adx": min_adx,
             "max_iv_percentile": max_iv_percentile,
             "direction_filter": direction,
+            # ADX lookback backing the reported `adx`, the min_adx filter, and the
+            # high_conviction gate -- adaptive to holding_period (HOM-48).
+            "adx_period": composite_adx_period(holding_period),
             # iv_percentile / hv_percentile are an HV-based proxy, not options
             # implied volatility. See indicators.calculate_iv_percentile.
             "volatility_basis": "historical_volatility",

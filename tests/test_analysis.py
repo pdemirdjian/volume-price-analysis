@@ -10,6 +10,7 @@ from volume_price_analysis.analysis import (
     run_options_analysis,
     run_scan,
 )
+from volume_price_analysis.indicators import calculate_adx, calculate_composite_score
 
 
 class TestUniverses:
@@ -173,6 +174,47 @@ class TestAnalyzeSingleSymbol:
         assert "hv_percentile" in candidate
         assert candidate["hv_percentile"] == candidate["iv_percentile"]
 
+    def test_candidate_adx_is_composite_adaptive_adx(self, mocker, sample_stock_data):
+        """Reported ADX must be the composite's adaptive ADX, coherent with signal_quality.
+
+        Regression for HOM-48: the scan previously reported a fixed ADX(14) that was
+        incoherent with the composite's adaptive ADX(10) used for scoring/signal_quality.
+        """
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=sample_stock_data,
+        )
+
+        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        assert candidate is not None
+
+        composite = calculate_composite_score(sample_stock_data, 14)
+        # holding_period <= 14 -> adaptive ADX(10)
+        assert candidate["adx_period"] == 10
+        assert candidate["adx_period"] == composite["adx_period"]
+        assert candidate["adx"] == pytest.approx(round(composite["adx_summary"]["adx"], 1))
+        assert candidate["trend_strength"] == composite["adx_summary"]["trend_strength"]
+        assert candidate["trend_direction"] == composite["adx_summary"]["trend_direction"]
+
+    def test_candidate_adx_differs_from_legacy_fixed_adx14(self, mocker, sample_stock_data):
+        """On this fixture the adaptive ADX(10) and legacy ADX(14) actually diverge,
+        so the change is observable (not a no-op)."""
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=sample_stock_data,
+        )
+
+        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        assert candidate is not None
+
+        # On sample_stock_data, ADX(10) ~= 20.6 vs ADX(14) ~= 20.8, so they round
+        # differently at 1 dp -- the adaptive switch is observable, not a no-op.
+        legacy_adx14 = round(calculate_adx(sample_stock_data, 14)["adx"], 1)
+        assert candidate["adx"] != legacy_adx14
+        assert candidate["adx"] == pytest.approx(
+            round(calculate_adx(sample_stock_data, 10)["adx"], 1)
+        )
+
 
 class TestRunScan:
     """Test run_scan orchestration."""
@@ -256,6 +298,31 @@ class TestRunScan:
         assert isinstance(result["scan_parameters"]["symbols_scanned"], int)
         assert "skipped" in result["summary"]
         assert isinstance(result["errors"], list)
+        # HOM-48: scan reports which ADX period backs the reported adx / thresholds
+        assert result["scan_parameters"]["adx_period"] == 10  # holding_period default 14
+
+    @pytest.mark.asyncio
+    async def test_scan_parameters_adx_period_tracks_holding_period(
+        self, mocker, sample_stock_data
+    ):
+        """The reported adx_period is adaptive: ADX(10) for short holds, ADX(14) otherwise.
+
+        Lets clients interpret the now-adaptive `adx`, `min_adx`, and the
+        high_conviction (adx >= 28) gate against the correct period (HOM-48).
+        """
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=sample_stock_data,
+        )
+
+        short = await run_scan(symbols=["TEST"], holding_period=14, min_score=0, min_adx=0)
+        assert short["scan_parameters"]["adx_period"] == 10
+
+        long = await run_scan(symbols=["TEST"], holding_period=21, min_score=0, min_adx=0)
+        assert long["scan_parameters"]["adx_period"] == 14
+        # Each candidate's own adx_period agrees with the scan-level value.
+        for candidate in long["top_bullish"] + long["top_bearish"]:
+            assert candidate["adx_period"] == 14
 
     @pytest.mark.asyncio
     async def test_scan_handles_errors_gracefully(self, mocker):
