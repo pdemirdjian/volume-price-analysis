@@ -22,6 +22,14 @@ timeframe. Make this clear in your strategy suggestions (e.g., "14-day calls"
 not just "calls"). Readers doing shorter-duration plays (e.g., 0-5 DTE) should
 note that signals and levels may not apply to their timeframe.
 
+VOLATILITY HONESTY: The volatility percentile in the data (fields named
+"iv_percentile", "hv_percentile", or "iv_percentile_proxy", basis
+"historical_volatility") is a **Historical Volatility (HV) proxy** computed from
+realized price moves — it is NOT options-market implied volatility (IV). Always
+label it as an HV percentile (e.g., "HV percentile 78% (proxy)") and never
+present it as implied volatility. Frame cheap/expensive options conclusions as
+inferences from HV, not measured IV.
+
 Format the briefing in markdown with clear sections:
 1. **Executive Summary** - 2-3 sentence overview of today's market setup
 2. **Top Picks** - For each high-conviction candidate, include:

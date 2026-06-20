@@ -41,6 +41,18 @@ MAX_CONCURRENT_SCANS = 10
 # Minimum data points required for meaningful Bollinger Band squeeze detection
 MIN_SQUEEZE_DETECTION_PERIODS = 5
 
+# Minimum bars of history required to analyze a symbol in a scan.
+MIN_SCAN_HISTORY = 30
+
+
+class InsufficientDataError(Exception):
+    """Raised when a symbol has too little history to analyze.
+
+    This is a *skip* signal, not a failure: the symbol is excluded from the scan
+    and counted separately from genuine fetch/calculation errors so the scan's
+    diagnostics stay honest about coverage gaps.
+    """
+
 
 def _build_sp500_symbols() -> list[str]:
     """Build S&P 500 symbol list dynamically from pytickersymbols (bundled data, no network)."""
@@ -144,12 +156,13 @@ def analyze_single_symbol(
     """
     Analyze a single symbol for scan_candidates.
 
-    Returns a candidate dict if it passes filters, None otherwise.
-    Raises exception on error.
+    Returns a candidate dict if it passes filters, None if it was analyzed but
+    did not qualify. Raises ``InsufficientDataError`` when there is too little
+    history to analyze (a skip), and propagates other exceptions as errors.
     """
     sym_data = fetch_stock_data(symbol, None, None, period)
-    if len(sym_data) < 30:
-        return None
+    if len(sym_data) < MIN_SCAN_HISTORY:
+        raise InsufficientDataError(f"{symbol}: {len(sym_data)} bars < {MIN_SCAN_HISTORY} required")
 
     # Calculate composite score and key indicators
     composite = calculate_composite_score(sym_data, holding_period)
@@ -188,7 +201,10 @@ def analyze_single_symbol(
         "trend_direction": adx_data["trend_direction"],
         "rsi": round(rsi_data["rsi"], 1),
         "rsi_divergence": rsi_data["divergence_type"],
+        # iv_percentile kept for backward compat; hv_percentile is the honest name
+        # (the value is a historical-volatility proxy, not options-implied vol).
         "iv_percentile": round(iv_pct, 1),
+        "hv_percentile": round(iv_pct, 1),
         "iv_implication": iv_pct_data["options_implication"],
         "expected_move_pct": round(expected_move["expected_move_percent"], 2),
         "rvol": round(rvol["current_rvol"], 2),
@@ -209,11 +225,12 @@ async def _analyze_symbol_async(
     max_iv: float,
     direction: str,
     semaphore: asyncio.Semaphore,
-) -> tuple[str, dict | None, str | None]:
+) -> tuple[str, dict | None, str | None, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
 
-    Returns (symbol, candidate_or_none, error_or_none).
+    Returns (symbol, candidate_or_none, error_or_none, skipped). ``skipped`` is
+    True when the symbol had insufficient history (a non-error skip).
     """
     async with semaphore:
         try:
@@ -227,9 +244,11 @@ async def _analyze_symbol_async(
                 max_iv,
                 direction,
             )
-            return (symbol, result, None)
+            return (symbol, result, None, False)
+        except InsufficientDataError:
+            return (symbol, None, None, True)
         except Exception as e:
-            return (symbol, None, str(e))
+            return (symbol, None, str(e), False)
 
 
 async def run_scan(
@@ -310,20 +329,32 @@ async def run_scan(
         logger.error("Scan timed out after 600 seconds")
         raise ValueError("Scan timed out after 10 minutes") from None
 
-    # Process results
+    # Process results. Each symbol falls into exactly one bucket:
+    #   - error: a genuine fetch/calculation failure
+    #   - skipped: insufficient history to analyze (not a failure)
+    #   - scanned: successfully analyzed (may or may not become a candidate)
     candidates = []
     errors = []
     scanned = 0
+    skipped = 0
 
-    for sym, candidate, error in results:
+    for sym, candidate, error, was_skipped in results:
         if error:
             errors.append({"symbol": sym, "error": error})
+        elif was_skipped:
+            skipped += 1
         else:
             scanned += 1
             if candidate is not None:
                 candidates.append(candidate)
 
-    logger.info("Scan complete: %d candidates from %d scanned", len(candidates), scanned)
+    logger.info(
+        "Scan complete: %d candidates from %d scanned (%d skipped, %d errors)",
+        len(candidates),
+        scanned,
+        skipped,
+        len(errors),
+    )
 
     # Sort by absolute composite score (highest first)
     candidates.sort(key=lambda x: abs(x["composite_score"]), reverse=True)
@@ -349,18 +380,24 @@ async def run_scan(
             "min_adx": min_adx,
             "max_iv_percentile": max_iv_percentile,
             "direction_filter": direction,
+            # iv_percentile / hv_percentile are an HV-based proxy, not options
+            # implied volatility. See indicators.calculate_iv_percentile.
+            "volatility_basis": "historical_volatility",
         },
         "summary": {
             "total_candidates": len(candidates),
             "bullish_setups": len(bullish),
             "bearish_setups": len(bearish),
             "high_conviction": len(high_conviction),
+            # Symbols skipped for insufficient history, distinct from errors.
+            "skipped": skipped,
             "errors": len(errors),
         },
         "high_conviction_setups": high_conviction[:5] if high_conviction else [],
         "top_bullish": bullish[:max_results] if bullish else [],
         "top_bearish": bearish[:max_results] if bearish else [],
-        "errors": errors[:10] if errors else None,
+        # Always a list (capped at 10) so consumers never special-case None.
+        "errors": errors[:10],
     }
 
 
@@ -632,6 +669,9 @@ def run_options_analysis(
         "volatility_analysis": {
             "iv_percentile_proxy": {
                 "percentile": iv_percentile["iv_percentile"],
+                "hv_percentile": iv_percentile["hv_percentile"],
+                "basis": iv_percentile["basis"],
+                "is_proxy": iv_percentile["is_proxy"],
                 "current_hv": iv_percentile["current_hv"],
                 "hv_range": f"{iv_percentile['hv_min']:.1%} - {iv_percentile['hv_max']:.1%}",
                 "interpretation": iv_percentile["interpretation"],
@@ -778,25 +818,27 @@ def _generate_options_insights(
             "Potential reversal down, favor puts"
         )
 
-    # 4. IV Percentile / Volatility Edge
-    iv_pct = iv_percentile["iv_percentile"]
-    if iv_pct > 80:
+    # 4. HV Percentile / Volatility Edge (HV proxy, not options-implied vol)
+    hv_pct = iv_percentile["hv_percentile"]
+    if hv_pct > 80:
         insights.append(
-            f"HIGH IV PERCENTILE ({iv_pct:.0f}%): Options are EXPENSIVE - "
+            f"HIGH HV PERCENTILE ({hv_pct:.0f}%, HV proxy): Options likely EXPENSIVE - "
             f"Favor selling premium (credit spreads, iron condors)"
         )
-    elif iv_pct > 60:
+    elif hv_pct > 60:
         insights.append(
-            f"IV slightly elevated ({iv_pct:.0f}%) - Consider debit spreads to reduce vega risk"
+            f"HV slightly elevated ({hv_pct:.0f}%, HV proxy) - "
+            f"Consider debit spreads to reduce vega risk"
         )
-    elif iv_pct < 20:
+    elif hv_pct < 20:
         insights.append(
-            f"LOW IV PERCENTILE ({iv_pct:.0f}%): Options are CHEAP - "
+            f"LOW HV PERCENTILE ({hv_pct:.0f}%, HV proxy): Options likely CHEAP - "
             f"Great time for long options, straddles, or strangles"
         )
-    elif iv_pct < 40:
+    elif hv_pct < 40:
         insights.append(
-            f"Below-average IV ({iv_pct:.0f}%) - Long directional plays are reasonably priced"
+            f"Below-average HV ({hv_pct:.0f}%, HV proxy) - "
+            f"Long directional plays are reasonably priced"
         )
 
     # 5. Expected Move Guidance

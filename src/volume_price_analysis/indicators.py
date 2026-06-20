@@ -933,7 +933,11 @@ def calculate_iv_percentile(
         lookback_days: Days to look back for percentile calculation
 
     Returns:
-        Dictionary with IV percentile proxy data
+        Dictionary with IV percentile proxy data. ``iv_percentile`` is retained
+        for backward compatibility, but the value is derived from historical
+        volatility, NOT options-market implied volatility. The honestly-labeled
+        ``hv_percentile`` carries the same number, with ``basis`` and ``is_proxy``
+        marking it as an HV-based proxy.
     """
     # Calculate rolling HV
     log_returns = (data["Close"] / data["Close"].shift(1)).apply(np.log)
@@ -946,6 +950,9 @@ def calculate_iv_percentile(
         hv_val = hv.iloc[-1]
         return {
             "iv_percentile": 50.0,
+            "hv_percentile": 50.0,
+            "basis": "historical_volatility",
+            "is_proxy": True,
             "current_hv": 0.0 if pd.isna(hv_val) else float(hv_val),  # type: ignore[arg-type]
             "hv_min": 0.0,
             "hv_max": 0.0,
@@ -967,6 +974,11 @@ def calculate_iv_percentile(
     if hv_range > 0:
         iv_percentile = ((current_hv - hv_min) / hv_range) * 100
     else:
+        iv_percentile = 50.0
+
+    # Guard NaN propagation: a NaN current_hv (e.g. a NaN final Close) would make
+    # the percentile NaN. Degrade to a neutral 50.0 rather than leak NaN to callers.
+    if pd.isna(iv_percentile):
         iv_percentile = 50.0
 
     # Interpretation
@@ -993,6 +1005,9 @@ def calculate_iv_percentile(
 
     return {
         "iv_percentile": float(iv_percentile),
+        "hv_percentile": float(iv_percentile),
+        "basis": "historical_volatility",
+        "is_proxy": True,
         "current_hv": 0.0 if pd.isna(current_hv) else float(current_hv),  # type: ignore[arg-type]
         "hv_min": float(hv_min),
         "hv_max": float(hv_max),
