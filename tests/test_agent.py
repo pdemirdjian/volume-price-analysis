@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from volume_price_analysis.agent.ai_client import _TRUNCATION_WARNING, generate_briefing
+from volume_price_analysis.agent.ai_client import (
+    _TRUNCATION_WARNING,
+    SYSTEM_PROMPT,
+    _check_briefing_grounding,
+    generate_briefing,
+)
 from volume_price_analysis.agent.config import AgentConfig
 from volume_price_analysis.agent.email_sender import (
     _parse_recipients,
@@ -2057,3 +2062,117 @@ class TestRunMorningBriefingDegradedReturn:
 
         result = await run_morning_briefing(config, dry_run=False, no_ai=False)
         assert result is True
+
+
+class TestBriefingGrounding:
+    """Anti-hallucination grounding check for generated briefings (HOM-38)."""
+
+    @staticmethod
+    def _scan():
+        return {
+            "high_conviction_setups": [{"symbol": "NVDA"}],
+            "top_bullish": [{"symbol": "AAPL"}],
+            "top_bearish": [{"symbol": "TSLA"}],
+            "errors": [{"symbol": "BADX", "error": "no data"}],
+        }
+
+    def test_returns_empty_when_all_tickers_known(self):
+        briefing = "Top pick: AAPL looks bullish. NVDA strong, TSLA bearish."
+        assert _check_briefing_grounding(briefing, self._scan(), []) == []
+
+    def test_flags_hallucinated_ticker(self):
+        briefing = "We also like GOOGL here."
+        assert "GOOGL" in _check_briefing_grounding(briefing, self._scan(), [])
+
+    def test_ignores_indicator_acronyms(self):
+        briefing = (
+            "AAPL shows strong RSI and ADX with low IV. Consider 14-day calls. "
+            "Watch ATR for stops. Volume confirmed via OBV and MFI; check VWAP."
+        )
+        assert _check_briefing_grounding(briefing, self._scan(), []) == []
+
+    def test_ignores_options_and_general_acronyms(self):
+        briefing = "AAPL 14-day calls (DTE). Slightly OTM. AI sentiment positive. US open."
+        assert _check_briefing_grounding(briefing, self._scan(), []) == []
+
+    def test_ignores_macro_and_index_acronyms(self):
+        briefing = (
+            "Market context: CPI and GDP in focus; FOMC midweek. "
+            "VIX low, SPX near resistance. AAPL still the pick."
+        )
+        assert _check_briefing_grounding(briefing, self._scan(), []) == []
+
+    def test_recognizes_deep_analysis_symbols(self):
+        briefing = "MSFT is the standout today."
+        assert _check_briefing_grounding(briefing, self._scan(), [{"symbol": "MSFT"}]) == []
+
+    def test_recognizes_errored_symbols(self):
+        briefing = "BADX could not be analyzed today."
+        assert _check_briefing_grounding(briefing, self._scan(), []) == []
+
+    def test_recognizes_cashtag(self):
+        briefing = "$AAPL is bullish."
+        assert _check_briefing_grounding(briefing, self._scan(), []) == []
+
+    def test_flags_hallucinated_cashtag(self):
+        briefing = "$GOOGL looks great."
+        assert "GOOGL" in _check_briefing_grounding(briefing, self._scan(), [])
+
+    def test_ignores_single_capital_letters_in_prose(self):
+        briefing = "I think AAPL is a buy. U.S. markets are open."
+        assert _check_briefing_grounding(briefing, self._scan(), []) == []
+
+    def test_deduplicates_and_sorts_unknowns(self):
+        briefing = "Buy GOOGL and AMZN. GOOGL again, then AMZN."
+        assert _check_briefing_grounding(briefing, self._scan(), []) == ["AMZN", "GOOGL"]
+
+    def test_handles_missing_scan_keys(self):
+        # errors / high_conviction keys absent should not raise
+        briefing = "AAPL looks good."
+        scan = {"top_bullish": [{"symbol": "AAPL"}]}
+        assert _check_briefing_grounding(briefing, scan, []) == []
+
+    def test_logs_warning_on_mismatch(self, caplog):
+        import logging
+
+        briefing = "We like GOOGL and AMZN."
+        with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
+            _check_briefing_grounding(briefing, self._scan(), [])
+        assert "unrecognized" in caplog.text.lower()
+        assert "GOOGL" in caplog.text
+        assert "AMZN" in caplog.text
+
+    def test_no_warning_when_grounded(self, caplog):
+        import logging
+
+        briefing = "AAPL and NVDA are top picks."
+        with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
+            result = _check_briefing_grounding(briefing, self._scan(), [])
+        assert result == []
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_system_prompt_has_grounding_clause(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "only" in lowered
+        assert "invent" in lowered or "hallucin" in lowered
+
+    def test_generate_briefing_runs_grounding_check(self, mocker, caplog):
+        import logging
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "Buy GOOGL now."  # GOOGL is not in the scan data
+        mock_response.candidates = None
+        mock_client.models.generate_content.return_value = mock_response
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
+            result = generate_briefing(
+                scan_results={"top_bullish": [{"symbol": "AAPL"}]},
+                deep_analyses=[],
+                provider="gemini",
+                api_key="test-key",
+            )
+
+        assert "GOOGL" in result  # briefing text is never modified
+        assert "GOOGL" in caplog.text  # but the mismatch is flagged
