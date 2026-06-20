@@ -3233,3 +3233,138 @@ class TestDetectVolumeBreakoutSingleRow:
         assert result["direction"] == "none"
         assert result["current_volume"] == 1000
         assert result["signal"] == "No breakout"
+
+
+class TestIndicatorEdgeCaseHardening:
+    """HOM-44: indicators degrade gracefully instead of throwing/garbage.
+
+    Each test covers a previously-unguarded edge case: insufficient history,
+    empty frames, division by zero, and flat windows that produced NaN.
+    """
+
+    # --- analyze_volume_trends: len < window (IndexError + int(NaN)) ---
+
+    def test_volume_trends_window_larger_than_history(self):
+        """window > len previously raised IndexError on iloc[-window] / int(NaN)."""
+        data = pd.DataFrame(
+            {
+                "Open": [100.0, 101.0, 102.0, 103.0, 104.0],
+                "High": [101.0, 102.0, 103.0, 104.0, 105.0],
+                "Low": [99.0, 100.0, 101.0, 102.0, 103.0],
+                "Close": [100.0, 101.0, 102.0, 103.0, 104.0],
+                "Volume": [1_000_000, 1_100_000, 1_200_000, 1_300_000, 1_400_000],
+            }
+        )
+
+        result = analyze_volume_trends(data, window=20)
+
+        # Degrades to a real analysis over available history, not an exception.
+        assert isinstance(result["current_volume"], int)
+        assert isinstance(result["average_volume"], int)
+        assert result["price_direction"] == "up"  # close rose 100 -> 104
+        assert result["divergence_detected"] in (True, False)
+        assert "nan" not in result["volume_vs_average"].lower()
+        assert "inf" not in result["volume_vs_average"].lower()
+
+    def test_volume_trends_empty_frame(self):
+        """Empty frame returns neutral defaults instead of IndexError."""
+        empty_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+        result = analyze_volume_trends(empty_df, window=20)
+
+        assert result["current_volume"] == 0
+        assert result["average_volume"] == 0
+        assert result["divergence_detected"] is False
+
+    def test_volume_trends_nan_volume_does_not_raise(self):
+        """A trailing NaN volume must not blow up int() conversion."""
+        data = pd.DataFrame(
+            {
+                "Open": [100.0] * 6,
+                "High": [101.0] * 6,
+                "Low": [99.0] * 6,
+                "Close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+                "Volume": [1_000_000, 1_100_000, 1_200_000, 1_300_000, 1_400_000, np.nan],
+            }
+        )
+
+        result = analyze_volume_trends(data, window=3)
+
+        assert isinstance(result["current_volume"], int)
+        assert isinstance(result["average_volume"], int)
+
+    # --- calculate_volume_profile: empty frame ---
+
+    def test_volume_profile_empty_frame(self):
+        """Empty frame yields zero-filled levels/volumes, never NaN."""
+        empty_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+        profile = calculate_volume_profile(empty_df, num_bins=20)
+
+        assert len(profile["price_levels"]) == 20
+        assert len(profile["volumes"]) == 20
+        assert all(level == 0.0 for level in profile["price_levels"])
+        assert all(vol == 0.0 for vol in profile["volumes"])
+        assert not any(np.isnan(profile["price_levels"]))
+
+    # --- calculate_vpt: prev_close == 0 division by zero ---
+
+    def test_vpt_handles_zero_prev_close(self):
+        """A zero close must not produce inf/NaN VPT on the next bar."""
+        data = pd.DataFrame(
+            {
+                "Close": [100.0, 0.0, 50.0, 60.0],
+                "Volume": [1_000_000, 1_000_000, 1_000_000, 1_000_000],
+            }
+        )
+
+        vpt = calculate_vpt(data)
+
+        assert len(vpt) == 4
+        assert not np.isinf(vpt).any()
+        assert not vpt.isna().any()
+
+    # --- calculate_mfi: flat window NaN -> neutral 50 ---
+
+    def test_mfi_flat_window_is_neutral_not_nan(self):
+        """A perfectly flat window (0/0 money-flow ratio) returns 50, not NaN."""
+        dates = pd.date_range("2024-01-01", periods=30, freq="D")
+        data = pd.DataFrame(
+            {
+                "High": [102.0] * 30,
+                "Low": [98.0] * 30,
+                "Close": [100.0] * 30,  # typical price constant => no money flow
+                "Volume": [1_000_000] * 30,
+            },
+            index=dates,
+        )
+
+        mfi = calculate_mfi(data, period=14)
+
+        # Post-warmup values are defined and neutral, not NaN.
+        assert mfi.iloc[-1] == 50.0
+        assert not mfi.iloc[14:].isna().any()
+
+    # --- calculate_enhanced_volume_profile: POC/VAH/VAL == 0 division ---
+
+    def test_enhanced_profile_zero_poc_no_inf(self):
+        """All-zero prices drive POC/VAH/VAL to 0; distances must not be inf/NaN."""
+        dates = pd.date_range("2024-01-01", periods=30, freq="D")
+        data = pd.DataFrame(
+            {
+                "Open": [0.0] * 30,
+                "High": [0.0] * 30,
+                "Low": [0.0] * 30,
+                "Close": [0.0] * 30,
+                "Volume": [1_000_000] * 30,
+            },
+            index=dates,
+        )
+
+        result = calculate_enhanced_volume_profile(data, num_bins=10)
+
+        assert result["poc"] == 0.0
+        for key in ("poc_distance_pct", "vah_distance_pct", "val_distance_pct"):
+            assert result[key] == 0.0
+            assert not np.isinf(result[key])
+            assert not np.isnan(result[key])

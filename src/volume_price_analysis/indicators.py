@@ -96,6 +96,11 @@ def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str
     Returns:
         Dictionary with 'price_levels' and 'volumes' lists
     """
+    # Empty input: min()/max() return NaN and np.linspace would yield all-NaN
+    # price levels (silent garbage). Degrade to neutral zero-filled bins.
+    if data.empty:
+        return {"price_levels": [0.0] * num_bins, "volumes": [0.0] * num_bins}
+
     min_price = data["Low"].min()
     max_price = data["High"].max()
 
@@ -156,7 +161,12 @@ def calculate_vpt(data: pd.DataFrame) -> pd.Series:
     for i in range(1, len(data)):
         prev_close = data["Close"].iloc[i - 1]
         curr_close = data["Close"].iloc[i]
-        price_change_pct = (curr_close - prev_close) / prev_close
+        # A zero prior close makes the percentage change undefined (div-by-zero
+        # -> inf/NaN). Treat it as no measurable change so VPT stays finite.
+        if prev_close == 0:
+            price_change_pct = 0.0
+        else:
+            price_change_pct = (curr_close - prev_close) / prev_close
         vpt.append(vpt[-1] + data["Volume"].iloc[i] * price_change_pct)
 
     return pd.Series(vpt, index=data.index)
@@ -208,6 +218,15 @@ def calculate_mfi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     mfr = positive_mf / negative_mf
     mfi = 100 - (100 / (1 + mfr))
 
+    # Flat window: no positive AND no negative money flow gives 0/0 -> NaN.
+    # (One-sided flow already resolves correctly: negative_mf == 0 with positive
+    # flow yields mfr == inf -> MFI == 100.) Degrade the undefined 0/0 case to a
+    # neutral 50 rather than emitting NaN. The rolling-window warmup stays NaN
+    # because its sums are NaN (NaN == 0 is False), so this only touches fully
+    # flat windows past warmup.
+    flat_window = (positive_mf == 0) & (negative_mf == 0)
+    mfi = mfi.mask(flat_window, 50.0)
+
     return mfi
 
 
@@ -222,7 +241,26 @@ def analyze_volume_trends(data: pd.DataFrame, window: int = 20) -> dict[str, Any
     Returns:
         Dictionary with volume trend analysis
     """
-    avg_volume = data["Volume"].rolling(window=window).mean()
+    # Empty input has no last bar to analyse; return neutral, non-throwing
+    # defaults rather than raising IndexError on the .iloc[-1] lookups below.
+    if data.empty:
+        return {
+            "current_volume": 0,
+            "average_volume": 0,
+            "volume_vs_average": "N/A",
+            "volume_trend": "unknown",
+            "price_direction": "unknown",
+            "divergence_detected": False,
+            "divergence_type": "None",
+        }
+
+    # When history is shorter than the window, a plain rolling mean is all-NaN
+    # (int(NaN) raises) and iloc[-window] raises IndexError. Clamp the lookback
+    # and average over whatever history exists (min_periods=1) so the analysis
+    # still degrades to a real answer. For full history this is identical to the
+    # original rolling mean at the final bar.
+    lookback = min(window, len(data))
+    avg_volume = data["Volume"].rolling(window=window, min_periods=1).mean()
     current_volume = data["Volume"].iloc[-1]
     current_avg = avg_volume.iloc[-1]
 
@@ -230,8 +268,16 @@ def analyze_volume_trends(data: pd.DataFrame, window: int = 20) -> dict[str, Any
     volume_increasing = data["Volume"].iloc[-5:].is_monotonic_increasing
 
     # Calculate price-volume divergence
-    price_direction = "up" if data["Close"].iloc[-1] > data["Close"].iloc[-window] else "down"
-    volume_direction = "up" if current_volume > current_avg else "down"
+    price_direction = "up" if data["Close"].iloc[-1] > data["Close"].iloc[-lookback] else "down"
+
+    # A zero/NaN current volume or average (all-zero or NaN volume window) makes
+    # the ratio undefined; fall back to a neutral comparison and "N/A" display.
+    if pd.isna(current_volume) or pd.isna(current_avg) or current_avg == 0:
+        volume_direction = "down"
+        volume_vs_average = "N/A"
+    else:
+        volume_direction = "up" if current_volume > current_avg else "down"
+        volume_vs_average = f"{((current_volume / current_avg - 1) * 100):.2f}%"
 
     divergence = (price_direction == "up" and volume_direction == "down") or (
         price_direction == "down" and volume_direction == "up"
@@ -242,9 +288,9 @@ def analyze_volume_trends(data: pd.DataFrame, window: int = 20) -> dict[str, Any
     )
 
     return {
-        "current_volume": int(current_volume),
-        "average_volume": int(current_avg),
-        "volume_vs_average": f"{((current_volume / current_avg - 1) * 100):.2f}%",
+        "current_volume": 0 if pd.isna(current_volume) else int(current_volume),
+        "average_volume": 0 if pd.isna(current_avg) else int(current_avg),
+        "volume_vs_average": volume_vs_average,
         "volume_trend": "increasing" if volume_increasing else "decreasing",
         "price_direction": price_direction,
         "divergence_detected": divergence,
@@ -647,6 +693,13 @@ def calculate_enhanced_volume_profile(
         position = "within_value_area"
         interpretation = "Price within value area - balanced market"
 
+    def _distance_pct(level: float) -> float:
+        # A zero reference level (e.g. degenerate all-zero prices give POC/VAH/VAL
+        # of 0) makes the percentage undefined; report 0.0 instead of inf/NaN.
+        if level == 0:
+            return 0.0
+        return float(((current_price / level) - 1) * 100)
+
     return {
         "price_levels": basic_profile["price_levels"],
         "volumes": basic_profile["volumes"],
@@ -657,9 +710,9 @@ def calculate_enhanced_volume_profile(
         "current_price": float(current_price),
         "position": position,
         "interpretation": interpretation,
-        "poc_distance_pct": float(((current_price / poc) - 1) * 100),
-        "vah_distance_pct": float(((current_price / vah) - 1) * 100),
-        "val_distance_pct": float(((current_price / val) - 1) * 100),
+        "poc_distance_pct": _distance_pct(poc),
+        "vah_distance_pct": _distance_pct(vah),
+        "val_distance_pct": _distance_pct(val),
     }
 
 
