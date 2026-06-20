@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from volume_price_analysis.agent.ai_client import _TRUNCATION_WARNING, generate_briefing
+from volume_price_analysis.agent.ai_client import (
+    _TRUNCATION_WARNING,
+    SYSTEM_PROMPT,
+    generate_briefing,
+)
 from volume_price_analysis.agent.config import AgentConfig
 from volume_price_analysis.agent.email_sender import (
     _parse_recipients,
@@ -2057,3 +2061,17 @@ class TestRunMorningBriefingDegradedReturn:
 
         result = await run_morning_briefing(config, dry_run=False, no_ai=False)
         assert result is True
+
+
+class TestSystemPromptVolatilityLabeling:
+    """The briefing prompt must label volatility honestly as an HV proxy (HOM-39)."""
+
+    def test_prompt_flags_volatility_as_hv_proxy(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "historical volatility" in lowered
+        assert "hv" in lowered
+
+    def test_prompt_warns_against_implied_volatility_framing(self):
+        """The prompt must tell the model the metric is not options-implied vol."""
+        lowered = SYSTEM_PROMPT.lower()
+        assert "implied volatility" in lowered

@@ -1674,6 +1674,9 @@ class TestIVPercentile:
 
         expected_keys = {
             "iv_percentile",
+            "hv_percentile",
+            "basis",
+            "is_proxy",
             "current_hv",
             "hv_min",
             "hv_max",
@@ -1683,6 +1686,54 @@ class TestIVPercentile:
             "strategy_suggestion",
         }
         assert expected_keys == set(result.keys())
+
+    def test_hv_percentile_matches_iv_percentile(self):
+        """hv_percentile is the correctly-labeled twin of the iv_percentile proxy."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["hv_percentile"] == result["iv_percentile"]
+
+    def test_hv_percentile_in_range(self):
+        """hv_percentile must stay within [0, 100] like the proxy it mirrors."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert 0 <= result["hv_percentile"] <= 100
+
+    def test_nan_last_close_does_not_leak_nan_percentile(self):
+        """A NaN final Close must degrade to a neutral percentile, never NaN."""
+        data = _make_iv_data(n=300)
+        data.loc[data.index[-1], "Close"] = np.nan
+
+        result = calculate_iv_percentile(data)
+
+        assert not np.isnan(result["iv_percentile"])
+        assert not np.isnan(result["hv_percentile"])
+        assert result["hv_percentile"] == result["iv_percentile"] == 50.0
+
+    def test_basis_is_historical_volatility(self):
+        """The metric basis must be honestly labeled as historical volatility."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["basis"] == "historical_volatility"
+
+    def test_is_proxy_flag_true(self):
+        """The percentile is an HV-derived proxy, not real implied volatility."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["is_proxy"] is True
+
+    def test_insufficient_data_includes_honesty_fields(self):
+        """The insufficient-data branch must still carry the proxy/basis labels."""
+        data = _make_large_uptrend(n=25)
+        result = calculate_iv_percentile(data, hv_window=20)
+
+        assert result["hv_percentile"] == result["iv_percentile"] == 50.0
+        assert result["basis"] == "historical_volatility"
+        assert result["is_proxy"] is True
 
     def test_iv_percentile_range(self):
         """Test that IV percentile is between 0 and 100."""

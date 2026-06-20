@@ -491,7 +491,12 @@ async def handle_list_tools() -> list[Tool]:
                     },
                     "max_iv_percentile": {
                         "type": "number",
-                        "description": "Max IV percentile (default: 100, use 50 for cheap options)",
+                        "description": (
+                            "Max volatility percentile (default: 100, use 50 for cheap "
+                            "options). Note: this is a historical-volatility (HV) proxy, "
+                            "not options-implied volatility; results expose both "
+                            "iv_percentile (compat) and hv_percentile."
+                        ),
                         "default": 100,
                     },
                     "direction": {

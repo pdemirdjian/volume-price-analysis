@@ -4,6 +4,7 @@ import pytest
 
 from volume_price_analysis.analysis import (
     UNIVERSES,
+    InsufficientDataError,
     _build_sp500_symbols,
     analyze_single_symbol,
     run_options_analysis,
@@ -68,6 +69,14 @@ class TestRunOptionsAnalysis:
         assert "options_insights" in result
         assert "latest_price" in result
 
+    def test_iv_percentile_proxy_is_hv_flagged(self, sample_stock_data):
+        """The deep-analysis volatility proxy carries the HV basis + hv_percentile."""
+        result = run_options_analysis("TEST", sample_stock_data, holding_period=14)
+        proxy = result["volatility_analysis"]["iv_percentile_proxy"]
+        assert proxy["basis"] == "historical_volatility"
+        assert proxy["is_proxy"] is True
+        assert proxy["hv_percentile"] == proxy["percentile"]
+
     def test_composite_signal_has_score(self, sample_stock_data):
         result = run_options_analysis("TEST", sample_stock_data)
         signal = result["composite_signal"]
@@ -130,8 +139,8 @@ class TestRunOptionsAnalysis:
 class TestAnalyzeSingleSymbol:
     """Test analyze_single_symbol with mocked data fetching."""
 
-    def test_returns_none_when_insufficient_data(self, mocker):
-        """Should return None when data has fewer than 30 rows."""
+    def test_raises_insufficient_data_when_too_few_rows(self, mocker):
+        """Should raise InsufficientDataError (a 'skip', not an error) for <30 rows."""
         import pandas as pd
 
         small_data = pd.DataFrame(
@@ -149,8 +158,20 @@ class TestAnalyzeSingleSymbol:
             return_value=small_data,
         )
 
-        result = analyze_single_symbol("TEST", "3mo", 14, 2.0, 20, 100, "any")
-        assert result is None
+        with pytest.raises(InsufficientDataError):
+            analyze_single_symbol("TEST", "3mo", 14, 2.0, 20, 100, "any")
+
+    def test_candidate_includes_hv_percentile(self, mocker, sample_stock_data):
+        """A returned candidate carries the honestly-labeled hv_percentile twin."""
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=sample_stock_data,
+        )
+
+        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        assert candidate is not None
+        assert "hv_percentile" in candidate
+        assert candidate["hv_percentile"] == candidate["iv_percentile"]
 
 
 class TestRunScan:
@@ -230,6 +251,11 @@ class TestRunScan:
         assert "high_conviction_setups" in result
         assert "top_bullish" in result
         assert "top_bearish" in result
+        # HOM-39 additive fields
+        assert result["scan_parameters"]["volatility_basis"] == "historical_volatility"
+        assert isinstance(result["scan_parameters"]["symbols_scanned"], int)
+        assert "skipped" in result["summary"]
+        assert isinstance(result["errors"], list)
 
     @pytest.mark.asyncio
     async def test_scan_handles_errors_gracefully(self, mocker):
@@ -242,6 +268,138 @@ class TestRunScan:
         result = await run_scan(symbols=["BADTICKER"])
         assert result["summary"]["errors"] >= 1
         assert result["summary"]["total_candidates"] == 0
+        # A genuine fetch error is an error, not a skip.
+        assert result["summary"]["skipped"] == 0
+
+    @pytest.mark.asyncio
+    async def test_summary_reports_skipped_count(self, mocker):
+        """Insufficient-data symbols are counted as 'skipped', distinct from errors."""
+        import pandas as pd
+
+        small_data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=10),
+                "Open": [100] * 10,
+                "High": [101] * 10,
+                "Low": [99] * 10,
+                "Close": [100] * 10,
+                "Volume": [1000000] * 10,
+            }
+        )
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=small_data,
+        )
+
+        result = await run_scan(symbols=["AAA", "BBB", "CCC"])
+        assert result["summary"]["skipped"] == 3
+        assert result["summary"]["errors"] == 0
+        assert result["summary"]["total_candidates"] == 0
+        # Skipped symbols are NOT counted as scanned.
+        assert result["scan_parameters"]["symbols_scanned"] == 0
+
+    @pytest.mark.asyncio
+    async def test_errors_field_is_always_a_list(self, mocker):
+        """The top-level 'errors' field must be a list even when empty (never None)."""
+        import pandas as pd
+
+        small_data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=10),
+                "Open": [100] * 10,
+                "High": [101] * 10,
+                "Low": [99] * 10,
+                "Close": [100] * 10,
+                "Volume": [1000000] * 10,
+            }
+        )
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=small_data,
+        )
+
+        result = await run_scan(symbols=["AAA"])
+        assert isinstance(result["errors"], list)
+        assert result["errors"] == []
+
+    @pytest.mark.asyncio
+    async def test_scan_accounting_is_complete(self, mocker):
+        """scanned + skipped + errors must equal the universe size (honest diagnostics)."""
+        import pandas as pd
+
+        small_data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=10),
+                "Open": [100] * 10,
+                "High": [101] * 10,
+                "Low": [99] * 10,
+                "Close": [100] * 10,
+                "Volume": [1000000] * 10,
+            }
+        )
+
+        def _fetch(symbol, *args, **kwargs):
+            if symbol == "BADX":
+                raise ValueError("No data found")
+            return small_data
+
+        mocker.patch("volume_price_analysis.analysis.fetch_stock_data", side_effect=_fetch)
+
+        result = await run_scan(symbols=["AAA", "BBB", "BADX"])
+        summary = result["summary"]
+        params = result["scan_parameters"]
+        total = params["symbols_scanned"] + summary["skipped"] + summary["errors"]
+        assert total == params["symbols_in_universe"] == 3
+        assert summary["skipped"] == 2
+        assert summary["errors"] == 1
+
+    @pytest.mark.asyncio
+    async def test_all_three_buckets_with_real_candidate(self, mocker):
+        """A scanned candidate, a skip, and an error each land in exactly one bucket."""
+
+        def _analyze(symbol, *args, **kwargs):
+            if symbol == "SMALL":
+                raise InsufficientDataError("SMALL: insufficient history")
+            if symbol == "BADX":
+                raise ValueError("No data found")
+            return {
+                "symbol": symbol,
+                "composite_score": 3.0,
+                "recommendation": "bullish",
+                "signal_quality": "medium",
+                "adx": 25.0,
+                "trend_strength": "moderate",
+                "trend_direction": "up",
+                "rsi": 55.0,
+                "rsi_divergence": "none",
+                "iv_percentile": 40.0,
+                "hv_percentile": 40.0,
+                "iv_implication": "neutral",
+                "expected_move_pct": 3.0,
+                "rvol": 1.2,
+                "latest_price": 100.0,
+                "key_levels": {"upper_target": 103.0, "lower_target": 97.0},
+            }
+
+        mocker.patch("volume_price_analysis.analysis.analyze_single_symbol", side_effect=_analyze)
+
+        result = await run_scan(symbols=["GOOD", "SMALL", "BADX"], min_score=0, min_adx=0)
+        summary = result["summary"]
+        params = result["scan_parameters"]
+
+        assert params["symbols_scanned"] == 1
+        assert summary["skipped"] == 1
+        assert summary["errors"] == 1
+        assert summary["total_candidates"] == 1
+        # Exhaustive, mutually-exclusive accounting.
+        assert (
+            params["symbols_scanned"] + summary["skipped"] + summary["errors"]
+            == params["symbols_in_universe"]
+            == 3
+        )
+        assert [c["symbol"] for c in result["top_bullish"]] == ["GOOD"]
+        assert result["top_bullish"][0]["hv_percentile"] == 40.0
+        assert result["errors"][0]["symbol"] == "BADX"
 
     @pytest.mark.asyncio
     async def test_rejects_too_many_symbols(self):
@@ -291,6 +449,7 @@ class TestRunScan:
                 "rsi": 50.0,
                 "rsi_divergence": "none",
                 "iv_percentile": 50.0,
+                "hv_percentile": 50.0,
                 "iv_implication": "average",
                 "expected_move_pct": 3.0,
                 "rvol": 1.0,
