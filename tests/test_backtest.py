@@ -344,6 +344,72 @@ def test_pool_observations_empty_returns_empty():
 
 
 # --------------------------------------------------------------------------- #
+# Correctness fixes from review (causality-adjacent quant bugs)
+# --------------------------------------------------------------------------- #
+
+
+def test_mean_directional_return_excludes_neutral():
+    """Neutral (score==0) bars take no position and must not dilute dir return."""
+    obs = _obs([4, 0], [0.02, 0.10])
+    res = evaluate_observations(obs)
+    assert res["mean_directional_return"] == pytest.approx(0.02)  # only the score=4 bar
+    assert res["mean_forward_return"] == pytest.approx(0.06)  # raw mean over all bars
+    assert res["hit_rate_directional"] == pytest.approx(1.0)
+    assert res["n"] == 2
+    assert res["n_directional"] == 1
+
+
+def test_score_buckets_exact_partition_at_boundaries():
+    """Boundary scores (+/-2, +/-5) must each land in exactly one bucket.
+
+    Each score gets a unique forward return (score/100) so we can assert the
+    *right* score is in each bucket — not just that the counts happen to total
+    correctly (a dropped 2.0 and a double-counted 5.0 cancel in the total).
+    """
+    scores = [-5, -2, 0, 2, 5]
+    obs = _obs(scores, [s / 100 for s in scores])
+    res = evaluate_observations(obs)
+    by = {b["bucket"]: b for b in res["by_score_bucket"]}
+    assert by["strong_bearish"]["n"] == 1 and by["strong_bearish"][
+        "mean_forward_return"
+    ] == pytest.approx(-0.05)
+    assert by["bearish"]["n"] == 1 and by["bearish"]["mean_forward_return"] == pytest.approx(-0.02)
+    assert by["neutral"]["n"] == 1 and by["neutral"]["mean_forward_return"] == pytest.approx(0.0)
+    assert by["bullish"]["n"] == 1 and by["bullish"]["mean_forward_return"] == pytest.approx(0.02)
+    assert by["strong_bullish"]["n"] == 1 and by["strong_bullish"][
+        "mean_forward_return"
+    ] == pytest.approx(0.05)
+    assert sum(b["n"] for b in res["by_score_bucket"]) == 5  # exact partition
+
+
+def test_causal_score_adx_matches_production_period_14():
+    """High-conviction gate mirrors the scan, which gates on period-14 ADX."""
+    from volume_price_analysis.indicators import calculate_adx
+
+    data = _synthetic_data(120)
+    t = 100
+    snap = causal_score_at(data, t, holding_period=14)
+    expected = calculate_adx(data.iloc[: t + 1], 14)["adx"]
+    assert snap["adx"] == pytest.approx(expected)
+
+
+def test_compute_observations_drops_dirty_bars():
+    """A NaN Close (data gap) must never leak a NaN into the observation set."""
+    data = _synthetic_data(160)
+    data.loc[data.index[100], "Close"] = np.nan
+    obs = compute_observations(data, horizon=5, holding_period=14, min_history=50)
+    assert len(obs) > 0
+    assert obs["forward_return"].notna().all()
+    assert obs["composite_score"].notna().all()
+
+
+def test_forward_returns_zero_close_is_nan_not_inf():
+    data = pd.DataFrame({"Close": [0.0, 100.0, 110.0]})
+    fr = forward_returns(data, horizon=1)
+    assert math.isnan(fr.iloc[0])  # 100/0 must be NaN, not inf
+
+
+# --------------------------------------------------------------------------- #
 # run_evidence + main (orchestration; fetch is monkeypatched, no network)
 # --------------------------------------------------------------------------- #
 

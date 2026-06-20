@@ -28,27 +28,35 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from .data_fetcher import fetch_stock_data
-from .indicators import calculate_composite_score, calculate_iv_percentile
+from .indicators import calculate_adx, calculate_composite_score, calculate_iv_percentile
 
 logger = logging.getLogger(__name__)
 
-# IV percentile window used by the production scan (see analysis.analyze_single_symbol).
+# IV percentile window and ADX period used by the production scan
+# (see analysis.analyze_single_symbol). The high-conviction gate must mirror the
+# scan, so the harness uses these same fixed values rather than the scorer's
+# holding-period-adaptive ADX period.
 _IV_WINDOW = 20
+_ADX_PERIOD = 14
 
-# Score-band buckets matching the product's recommendation labels.
-_SCORE_BUCKETS: tuple[tuple[str, float, float], ...] = (
-    ("strong_bearish", -np.inf, -5.0),
-    ("bearish", -5.0, -2.0),
-    ("neutral", -2.0, 2.0),
-    ("bullish", 2.0, 5.0),
-    ("strong_bullish", 5.0, np.inf),
+# Score-band buckets matching the product's recommendation labels. The
+# predicates form an *exact* partition of the score range (no gaps, no overlaps)
+# and mirror calculate_composite_score's recommendation thresholds: a boundary
+# value goes to the more-extreme bucket on its side (e.g. score 2.0 -> bullish,
+# -2.0 -> bearish, 5.0 -> strong_bullish, -5.0 -> strong_bearish).
+_SCORE_BUCKETS: tuple[tuple[str, Callable[[np.ndarray], np.ndarray]], ...] = (
+    ("strong_bearish", lambda s: s <= -5.0),
+    ("bearish", lambda s: (s > -5.0) & (s <= -2.0)),
+    ("neutral", lambda s: (s > -2.0) & (s < 2.0)),
+    ("bullish", lambda s: (s >= 2.0) & (s < 5.0)),
+    ("strong_bullish", lambda s: s >= 5.0),
 )
 
 # High-conviction gate used by run_scan (|score|>=4, ADX>=28, IV<=50).
@@ -73,8 +81,11 @@ def forward_returns(data: pd.DataFrame, horizon: int) -> pd.Series:
     if horizon < 1:
         raise ValueError(f"horizon must be >= 1, got {horizon}")
     close = data["Close"].astype(float)
+    # A zero entry price has no defined return; map it to NaN so it becomes a
+    # dropped (not inf) observation rather than corrupting downstream stats.
+    denom = close.where(close != 0)
     future_close = close.shift(-horizon)
-    return future_close / close - 1.0
+    return future_close / denom - 1.0
 
 
 def causal_score_at(
@@ -103,6 +114,9 @@ def causal_score_at(
     window = data.iloc[: bar_index + 1]
     composite = calculate_composite_score(window, holding_period)
 
+    # ADX and IV come from the same fixed parameters the production scan gates
+    # on (period-14 ADX, 20-bar IV), so the high-conviction gate is faithful.
+    adx = float(calculate_adx(window, _ADX_PERIOD)["adx"])
     try:
         iv_pct = float(calculate_iv_percentile(window, _IV_WINDOW)["iv_percentile"])
     except Exception:  # pragma: no cover - defensive; IV proxy is a soft gate
@@ -110,7 +124,7 @@ def causal_score_at(
 
     return {
         "composite_score": float(composite["composite_score"]),
-        "adx": float(composite["indicator_summary"]["adx"]),
+        "adx": adx,
         "iv_percentile": iv_pct,
     }
 
@@ -157,14 +171,19 @@ def compute_observations(
 
     rows: list[dict[str, Any]] = []
     for t in range(first, last + 1, step):
+        fwd_t = float(fwd[t])
         snap = causal_score_at(data, t, holding_period)
+        # Drop dirty bars: a data gap (NaN Close) can produce a NaN forward
+        # return or a NaN score; never let one leak into the evidence set.
+        if np.isnan(fwd_t) or np.isnan(snap["composite_score"]):
+            continue
         row: dict[str, Any] = {
             "bar": t,
             "date": dates[t],
             "composite_score": snap["composite_score"],
             "adx": snap["adx"],
             "iv_percentile": snap["iv_percentile"],
-            "forward_return": float(fwd[t]),
+            "forward_return": fwd_t,
         }
         if symbol is not None:
             row = {"symbol": symbol, **row}
@@ -205,11 +224,18 @@ def _ic(scores: pd.Series, fwd: pd.Series, method: str) -> float | None:
 
 
 def _directional_stats(scores: np.ndarray, fwd: np.ndarray) -> dict[str, float | int | None]:
-    """Hit rate and directional return for a set of observations."""
+    """Hit rate and directional return for a set of observations.
+
+    ``hit_rate_directional`` and ``mean_directional_return`` are both measured
+    over directional bars only (``score != 0``): a neutral bar takes no position,
+    so including it would dilute the directional metrics. ``mean_forward_return``
+    is the raw mean over all bars (a market-exposure baseline).
+    """
     n = len(scores)
     if n == 0:
         return {
             "n": 0,
+            "n_directional": 0,
             "hit_rate_directional": None,
             "mean_directional_return": None,
             "mean_forward_return": None,
@@ -219,10 +245,12 @@ def _directional_stats(scores: np.ndarray, fwd: np.ndarray) -> dict[str, float |
     n_dir = int(directional.sum())
     hits = (sign == np.sign(fwd)) & directional
     hit_rate = float(hits.sum() / n_dir) if n_dir > 0 else None
+    dir_return = float(np.mean((sign * fwd)[directional])) if n_dir > 0 else None
     return {
         "n": n,
+        "n_directional": n_dir,
         "hit_rate_directional": hit_rate,
-        "mean_directional_return": float(np.mean(sign * fwd)),
+        "mean_directional_return": dir_return,
         "mean_forward_return": float(np.mean(fwd)),
     }
 
@@ -245,6 +273,7 @@ def evaluate_observations(
     if obs.empty:
         return {
             "n": 0,
+            "n_directional": 0,
             "hit_rate_directional": None,
             "mean_directional_return": None,
             "mean_forward_return": None,
@@ -262,17 +291,10 @@ def evaluate_observations(
 
     overall = _directional_stats(scores_np, fwd_np)
 
-    # Score buckets
+    # Score buckets (exact partition via per-bucket predicates)
     by_bucket: list[dict[str, Any]] = []
-    for name, lo, hi in _SCORE_BUCKETS:
-        if name == "neutral":
-            mask = (scores_np > lo) & (scores_np < hi)
-        elif np.isinf(lo):
-            mask = scores_np <= hi
-        elif np.isinf(hi):
-            mask = scores_np >= lo
-        else:
-            mask = (scores_np > lo) & (scores_np <= hi)
+    for name, predicate in _SCORE_BUCKETS:
+        mask = predicate(scores_np)
         stats = _directional_stats(scores_np[mask], fwd_np[mask])
         by_bucket.append({"bucket": name, **stats})
 
@@ -343,7 +365,9 @@ def format_report(evaluation: dict[str, Any], meta: dict[str, Any]) -> str:
         f"Holding: {meta.get('holding_period', '?')}d   "
         f"Step: {meta.get('step', 1)}"
     )
-    lines.append(f"Observations: {evaluation['n']}")
+    lines.append(
+        f"Observations: {evaluation['n']}  (directional: {evaluation.get('n_directional', '?')})"
+    )
     lines.append("")
     lines.append("OVERALL")
     lines.append(f"  Hit rate (directional) : {_fmt_pct(evaluation['hit_rate_directional'])}")
