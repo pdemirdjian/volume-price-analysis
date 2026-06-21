@@ -790,87 +790,254 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     return rsi
 
 
-def detect_rsi_divergence(data: pd.DataFrame, rsi: pd.Series, lookback: int = 10) -> dict[str, Any]:
-    """
-    Detect RSI divergences (bullish and bearish).
+def find_pivots(series: pd.Series, left: int = 3, right: int = 3) -> tuple[pd.Series, pd.Series]:
+    """Mark strict structural swing highs and lows.
 
-    Bullish Divergence: Price makes lower low, RSI makes higher low
-    Bearish Divergence: Price makes higher high, RSI makes lower high
+    A bar ``i`` is a **pivot high** iff ``series[i]`` is strictly greater than
+    each of the ``left`` bars before it and each of the ``right`` bars after it
+    (both windows must fully exist). A **pivot low** is the strict-minimum
+    analogue. Ties never produce a pivot, so flat plateaus are ignored.
+
+    Causality note: the last ``right`` bars can never be pivots because their
+    right-hand confirmation window has not finished forming. A caller that only
+    treats a pivot at index ``i`` as "known" once bar ``i + right`` has printed
+    therefore never peeks at future bars — this is the property that makes the
+    divergence detector strictly causal (see :func:`detect_rsi_divergence`).
 
     Args:
-        data: DataFrame with 'Close', 'High', 'Low' columns
-        rsi: Pre-calculated RSI series
-        lookback: Number of bars to look back for divergence detection
+        series: Numeric series to scan (e.g. ``data["High"]`` or ``data["Low"]``).
+        left: Bars required to the left of a pivot.
+        right: Bars required to the right (the confirmation window).
 
     Returns:
-        Dictionary with divergence detection results
+        ``(pivot_high_mask, pivot_low_mask)`` — boolean Series aligned to
+        ``series.index``.
     """
-    if len(data) < lookback + 5:
-        return {
-            "bullish_divergence": False,
-            "bearish_divergence": False,
-            "divergence_type": "none",
-            "signal": "neutral",
-            "interpretation": "Insufficient data for divergence detection",
-            "current_rsi": float(rsi.iloc[-1])
-            if len(rsi) > 0 and not pd.isna(rsi.iloc[-1])
-            else 50.0,
-        }
+    values = series.to_numpy(dtype=float)
+    n = len(values)
+    high_mask = np.zeros(n, dtype=bool)
+    low_mask = np.zeros(n, dtype=bool)
 
-    recent_data = data.iloc[-lookback:]
-    recent_rsi = rsi.iloc[-lookback:]
+    if left >= 1 and right >= 1:
+        for i in range(left, n - right):
+            v = values[i]
+            window = values[i - left : i + right + 1]
+            if np.isnan(window).any():
+                continue
+            left_win = window[:left]
+            right_win = window[left + 1 :]
+            if v > left_win.max() and v > right_win.max():
+                high_mask[i] = True
+            elif v < left_win.min() and v < right_win.min():
+                low_mask[i] = True
 
-    # Find recent price lows and highs
-    price_low_idx = recent_data["Low"].idxmin()
-    price_high_idx = recent_data["High"].idxmax()
+    return (
+        pd.Series(high_mask, index=series.index),
+        pd.Series(low_mask, index=series.index),
+    )
 
-    # Check for bullish divergence (price lower low, RSI higher low)
-    bullish_divergence = False
-    if price_low_idx != recent_data.index[0]:  # Not at the start
-        # Compare current low area to previous low area
-        mid_point = len(recent_data) // 2
-        first_half_low = recent_data.iloc[:mid_point]["Low"].min()
-        second_half_low = recent_data.iloc[mid_point:]["Low"].min()
-        first_half_rsi_low = recent_rsi.iloc[:mid_point].min()
-        second_half_rsi_low = recent_rsi.iloc[mid_point:].min()
 
-        if second_half_low < first_half_low and second_half_rsi_low > first_half_rsi_low:
-            bullish_divergence = True
+def _structural_pivot_indices(
+    data: pd.DataFrame, pivot_window: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Positional indices of structural swing highs (on High) and lows (on Low)."""
+    pivot_high_mask, _ = find_pivots(data["High"], pivot_window, pivot_window)
+    _, pivot_low_mask = find_pivots(data["Low"], pivot_window, pivot_window)
+    return (
+        np.flatnonzero(pivot_high_mask.to_numpy()),
+        np.flatnonzero(pivot_low_mask.to_numpy()),
+    )
 
-    # Check for bearish divergence (price higher high, RSI lower high)
-    bearish_divergence = False
-    if price_high_idx != recent_data.index[0]:
-        mid_point = len(recent_data) // 2
-        first_half_high = recent_data.iloc[:mid_point]["High"].max()
-        second_half_high = recent_data.iloc[mid_point:]["High"].max()
-        first_half_rsi_high = recent_rsi.iloc[:mid_point].max()
-        second_half_rsi_high = recent_rsi.iloc[mid_point:].max()
 
-        if second_half_high > first_half_high and second_half_rsi_high < first_half_rsi_high:
-            bearish_divergence = True
+def _effective_search(lookback: int, pivot_window: int, search_window: int | None) -> int:
+    """Resolve the bar span searched for the two most-recent confirmed pivots."""
+    if search_window is not None:
+        return search_window
+    return max(lookback * 3, 4 * pivot_window + 2)
 
-    # Determine signal
-    if bullish_divergence:
+
+def _two_most_recent(idx_array: np.ndarray, lo: int, hi: int) -> tuple[int, int] | None:
+    """Return the two most-recent indices in ``idx_array`` within ``[lo, hi]``."""
+    sel = idx_array[(idx_array >= lo) & (idx_array <= hi)]
+    if len(sel) < 2:
+        return None
+    return int(sel[-2]), int(sel[-1])
+
+
+def _divergence_from_pivots(
+    lows: np.ndarray,
+    highs: np.ndarray,
+    rsi_vals: np.ndarray,
+    pivot_high_idx: np.ndarray,
+    pivot_low_idx: np.ndarray,
+    t: int,
+    pivot_window: int,
+    search: int,
+) -> tuple[bool, bool]:
+    """Evaluate bullish/bearish divergence *as of* bar ``t`` (strictly causal).
+
+    Only pivots whose confirmation window has closed by ``t`` (index
+    ``p <= t - pivot_window``) and that fall within the recency ``search`` span
+    are considered, so no value past bar ``t`` can influence the result.
+    """
+    confirm_cap = t - pivot_window
+    lo = t - search + 1
+
+    bullish = False
+    low_pair = _two_most_recent(pivot_low_idx, lo, confirm_cap)
+    if low_pair is not None:
+        p1, p2 = low_pair
+        if (
+            not np.isnan(rsi_vals[p1])
+            and not np.isnan(rsi_vals[p2])
+            and lows[p2] < lows[p1]  # price prints a lower low
+            and rsi_vals[p2] > rsi_vals[p1]  # momentum prints a higher low
+        ):
+            bullish = True
+
+    bearish = False
+    high_pair = _two_most_recent(pivot_high_idx, lo, confirm_cap)
+    if high_pair is not None:
+        p1, p2 = high_pair
+        if (
+            not np.isnan(rsi_vals[p1])
+            and not np.isnan(rsi_vals[p2])
+            and highs[p2] > highs[p1]  # price prints a higher high
+            and rsi_vals[p2] < rsi_vals[p1]  # momentum prints a lower high
+        ):
+            bearish = True
+
+    return bullish, bearish
+
+
+def _format_divergence(bullish: bool, bearish: bool, current_rsi: float) -> dict[str, Any]:
+    """Render the divergence result dict (stable MCP-facing shape).
+
+    Tie-break: if both a bullish and a bearish divergence are detected in the
+    same bar (rare — it needs both the two recent pivot lows and the two recent
+    pivot highs to diverge), bullish takes priority. The output booleans are kept
+    **mutually exclusive** so ``divergence_type`` and the boolean flags can never
+    contradict each other for a downstream client. The composite scorer reads
+    ``bullish_divergence`` first, so this matches its ±2 weighting.
+    """
+    if bullish:
         divergence_type = "bullish"
         signal = "potential_reversal_up"
         interpretation = "Bullish divergence - price weakness not confirmed by momentum"
-    elif bearish_divergence:
+        bullish_out, bearish_out = True, False
+    elif bearish:
         divergence_type = "bearish"
         signal = "potential_reversal_down"
         interpretation = "Bearish divergence - price strength not confirmed by momentum"
+        bullish_out, bearish_out = False, True
     else:
         divergence_type = "none"
         signal = "neutral"
         interpretation = "No divergence detected"
+        bullish_out, bearish_out = False, False
 
     return {
-        "bullish_divergence": bullish_divergence,
-        "bearish_divergence": bearish_divergence,
+        "bullish_divergence": bullish_out,
+        "bearish_divergence": bearish_out,
         "divergence_type": divergence_type,
         "signal": signal,
         "interpretation": interpretation,
-        "current_rsi": float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50.0,
+        "current_rsi": current_rsi,
     }
+
+
+def detect_rsi_divergence(
+    data: pd.DataFrame,
+    rsi: pd.Series,
+    lookback: int = 10,
+    *,
+    pivot_window: int = 3,
+    search_window: int | None = None,
+) -> dict[str, Any]:
+    """
+    Detect RSI divergences (bullish and bearish) at the latest bar.
+
+    Bullish Divergence: price makes a lower low while RSI makes a higher low.
+    Bearish Divergence: price makes a higher high while RSI makes a lower high.
+
+    The detector compares the **two most recent confirmed swing pivots** (found
+    with :func:`find_pivots`) rather than an arbitrary first-half/second-half
+    window. A pivot is only "confirmed" once its right-hand window has fully
+    printed (``index <= last_bar - pivot_window``), so the result at the latest
+    bar uses no future information — it is strictly causal. See
+    :func:`rsi_divergence_signal_series` and the no-lookahead tests.
+
+    Args:
+        data: DataFrame with 'High', 'Low' columns.
+        rsi: Pre-calculated RSI series aligned to ``data``.
+        lookback: Minimum-history gate and, by default, the basis for the pivot
+            recency search span (``max(lookback * 3, ...)``).
+        pivot_window: Bars required on each side of a swing pivot (strength).
+        search_window: Override for how many recent bars to search for the two
+            comparison pivots. Defaults to a multiple of ``lookback``.
+
+    Returns:
+        Dictionary with divergence detection results (keys unchanged for MCP
+        contract stability).
+    """
+    n = len(data)
+    current_rsi = float(rsi.iloc[-1]) if n > 0 and not pd.isna(rsi.iloc[-1]) else 50.0
+
+    if n < lookback + 5:
+        result = _format_divergence(False, False, current_rsi)
+        result["interpretation"] = "Insufficient data for divergence detection"
+        return result
+
+    highs = data["High"].to_numpy(dtype=float)
+    lows = data["Low"].to_numpy(dtype=float)
+    rsi_vals = rsi.to_numpy(dtype=float)
+    pivot_high_idx, pivot_low_idx = _structural_pivot_indices(data, pivot_window)
+    search = _effective_search(lookback, pivot_window, search_window)
+
+    bullish, bearish = _divergence_from_pivots(
+        lows, highs, rsi_vals, pivot_high_idx, pivot_low_idx, n - 1, pivot_window, search
+    )
+    return _format_divergence(bullish, bearish, current_rsi)
+
+
+def rsi_divergence_signal_series(
+    data: pd.DataFrame,
+    rsi: pd.Series,
+    lookback: int = 10,
+    *,
+    pivot_window: int = 3,
+    search_window: int | None = None,
+) -> pd.Series:
+    """Per-bar causal divergence signal (+1 bullish / -1 bearish / 0 none).
+
+    Element ``t`` is the divergence verdict computed using only bars ``<= t`` —
+    identical to ``detect_rsi_divergence(data.iloc[: t + 1], ...)`` — so the
+    series is strictly causal by construction. Structural pivots are computed
+    once over the full series and then gated per bar by their confirmation
+    window, which is why appending future bars can never change a past value.
+
+    This is primarily an evidence/validation surface (used by the no-lookahead
+    tests and the A8 backtest); production scoring only needs the latest bar via
+    :func:`detect_rsi_divergence`.
+    """
+    n = len(data)
+    out = np.zeros(n, dtype=int)
+
+    if n >= lookback + 5:
+        highs = data["High"].to_numpy(dtype=float)
+        lows = data["Low"].to_numpy(dtype=float)
+        rsi_vals = rsi.to_numpy(dtype=float)
+        pivot_high_idx, pivot_low_idx = _structural_pivot_indices(data, pivot_window)
+        search = _effective_search(lookback, pivot_window, search_window)
+        # First evaluable bar mirrors detect_rsi_divergence's len < lookback + 5
+        # guard: a slice of length lookback + 5 ends at bar lookback + 4.
+        for t in range(lookback + 4, n):
+            bullish, bearish = _divergence_from_pivots(
+                lows, highs, rsi_vals, pivot_high_idx, pivot_low_idx, t, pivot_window, search
+            )
+            out[t] = 1 if bullish else (-1 if bearish else 0)
+
+    return pd.Series(out, index=data.index, dtype=int)
 
 
 def calculate_rsi_with_divergence(
