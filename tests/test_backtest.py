@@ -126,6 +126,101 @@ def test_causal_score_out_of_range_raises():
         causal_score_at(data, 40, holding_period=14)
 
 
+def _strong_uptrend(n: int) -> pd.DataFrame:
+    """Monotonic strong uptrend: cumulative and short-rolling VWAP anchors diverge."""
+    dates = pd.date_range(start="2022-01-01", periods=n, freq="B")
+    close = np.linspace(100.0, 400.0, n)
+    return pd.DataFrame(
+        {
+            "Date": dates,
+            "Open": close - 1.0,
+            "High": close + 1.0,
+            "Low": close - 1.0,
+            "Close": close,
+            "Volume": np.full(n, 1_000_000.0),
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
+# VWAP anchoring (HOM-84): the harness threads vwap_window into the scorer
+# --------------------------------------------------------------------------- #
+
+
+def test_causal_score_threads_vwap_window_into_scorer():
+    """causal_score_at forwards its vwap_window straight to the composite scorer."""
+    from unittest.mock import patch
+
+    data = _synthetic_data(80)
+    with patch(
+        "volume_price_analysis.backtest.calculate_composite_score",
+        wraps=backtest.calculate_composite_score,
+    ) as spy:
+        causal_score_at(data, 79, holding_period=14, vwap_window=15)
+
+    assert spy.call_count == 1
+    call = spy.call_args
+    passed = call.kwargs.get("vwap_window", call.args[2] if len(call.args) > 2 else None)
+    assert passed == 15
+
+
+def test_compute_observations_threads_vwap_window_into_scorer():
+    """Every per-bar score in an observation set uses the requested anchor."""
+    from unittest.mock import patch
+
+    data = _synthetic_data(120)
+    with patch(
+        "volume_price_analysis.backtest.calculate_composite_score",
+        wraps=backtest.calculate_composite_score,
+    ) as spy:
+        compute_observations(
+            data, horizon=10, holding_period=14, min_history=60, step=10, vwap_window=20
+        )
+
+    # bars 59..99 step 10 -> 5 evaluable bars, each scored exactly once
+    assert spy.call_count >= 5
+    windows = [
+        c.kwargs.get("vwap_window", c.args[2] if len(c.args) > 2 else None)
+        for c in spy.call_args_list
+    ]
+    assert all(w == 20 for w in windows)
+
+
+def test_rolling_anchor_is_invariant_to_future_bars():
+    """The no-lookahead contract holds for the rolling VWAP anchor too.
+
+    The cumulative arm is locked by test_causal_score_is_invariant_to_future_bars;
+    this proves a non-None vwap_window introduces no future leak either.
+    """
+    data = _synthetic_data(200)
+    t = 120
+
+    minimal = causal_score_at(data.iloc[: t + 1], t, holding_period=14, vwap_window=10)
+    full = causal_score_at(data, t, holding_period=14, vwap_window=10)
+
+    corrupted = data.copy()
+    corrupted.loc[corrupted.index[t + 1 :], ["Close", "High", "Low"]] *= 5.0
+    corrupted.loc[corrupted.index[t + 1 :], "Volume"] *= 100.0
+    after = causal_score_at(corrupted, t, holding_period=14, vwap_window=10)
+
+    assert minimal["composite_score"] == full["composite_score"]
+    assert full["composite_score"] == after["composite_score"]
+
+
+def test_windowed_anchor_changes_some_scores_on_trend():
+    """A short rolling anchor moves at least one composite score vs the cumulative anchor."""
+    data = _strong_uptrend(160)
+    cumulative = compute_observations(
+        data, horizon=10, holding_period=14, min_history=50, step=5, vwap_window=None
+    )
+    rolling = compute_observations(
+        data, horizon=10, holding_period=14, min_history=50, step=5, vwap_window=5
+    )
+    # Same bars are evaluated in both arms; the anchor change must perturb scores.
+    assert len(cumulative) == len(rolling) and len(cumulative) > 0
+    assert (cumulative["composite_score"].to_numpy() != rolling["composite_score"].to_numpy()).any()
+
+
 # --------------------------------------------------------------------------- #
 # compute_observations
 # --------------------------------------------------------------------------- #
@@ -460,3 +555,32 @@ def test_main_prints_report_and_returns_zero(monkeypatch, capsys):
     assert "VPA EVIDENCE HARNESS" in out
     assert "Errors:" in out  # BAD failure surfaced
     assert "BAD" in out
+    assert "VWAP anchor: cumulative" in out  # default anchor labelled
+
+
+def test_main_rolling_vwap_window_labels_anchor(monkeypatch, capsys):
+    """--vwap-window N runs the rolling arm and labels it in the report."""
+    _fake_fetch_factory(monkeypatch)
+    rc = main(["GOOD", "--horizon", "10", "--min-history", "50", "--vwap-window", "20"])
+    assert rc == 0
+    assert "VWAP anchor: rolling-20" in capsys.readouterr().out
+
+
+def test_main_vwap_window_cumulative_keyword(monkeypatch, capsys):
+    """The literal 'cumulative' keyword selects the cumulative anchor."""
+    _fake_fetch_factory(monkeypatch)
+    rc = main(["GOOD", "--horizon", "10", "--min-history", "50", "--vwap-window", "cumulative"])
+    assert rc == 0
+    assert "VWAP anchor: cumulative" in capsys.readouterr().out
+
+
+def test_main_vwap_window_rejects_invalid():
+    """A non-integer, non-keyword --vwap-window is rejected at parse time."""
+    with pytest.raises(SystemExit):
+        main(["GOOD", "--vwap-window", "abc"])
+
+
+def test_main_vwap_window_rejects_nonpositive():
+    """--vwap-window must be a positive window when numeric."""
+    with pytest.raises(SystemExit):
+        main(["GOOD", "--vwap-window", "0"])

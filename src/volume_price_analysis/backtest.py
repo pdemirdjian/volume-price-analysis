@@ -89,7 +89,10 @@ def forward_returns(data: pd.DataFrame, horizon: int) -> pd.Series:
 
 
 def causal_score_at(
-    data: pd.DataFrame, bar_index: int, holding_period: int = 14
+    data: pd.DataFrame,
+    bar_index: int,
+    holding_period: int = 14,
+    vwap_window: int | None = None,
 ) -> dict[str, float]:
     """Compute the composite-score snapshot *as of* bar ``bar_index``.
 
@@ -101,6 +104,9 @@ def causal_score_at(
         data: Full OHLCV DataFrame.
         bar_index: Positional index of the bar to evaluate.
         holding_period: Holding period passed through to the scorer.
+        vwap_window: VWAP anchoring for ``price_vs_vwap`` (``None`` = cumulative,
+            int = rolling trailing-window). Threaded into the scorer so the
+            harness can A/B anchoring variants under the same causal guarantee.
 
     Returns:
         Dict with ``composite_score``, ``adx`` and ``iv_percentile`` at ``t``.
@@ -112,7 +118,7 @@ def causal_score_at(
         raise IndexError(f"bar_index {bar_index} out of range for data of length {len(data)}")
 
     window = data.iloc[: bar_index + 1]
-    composite = calculate_composite_score(window, holding_period)
+    composite = calculate_composite_score(window, holding_period, vwap_window=vwap_window)
 
     # ADX and IV come from the same fixed parameters the production scan gates
     # on (period-14 ADX, 20-bar IV), so the high-conviction gate is faithful.
@@ -136,6 +142,7 @@ def compute_observations(
     min_history: int = 50,
     step: int = 1,
     symbol: str | None = None,
+    vwap_window: int | None = None,
 ) -> pd.DataFrame:
     """Build the (signal, forward-return) observation set for one symbol.
 
@@ -151,6 +158,8 @@ def compute_observations(
             (lets indicators warm up).
         step: Evaluate every ``step``-th bar to reduce overlap between windows.
         symbol: Optional label stored in a ``symbol`` column.
+        vwap_window: VWAP anchoring threaded into the scorer (``None`` =
+            cumulative, int = rolling trailing-window).
 
     Returns:
         DataFrame with columns ``bar``, ``date``, ``composite_score``, ``adx``,
@@ -172,7 +181,7 @@ def compute_observations(
     rows: list[dict[str, Any]] = []
     for t in range(first, last + 1, step):
         fwd_t = float(fwd[t])
-        snap = causal_score_at(data, t, holding_period)
+        snap = causal_score_at(data, t, holding_period, vwap_window=vwap_window)
         # Drop dirty bars: a data gap (NaN Close) can produce a NaN forward
         # return or a NaN score; never let one leak into the evidence set.
         if np.isnan(fwd_t) or np.isnan(snap["composite_score"]):
@@ -334,9 +343,12 @@ def run_symbol_backtest(
     min_history: int = 50,
     step: int = 1,
     symbol: str | None = None,
+    vwap_window: int | None = None,
 ) -> dict[str, Any]:
     """Compute observations and evaluate them for a single symbol's data."""
-    obs = compute_observations(data, horizon, holding_period, min_history, step, symbol=symbol)
+    obs = compute_observations(
+        data, horizon, holding_period, min_history, step, symbol=symbol, vwap_window=vwap_window
+    )
     return {"observations": obs, "evaluation": evaluate_observations(obs)}
 
 
@@ -365,6 +377,7 @@ def format_report(evaluation: dict[str, Any], meta: dict[str, Any]) -> str:
         f"Holding: {meta.get('holding_period', '?')}d   "
         f"Step: {meta.get('step', 1)}"
     )
+    lines.append(f"VWAP anchor: {meta.get('vwap_anchor', 'cumulative')}")
     lines.append(
         f"Observations: {evaluation['n']}  (directional: {evaluation.get('n_directional', '?')})"
     )
@@ -414,18 +427,29 @@ def run_evidence(
     holding_period: int = 14,
     min_history: int = 50,
     step: int = 1,
+    vwap_window: int | None = None,
 ) -> dict[str, Any]:
     """Fetch data for symbols, compute pooled observations, and evaluate.
 
     Per-symbol fetch failures are isolated and skipped so one bad symbol does
-    not sink the run.
+    not sink the run. ``vwap_window`` selects the VWAP anchoring fed to the
+    scorer (``None`` = cumulative, int = rolling trailing-window) so cumulative
+    and rolling anchors can be compared on the same pooled universe.
     """
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
     for sym in symbols:
         try:
             data = fetch_stock_data(sym, None, None, period)
-            obs = compute_observations(data, horizon, holding_period, min_history, step, symbol=sym)
+            obs = compute_observations(
+                data,
+                horizon,
+                holding_period,
+                min_history,
+                step,
+                symbol=sym,
+                vwap_window=vwap_window,
+            )
             if obs.empty:
                 errors.append(f"{sym}: insufficient history")
             else:
@@ -438,6 +462,22 @@ def run_evidence(
     return {"observations": pooled, "evaluation": evaluation, "errors": errors}
 
 
+def _parse_vwap_window(value: str) -> int | None:
+    """Parse the ``--vwap-window`` flag: ``cumulative``/``none`` -> None, else int."""
+    normalized = value.strip().lower()
+    if normalized in ("cumulative", "none", ""):
+        return None
+    try:
+        window = int(normalized)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--vwap-window must be 'cumulative' or a positive integer, got {value!r}"
+        ) from exc
+    if window < 1:
+        raise argparse.ArgumentTypeError(f"--vwap-window must be >= 1, got {window}")
+    return window
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point: ``vpa-backtest AAPL MSFT --horizon 14 --period 2y``."""
     parser = argparse.ArgumentParser(description="VPA strictly-causal evidence harness")
@@ -447,6 +487,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--holding-period", type=int, default=14, help="Scorer holding period")
     parser.add_argument("--min-history", type=int, default=50, help="Warm-up bars before first")
     parser.add_argument("--step", type=int, default=1, help="Evaluate every Nth bar")
+    parser.add_argument(
+        "--vwap-window",
+        type=_parse_vwap_window,
+        default=None,
+        help="VWAP anchor for price_vs_vwap: 'cumulative' (default) or a rolling window size",
+    )
     args = parser.parse_args(argv)
 
     result = run_evidence(
@@ -456,7 +502,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         holding_period=args.holding_period,
         min_history=args.min_history,
         step=args.step,
+        vwap_window=args.vwap_window,
     )
+    anchor = "cumulative" if args.vwap_window is None else f"rolling-{args.vwap_window}"
     print(
         format_report(
             result["evaluation"],
@@ -465,6 +513,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "horizon": args.horizon,
                 "holding_period": args.holding_period,
                 "step": args.step,
+                "vwap_anchor": anchor,
             },
         )
     )
