@@ -62,24 +62,52 @@ def calculate_obv(data: pd.DataFrame) -> pd.Series:
     return pd.Series(obv, index=data.index)
 
 
-def calculate_vwap(data: pd.DataFrame) -> pd.Series:
+def calculate_vwap(data: pd.DataFrame, window: int | None = None) -> pd.Series:
     """
     Calculate Volume Weighted Average Price (VWAP).
 
     VWAP is the average price weighted by volume. It's used to identify
     the true average price and is often used as a trading benchmark.
 
+    Two anchoring modes are supported:
+
+    - ``window=None`` (default): **cumulative** anchor — the volume-weighted
+      mean of every bar from the start of the series. Over long lookbacks this
+      anchor barely moves day-to-day and grows stale as a "fair value" read.
+    - ``window=N``: **rolling** anchor — the volume-weighted mean of the trailing
+      ``N`` bars only, so the benchmark tracks recent price/volume action. Uses
+      ``min_periods=1`` so the first bars degrade gracefully to a shorter anchor
+      instead of emitting ``NaN`` (a window larger than the series is therefore
+      identical to the cumulative anchor). Both modes are strictly causal: bar
+      ``t`` only ever sees bars ``<= t``.
+
     Args:
         data: DataFrame with 'High', 'Low', 'Close', and 'Volume' columns
+        window: Trailing-bar window for the rolling anchor. ``None`` keeps the
+            cumulative anchor. Must be >= 1 when provided.
 
     Returns:
         Series containing VWAP values
+
+    Raises:
+        ValueError: If ``window`` is provided and is < 1.
     """
     typical_price = (data["High"] + data["Low"] + data["Close"]) / 3
-    cum_vol = data["Volume"].cumsum()
-    vwap = (typical_price * data["Volume"]).cumsum() / cum_vol
-    vwap = vwap.where(cum_vol != 0, np.nan)
-    return vwap
+    pv = typical_price * data["Volume"]
+
+    if window is None:
+        cum_vol = data["Volume"].cumsum()
+        vwap = pv.cumsum() / cum_vol
+        return vwap.where(cum_vol != 0, np.nan)
+
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+
+    roll_vol = data["Volume"].rolling(window=window, min_periods=1).sum()
+    vwap = pv.rolling(window=window, min_periods=1).sum() / roll_vol
+    # A window whose volume sums to zero has no defined VWAP; emit NaN rather
+    # than a divide-by-zero inf so it becomes a dropped (not garbage) reading.
+    return vwap.where(roll_vol != 0, np.nan)
 
 
 def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str, list]:
@@ -1113,7 +1141,9 @@ def calculate_expected_move(
 # ============================================================================
 
 
-def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> dict[str, Any]:
+def calculate_composite_score(
+    data: pd.DataFrame, holding_period: int = 14, vwap_window: int | None = None
+) -> dict[str, Any]:
     """
     Calculate composite signal score for options trading.
 
@@ -1125,6 +1155,13 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
     Args:
         data: DataFrame with OHLC and Volume data
         holding_period: Days for options holding period (affects indicator tuning)
+        vwap_window: Anchoring for the ``price_vs_vwap`` component. ``None``
+            (default) uses the cumulative VWAP anchor; an integer uses a rolling
+            trailing-``N``-bar anchor (see :func:`calculate_vwap`). The default
+            stays cumulative: the HOM-84 A8 evidence run (26-symbol balanced
+            universe, 2y, 14d horizon) found rolling anchors neutral-to-slightly
+            worse (lower hit-rate, smaller |IC|), so the rolling path ships as an
+            opt-in for future tuning rather than as the default.
 
     Returns:
         Dictionary with composite score and breakdown
@@ -1149,7 +1186,7 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
     # Calculate indicators
     obv = calculate_obv(data)
     ad_line = calculate_accumulation_distribution(data)
-    vwap = calculate_vwap(data)
+    vwap = calculate_vwap(data, vwap_window)
     vwma = calculate_vwma(data, volume_window)
     mfi = calculate_mfi(data, mfi_period)
     cmf = calculate_chaikin_money_flow(data, volume_window)

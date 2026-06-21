@@ -106,6 +106,124 @@ class TestVWAP:
         assert not vwap.isna().any()
 
 
+class TestRollingVWAP:
+    """Tests for the rolling/windowed VWAP anchoring option."""
+
+    def test_rolling_window_tracks_recent_prices(self, uptrend_data):
+        """A short rolling VWAP sits near recent prices, above the cumulative anchor."""
+        cumulative = calculate_vwap(uptrend_data)
+        rolling = calculate_vwap(uptrend_data, window=3)
+
+        # In a steady uptrend the cumulative anchor lags far below the latest
+        # price; a 3-bar rolling anchor stays close to it.
+        assert rolling.iloc[-1] > cumulative.iloc[-1]
+        last3_low = uptrend_data["Low"].iloc[-3:].min()
+        last3_high = uptrend_data["High"].iloc[-3:].max()
+        assert last3_low <= rolling.iloc[-1] <= last3_high
+
+    def test_rolling_window_tracks_recent_prices_downtrend(self, downtrend_data):
+        """In a downtrend the rolling anchor sits below the lagging cumulative anchor."""
+        cumulative = calculate_vwap(downtrend_data)
+        rolling = calculate_vwap(downtrend_data, window=3)
+
+        assert rolling.iloc[-1] < cumulative.iloc[-1]
+        last3_low = downtrend_data["Low"].iloc[-3:].min()
+        last3_high = downtrend_data["High"].iloc[-3:].max()
+        assert last3_low <= rolling.iloc[-1] <= last3_high
+
+    def test_rolling_window_covering_all_bars_equals_cumulative(self, uptrend_data):
+        """window >= len(data) with min_periods degrades to the cumulative anchor."""
+        cumulative = calculate_vwap(uptrend_data)
+        rolling = calculate_vwap(uptrend_data, window=len(uptrend_data) + 50)
+        pd.testing.assert_series_equal(rolling, cumulative, check_names=False)
+
+    def test_rolling_window_no_nan_on_short_history(self, uptrend_data):
+        """A window longer than the series still yields values (min_periods=1)."""
+        rolling = calculate_vwap(uptrend_data, window=1000)
+        assert not rolling.isna().any()
+        assert len(rolling) == len(uptrend_data)
+
+    def test_rolling_window_within_price_range(self, sample_stock_data):
+        """Rolling VWAP stays within the overall high-low envelope."""
+        rolling = calculate_vwap(sample_stock_data, window=5)
+        assert all(rolling >= sample_stock_data["Low"].min())
+        assert all(rolling <= sample_stock_data["High"].max())
+
+    def test_rolling_window_rejects_nonpositive(self, sample_stock_data):
+        """A window < 1 is a programming error and must raise."""
+        with pytest.raises(ValueError):
+            calculate_vwap(sample_stock_data, window=0)
+
+    def test_rolling_window_zero_volume_is_nan_not_inf(self):
+        """A window with zero total volume yields NaN, never a divide-by-zero inf."""
+        data = pd.DataFrame(
+            {
+                "High": [10.0, 11.0, 12.0],
+                "Low": [9.0, 10.0, 11.0],
+                "Close": [9.5, 10.5, 11.5],
+                "Volume": [0, 0, 0],
+            }
+        )
+        rolling = calculate_vwap(data, window=2)
+        assert rolling.isna().all()
+        assert not np.isinf(rolling).any()
+
+    def test_rolling_window_excludes_nan_volume_bars(self):
+        """A NaN-volume bar is dropped from the window, not carried as garbage/inf.
+
+        Both numerator and denominator skip the NaN bar, so the rolling VWAP is
+        the volume-weighted price of the *valid* trailing bars. Emitting a finite
+        value (rather than NaN) keeps the composite's price_vs_vwap branch from
+        silently collapsing to its bearish ``else`` default on a data gap.
+        """
+        data = pd.DataFrame(
+            {
+                "High": [10.0, 11.0, 12.0],
+                "Low": [9.0, 10.0, 11.0],
+                "Close": [9.5, 10.5, 11.5],
+                "Volume": [100.0, float("nan"), 200.0],
+            }
+        )
+        rolling = calculate_vwap(data, window=2)
+        # bar 1 window [bar0, bar1(no vol)] -> VWAP of bar0 only = typical_price[0]
+        assert rolling.iloc[1] == pytest.approx(9.5)
+        # bar 2 window [bar1(no vol), bar2] -> VWAP of bar2 only = typical_price[2]
+        assert rolling.iloc[2] == pytest.approx(11.5)
+        assert not np.isinf(rolling).any()
+
+    def test_composite_threads_vwap_window_to_anchor(self, sample_stock_data):
+        """calculate_composite_score routes its vwap_window into calculate_vwap."""
+        from unittest.mock import patch
+
+        with patch("volume_price_analysis.indicators.calculate_vwap", wraps=calculate_vwap) as spy:
+            calculate_composite_score(sample_stock_data, vwap_window=10)
+
+        used_windows = []
+        for call in spy.call_args_list:
+            if "window" in call.kwargs:
+                used_windows.append(call.kwargs["window"])
+            elif len(call.args) > 1:
+                used_windows.append(call.args[1])
+        assert 10 in used_windows
+
+    def test_composite_default_vwap_is_cumulative(self, sample_stock_data):
+        """Default (no vwap_window) preserves the cumulative anchor (window=None)."""
+        from unittest.mock import patch
+
+        with patch("volume_price_analysis.indicators.calculate_vwap", wraps=calculate_vwap) as spy:
+            calculate_composite_score(sample_stock_data)
+
+        used_windows = []
+        for call in spy.call_args_list:
+            if "window" in call.kwargs:
+                used_windows.append(call.kwargs["window"])
+            elif len(call.args) > 1:
+                used_windows.append(call.args[1])
+            else:
+                used_windows.append(None)
+        assert all(w is None for w in used_windows)
+
+
 class TestVolumeProfile:
     """Tests for Volume Profile calculation."""
 
