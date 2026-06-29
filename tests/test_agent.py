@@ -1,6 +1,7 @@
 """Tests for the morning briefing agent."""
 
 import asyncio
+import json
 import signal
 import smtplib
 from datetime import datetime, time
@@ -8,7 +9,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from volume_price_analysis.agent.ai_client import _TRUNCATION_WARNING, generate_briefing
+from volume_price_analysis.agent.ai_client import (
+    _TRUNCATION_WARNING,
+    SYSTEM_PROMPT,
+    _build_user_message,
+    _project_deep_analysis,
+    _project_scan_results,
+    find_ungrounded_tickers,
+    generate_briefing,
+)
 from volume_price_analysis.agent.config import AgentConfig
 from volume_price_analysis.agent.email_sender import (
     _parse_recipients,
@@ -238,6 +247,237 @@ class TestFallbackBriefing:
         assert "5.5" in briefing
 
 
+def _full_deep_analysis():
+    """A representative run_options_analysis-shaped dict for projection tests."""
+    return {
+        "symbol": "AAPL",
+        "analysis_type": "Options Trading (14-Day Optimized)",
+        "period": "2024-01-01 to 2024-03-01",
+        "latest_price": 150.25,
+        "headline": {
+            "recommendation": "bullish",
+            "composite_score": 4.2,
+            "signal_quality": "high",
+            "rationale": "Bullish (score +4.2/10, high conviction): price vs VWAP aligned bullish.",
+        },
+        "parameters": {"holding_period": 14, "mfi_period": 7, "volume_window": 10},
+        "composite_signal": {
+            "score": 4.2,
+            "recommendation": "bullish",
+            "action": "Consider call options or call spreads",
+            "signal_quality": "high",
+            "quality_note": "Strong trend supports directional trades",
+            "score_breakdown": {"price_vs_vwap": 2, "obv_momentum": 2, "rsi": 1},
+        },
+        "trend_analysis": {
+            "adx": {
+                "value": 31.5,
+                "plus_di": 28.0,
+                "minus_di": 12.0,
+                "trend_strength": "strong",
+                "trend_direction": "bullish",
+                "adx_slope": "rising",
+                "interpretation": "Strong bullish trend",
+            },
+            "rsi": {
+                "value": 58.0,
+                "condition": "neutral",
+                "divergence_type": "none",
+                "divergence_signal": "none",
+                "interpretation": "Momentum neutral",
+            },
+        },
+        "volume_indicators": {
+            "obv": {"value": 123456789.0, "trend": "increasing", "short_term_momentum": "bullish"},
+            "accumulation_distribution": {
+                "value": 98765.0,
+                "trend": "increasing",
+                "signal": "institutional_buying",
+            },
+            "vpt": {"value": 4567.0, "trend": "increasing", "volume_conviction": "strong"},
+            "mfi": {"value": 62.0, "condition": "Neutral", "options_signal": "neutral"},
+            "cmf": {"value": 0.15, "signal": "neutral"},
+            "relative_volume": {"current_rvol": 1.4, "significance": "elevated"},
+            "volume_breakout": {"is_breakout": False, "direction": "none"},
+        },
+        "volatility_analysis": {
+            "iv_percentile_proxy": {
+                "percentile": 45.0,
+                "hv_percentile": 45.0,
+                "basis": "historical_volatility",
+                "is_proxy": True,
+                "current_hv": 0.22,
+                "hv_range": "15.0% - 30.0%",
+                "interpretation": "mid",
+                "options_implication": "fairly priced",
+                "strategy_suggestion": "debit spreads",
+            },
+            "expected_move": {
+                "dollars": 7.5,
+                "percent": 5.0,
+                "upper_target": 157.75,
+                "lower_target": 142.75,
+                "targets": {},
+                "strike_guidance": "near ATM",
+                "interpretation": "moderate move",
+            },
+            "atr": {
+                "value": 3.2,
+                "daily_range": "±$3.20",
+                "stop_loss_suggestion": "$143.85 to $145.45",
+            },
+            "bollinger_bands": {
+                "upper": 158.0,
+                "middle": 150.0,
+                "lower": 142.0,
+                "percent_b": 0.6,
+                "bandwidth": 0.1,
+                "squeeze_detected": False,
+                "position": "neutral",
+            },
+        },
+        "volume_profile": {
+            "point_of_control": 149.0,
+            "value_area_high": 153.0,
+            "value_area_low": 145.0,
+            "current_position": "in_value_area",
+            "interpretation": "balanced",
+            "strike_selection_guidance": {"poc_strike": "$149.00 - Highest probability"},
+        },
+        "time_decay": {"days_to_expiration": 14, "theta_risk": "moderate", "theta_note": "monitor"},
+        "volume_trends": {"divergence_detected": False, "divergence_type": "none"},
+        "options_insights": [
+            "BULLISH: Composite score 4.2/10 - Consider call options or bull spreads",
+            "STRONG TREND: ADX at 31.5 (bullish)",
+        ],
+    }
+
+
+class TestProjectScanResults:
+    """Test the curated scan-results projection (O3)."""
+
+    def test_keeps_curated_keys(self):
+        scan = {
+            "scan_parameters": {"universe": "full_market"},
+            "summary": {"total_candidates": 2},
+            "high_conviction_setups": [{"symbol": "NVDA"}],
+            "top_bullish": [{"symbol": "AAPL"}],
+            "top_bearish": [{"symbol": "TSLA"}],
+        }
+        projected = _project_scan_results(scan)
+        assert set(projected) == {
+            "scan_parameters",
+            "summary",
+            "high_conviction_setups",
+            "top_bullish",
+            "top_bearish",
+        }
+
+    def test_drops_raw_error_list(self):
+        scan = {
+            "summary": {"total_candidates": 1, "errors": 3},
+            "errors": [{"symbol": "BADX", "error": "delisted traceback noise"}],
+        }
+        projected = _project_scan_results(scan)
+        # The verbose per-symbol error list is noise; the count stays in summary.
+        assert "errors" not in projected
+        assert projected["summary"]["errors"] == 3
+
+    def test_omits_absent_keys(self):
+        assert _project_scan_results({"summary": {}}) == {"summary": {}}
+
+
+class TestProjectDeepAnalysis:
+    """Test the curated deep-analysis projection (O3)."""
+
+    def test_keeps_high_signal_sections(self):
+        projected = _project_deep_analysis(_full_deep_analysis())
+        assert projected["symbol"] == "AAPL"
+        assert projected["latest_price"] == 150.25
+        for key in (
+            "headline",
+            "composite",
+            "trend",
+            "volatility",
+            "key_levels",
+            "volume_signals",
+            "insights",
+        ):
+            assert key in projected
+
+    def test_drops_internal_noise(self):
+        projected = _project_deep_analysis(_full_deep_analysis())
+        # Internal scoring detail and tuning params are not briefing-relevant.
+        assert "parameters" not in projected
+        assert "score_breakdown" not in projected.get("composite", {})
+        # Raw indicator magnitudes (OBV/AD absolute values) are dropped.
+        flat = json.dumps(projected)
+        assert "123456789" not in flat
+        assert "plus_di" not in flat
+
+    def test_carries_hv_honest_levels(self):
+        projected = _project_deep_analysis(_full_deep_analysis())
+        # Key tradeable levels survive: support/resistance and HV percentile.
+        assert projected["key_levels"]["point_of_control"] == 149.0
+        assert projected["volatility"]["hv_percentile"] == 45.0
+        assert projected["volatility"]["upper_target"] == 157.75
+
+    def test_handles_minimal_dict(self):
+        # Sparse dicts (e.g. fallback paths/tests) must not raise.
+        assert _project_deep_analysis({"symbol": "MSFT"}) == {"symbol": "MSFT"}
+
+    def test_handles_missing_symbol(self):
+        projected = _project_deep_analysis({"latest_price": 10.0})
+        assert projected["symbol"] == "Unknown"
+
+    def test_handles_malformed_nested_values(self):
+        # A section present but holding non-dict (scalar) values must degrade
+        # gracefully, not raise AttributeError.
+        malformed = {
+            "symbol": "X",
+            "trend_analysis": {"adx": 14.5, "rsi": "n/a"},
+            "volatility_analysis": "unexpected",
+            "volume_indicators": {"obv": 123, "cmf": None},
+        }
+        projected = _project_deep_analysis(malformed)
+        assert projected["symbol"] == "X"
+        assert projected["trend"]["adx"] is None
+        assert projected["volume_signals"]["obv_trend"] is None
+
+
+class TestBuildUserMessageProjection:
+    """Test that _build_user_message emits the curated projection (O3)."""
+
+    def test_curated_message_is_smaller_than_raw_dump(self, sample_stock_data):
+        from volume_price_analysis.analysis import run_options_analysis
+
+        analysis = run_options_analysis("TEST", sample_stock_data)
+        scan = {
+            "scan_parameters": {"universe": "full_market"},
+            "summary": {"total_candidates": 1, "high_conviction": 1, "errors": 0},
+            "high_conviction_setups": [{"symbol": "TEST", "composite_score": 4.0}],
+            "top_bullish": [{"symbol": "TEST", "composite_score": 4.0}],
+            "top_bearish": [],
+            "errors": [],
+        }
+        curated = _build_user_message(scan, [analysis])
+        raw_dump = f"{json.dumps(scan, default=str)}{json.dumps(analysis, default=str)}"
+        # The whole point of O3: meaningfully less text than the raw JSON dump.
+        assert len(curated) < len(raw_dump)
+        # But the essential symbol and headline call still survive.
+        assert "TEST" in curated
+        assert analysis["headline"]["recommendation"] in curated
+
+    def test_excludes_score_breakdown_noise(self, sample_stock_data):
+        from volume_price_analysis.analysis import run_options_analysis
+
+        analysis = run_options_analysis("TEST", sample_stock_data)
+        curated = _build_user_message({"summary": {}}, [analysis])
+        # Internal scoring detail is dropped from the model-facing prompt.
+        assert "score_breakdown" not in curated
+        assert "plus_di" not in curated
+
+
 class TestGenerateBriefingAnthropic:
     """Test Anthropic API integration (mocked)."""
 
@@ -272,7 +512,10 @@ class TestGenerateBriefingAnthropic:
         mocker.patch("anthropic.Anthropic", return_value=mock_client)
 
         generate_briefing(
-            scan_results={"key": "value"},
+            scan_results={
+                "summary": {"total_candidates": 1, "high_conviction": 1},
+                "high_conviction_setups": [{"symbol": "NVDA", "composite_score": 6.2}],
+            },
             deep_analyses=[{"symbol": "AAPL"}],
             provider="anthropic",
             api_key="sk-test",
@@ -280,8 +523,10 @@ class TestGenerateBriefingAnthropic:
 
         call_args = mock_client.messages.create.call_args
         user_msg = call_args.kwargs["messages"][0]["content"]
+        # Curated high-signal data reaches the model: candidate + deep symbols.
         assert "AAPL" in user_msg
-        assert "key" in user_msg
+        assert "NVDA" in user_msg
+        assert "total_candidates" in user_msg
 
     def test_appends_warning_on_truncation(self, mocker):
         mock_client = MagicMock()
@@ -2057,3 +2302,168 @@ class TestRunMorningBriefingDegradedReturn:
 
         result = await run_morning_briefing(config, dry_run=False, no_ai=False)
         assert result is True
+
+
+class TestSystemPromptVolatilityLabeling:
+    """The briefing prompt must label volatility honestly as an HV proxy (HOM-39)."""
+
+    def test_prompt_flags_volatility_as_hv_proxy(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "historical volatility" in lowered
+        assert "hv" in lowered
+
+    def test_prompt_warns_against_implied_volatility_framing(self):
+        """The prompt must tell the model the metric is not options-implied vol."""
+        lowered = SYSTEM_PROMPT.lower()
+        assert "implied volatility" in lowered
+
+
+class TestSystemPromptGrounding:
+    """HOM-45: SYSTEM_PROMPT must instruct the model to only use provided data."""
+
+    def test_prompt_has_grounding_clause(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "use only" in lowered
+        assert "never invent" in lowered
+
+    def test_prompt_mentions_tickers_must_come_from_data(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "ticker" in lowered
+
+
+class TestFindUngroundedTickers:
+    """HOM-45: flag ticker-like tokens that are absent from the scan/analysis input."""
+
+    @staticmethod
+    def _scan(*, bullish=(), bearish=(), high_conviction=(), errors=()):
+        return {
+            "summary": {},
+            "high_conviction_setups": [{"symbol": s} for s in high_conviction],
+            "top_bullish": [{"symbol": s} for s in bullish],
+            "top_bearish": [{"symbol": s} for s in bearish],
+            "errors": [{"symbol": s, "error": "boom"} for s in errors],
+        }
+
+    def test_grounded_briefing_returns_empty(self):
+        scan = self._scan(bullish=["AAPL"], bearish=["TSLA"])
+        briefing = "## Top Picks\n- AAPL looks bullish\n- TSLA looks bearish"
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_detects_hallucinated_ticker(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = "AAPL is great. Also consider ZZZZ for a play."
+        assert find_ungrounded_tickers(briefing, scan, []) == ["ZZZZ"]
+
+    def test_ignores_indicator_acronyms(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = (
+            "AAPL: ADX 31, RSI 62, VWAP above, POC/VAH/VAL aligned, "
+            "HV percentile high, OBV rising, MFI 70, CMF positive, ATR wide, BB squeeze, "
+            "14-day DTE, ROC up."
+        )
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_ignores_emphasis_and_common_words(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = (
+            "STRONG BULLISH on AAPL. NO TREND elsewhere. VOLUME BREAKOUT, "
+            "EXTREME OVERBOUGHT. WARNING: IMPORTANT risk. US markets, ETF flows, AI theme."
+        )
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_recognizes_symbols_from_deep_analyses(self):
+        scan = self._scan()
+        deep = [{"symbol": "NVDA"}]
+        briefing = "NVDA shows accumulation into the close."
+        assert find_ungrounded_tickers(briefing, scan, deep) == []
+
+    def test_recognizes_symbols_from_error_list(self):
+        scan = self._scan(errors=["GOOGL"])
+        briefing = "Note: GOOGL failed to fetch but was in scope."
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_cashtag_grounded(self):
+        scan = self._scan(bullish=["AAPL"])
+        assert find_ungrounded_tickers("Buy $AAPL calls.", scan, []) == []
+
+    def test_cashtag_hallucinated_is_flagged(self):
+        scan = self._scan(bullish=["AAPL"])
+        assert find_ungrounded_tickers("Rotate into $ZM here.", scan, []) == ["ZM"]
+
+    def test_ignores_bare_single_letters(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = "Plan B is fine; option A too; F was not analyzed."
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_handles_class_share_symbol(self):
+        scan = self._scan(bullish=["BRK-B"])
+        briefing = "BRK.B is consolidating near its POC."
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_dedupes_and_sorts(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = "WXYZ and MNOP and WXYZ again, plus AAPL."
+        assert find_ungrounded_tickers(briefing, scan, []) == ["MNOP", "WXYZ"]
+
+    def test_handles_empty_briefing(self):
+        scan = self._scan(bullish=["AAPL"])
+        assert find_ungrounded_tickers("", scan, []) == []
+
+    def test_handles_empty_scan_data(self):
+        assert find_ungrounded_tickers("Consider ZZZZ today.", {}, []) == ["ZZZZ"]
+
+
+class TestGenerateBriefingGrounding:
+    """HOM-45: generate_briefing logs a warning when the briefing names unknown tickers."""
+
+    @staticmethod
+    def _scan():
+        return {
+            "summary": {"total_candidates": 1},
+            "high_conviction_setups": [],
+            "top_bullish": [{"symbol": "AAPL"}],
+            "top_bearish": [],
+            "errors": [],
+        }
+
+    def test_logs_warning_on_hallucinated_ticker(self, mocker, caplog):
+        import logging
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "AAPL is bullish. Also buy ZZZZ calls."
+        mock_response.candidates = []
+        mock_client.models.generate_content.return_value = mock_response
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
+            result = generate_briefing(
+                scan_results=self._scan(),
+                deep_analyses=[],
+                provider="gemini",
+                api_key="test-key",
+            )
+
+        assert "ZZZZ" in result
+        assert "ZZZZ" in caplog.text
+        assert "hallucination" in caplog.text.lower()
+
+    def test_no_warning_when_grounded(self, mocker, caplog):
+        import logging
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "AAPL is bullish today; watch the VWAP."
+        mock_response.candidates = []
+        mock_client.models.generate_content.return_value = mock_response
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
+            generate_briefing(
+                scan_results=self._scan(),
+                deep_analyses=[],
+                provider="gemini",
+                api_key="test-key",
+            )
+
+        assert "hallucination" not in caplog.text.lower()

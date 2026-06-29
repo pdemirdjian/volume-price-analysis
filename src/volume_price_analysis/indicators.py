@@ -96,6 +96,10 @@ def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str
     Returns:
         Dictionary with 'price_levels' and 'volumes' lists
     """
+    if len(data) == 0:
+        # No data -> return a well-formed, all-zero profile (no NaN price levels).
+        return {"price_levels": [0.0] * num_bins, "volumes": [0.0] * num_bins}
+
     min_price = data["Low"].min()
     max_price = data["High"].max()
 
@@ -156,7 +160,8 @@ def calculate_vpt(data: pd.DataFrame) -> pd.Series:
     for i in range(1, len(data)):
         prev_close = data["Close"].iloc[i - 1]
         curr_close = data["Close"].iloc[i]
-        price_change_pct = (curr_close - prev_close) / prev_close
+        # Guard div-by-zero: a zero previous close has no defined pct change -> 0.
+        price_change_pct = (curr_close - prev_close) / prev_close if prev_close != 0 else 0.0
         vpt.append(vpt[-1] + data["Volume"].iloc[i] * price_change_pct)
 
     return pd.Series(vpt, index=data.index)
@@ -205,8 +210,16 @@ def calculate_mfi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     positive_mf = positive_flow.rolling(window=period).sum()
     negative_mf = negative_flow.rolling(window=period).sum()
 
-    mfr = positive_mf / negative_mf
+    # Guard division by zero in the money-flow ratio. Computing the ratio only
+    # where negative_mf > 0 avoids inf/NaN; the two .where() passes then assign
+    # the conventional values for the degenerate windows:
+    #   - negative_mf == 0 with positive flow -> fully overbought (MFI = 100)
+    #   - flat window (no flow either way)     -> neutral (MFI = 50)
+    # Leading insufficient-history values (rolling sum still NaN) stay NaN.
+    mfr = positive_mf / negative_mf.where(negative_mf > 0)
     mfi = 100 - (100 / (1 + mfr))
+    mfi = mfi.where(~((negative_mf == 0) & (positive_mf > 0)), 100.0)
+    mfi = mfi.where(~((negative_mf == 0) & (positive_mf == 0)), 50.0)
 
     return mfi
 
@@ -222,15 +235,33 @@ def analyze_volume_trends(data: pd.DataFrame, window: int = 20) -> dict[str, Any
     Returns:
         Dictionary with volume trend analysis
     """
-    avg_volume = data["Volume"].rolling(window=window).mean()
+    n = len(data)
+    if n == 0:
+        # No data -> safe, well-formed defaults (mirrors detect_volume_breakout).
+        return {
+            "current_volume": 0,
+            "average_volume": 0,
+            "volume_vs_average": "0.00%",
+            "volume_trend": "decreasing",
+            "price_direction": "down",
+            "divergence_detected": False,
+            "divergence_type": "None",
+        }
+
+    # min_periods=1 keeps the average defined when len(data) < window (avoids
+    # int(NaN)); for len(data) >= window the last value is unchanged.
+    avg_volume = data["Volume"].rolling(window=window, min_periods=1).mean()
     current_volume = data["Volume"].iloc[-1]
     current_avg = avg_volume.iloc[-1]
 
     # Calculate volume trend
     volume_increasing = data["Volume"].iloc[-5:].is_monotonic_increasing
 
-    # Calculate price-volume divergence
-    price_direction = "up" if data["Close"].iloc[-1] > data["Close"].iloc[-window] else "down"
+    # Calculate price-volume divergence. Clamp the lookback to available history so
+    # len(data) < window can't IndexError; for len(data) >= window this is exactly
+    # iloc[-window] (unchanged behavior).
+    prior_close = data["Close"].iloc[max(-window, -n)]
+    price_direction = "up" if data["Close"].iloc[-1] > prior_close else "down"
     volume_direction = "up" if current_volume > current_avg else "down"
 
     divergence = (price_direction == "up" and volume_direction == "down") or (
@@ -241,10 +272,15 @@ def analyze_volume_trends(data: pd.DataFrame, window: int = 20) -> dict[str, Any
         f"Price {price_direction}, Volume {volume_direction}" if divergence else "None"
     )
 
+    # Guard against zero average volume (e.g. all-zero volume) -> avoid inf/NaN string.
+    volume_vs_average = (
+        f"{((current_volume / current_avg - 1) * 100):.2f}%" if current_avg else "0.00%"
+    )
+
     return {
         "current_volume": int(current_volume),
         "average_volume": int(current_avg),
-        "volume_vs_average": f"{((current_volume / current_avg - 1) * 100):.2f}%",
+        "volume_vs_average": volume_vs_average,
         "volume_trend": "increasing" if volume_increasing else "decreasing",
         "price_direction": price_direction,
         "divergence_detected": divergence,
@@ -677,9 +713,10 @@ def calculate_enhanced_volume_profile(
         "current_price": float(current_price),
         "position": position,
         "interpretation": interpretation,
-        "poc_distance_pct": float(((current_price / poc) - 1) * 100),
-        "vah_distance_pct": float(((current_price / vah) - 1) * 100),
-        "val_distance_pct": float(((current_price / val) - 1) * 100),
+        # Guard div-by-zero when a level is 0 (e.g. all-zero / degenerate prices).
+        "poc_distance_pct": float(((current_price / poc) - 1) * 100) if poc else 0.0,
+        "vah_distance_pct": float(((current_price / vah) - 1) * 100) if vah else 0.0,
+        "val_distance_pct": float(((current_price / val) - 1) * 100) if val else 0.0,
     }
 
 
@@ -953,7 +990,11 @@ def calculate_iv_percentile(
         lookback_days: Days to look back for percentile calculation
 
     Returns:
-        Dictionary with IV percentile proxy data
+        Dictionary with IV percentile proxy data. ``iv_percentile`` is retained
+        for backward compatibility, but the value is derived from historical
+        volatility, NOT options-market implied volatility. The honestly-labeled
+        ``hv_percentile`` carries the same number, with ``basis`` and ``is_proxy``
+        marking it as an HV-based proxy.
     """
     # Calculate rolling HV
     log_returns = (data["Close"] / data["Close"].shift(1)).apply(np.log)
@@ -966,6 +1007,9 @@ def calculate_iv_percentile(
         hv_val = hv.iloc[-1]
         return {
             "iv_percentile": 50.0,
+            "hv_percentile": 50.0,
+            "basis": "historical_volatility",
+            "is_proxy": True,
             "current_hv": 0.0 if pd.isna(hv_val) else float(hv_val),  # type: ignore[arg-type]
             "hv_min": 0.0,
             "hv_max": 0.0,
@@ -987,6 +1031,11 @@ def calculate_iv_percentile(
     if hv_range > 0:
         iv_percentile = ((current_hv - hv_min) / hv_range) * 100
     else:
+        iv_percentile = 50.0
+
+    # Guard NaN propagation: a NaN current_hv (e.g. a NaN final Close) would make
+    # the percentile NaN. Degrade to a neutral 50.0 rather than leak NaN to callers.
+    if pd.isna(iv_percentile):
         iv_percentile = 50.0
 
     # Interpretation
@@ -1013,6 +1062,9 @@ def calculate_iv_percentile(
 
     return {
         "iv_percentile": float(iv_percentile),
+        "hv_percentile": float(iv_percentile),
+        "basis": "historical_volatility",
+        "is_proxy": True,
         "current_hv": 0.0 if pd.isna(current_hv) else float(current_hv),  # type: ignore[arg-type]
         "hv_min": float(hv_min),
         "hv_max": float(hv_max),
@@ -1118,6 +1170,17 @@ def calculate_expected_move(
 # ============================================================================
 
 
+def composite_adx_period(holding_period: int) -> int:
+    """Return the ADX lookback the composite score uses for a holding period.
+
+    Short holding periods use a more responsive ADX(10); 15+ day holds use the
+    standard ADX(14). Centralised so the scan can report and filter on the exact
+    same period the composite score consumed, rather than a separate fixed ADX(14)
+    (see HOM-48). Keep this the single source of truth for the rule.
+    """
+    return 10 if holding_period <= 14 else 14
+
+
 def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> dict[str, Any]:
     """
     Calculate composite signal score for options trading.
@@ -1139,17 +1202,15 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         mfi_period = 7
         volume_window = 10
         rsi_period = 7
-        adx_period = 10
     elif holding_period <= 21:
         mfi_period = 10
         volume_window = 14
         rsi_period = 10
-        adx_period = 14
     else:  # 22-30 days
         mfi_period = 14
         volume_window = 20
         rsi_period = 14
-        adx_period = 14
+    adx_period = composite_adx_period(holding_period)
 
     # Calculate indicators
     obv = calculate_obv(data)
@@ -1310,6 +1371,19 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         "signal_quality": signal_quality,
         "quality_note": quality_note,
         "score_breakdown": score_breakdown,
+        # Surface the ADX the score actually consumed (adaptive to holding_period) so
+        # callers can report a value coherent with signal_quality/adx_direction instead
+        # of recomputing a separate, fixed-period ADX. JSON-safe scalars only (no Series).
+        "adx_period": adx_period,
+        "adx_summary": {
+            "period": adx_period,
+            "adx": float(adx_data["adx"]),
+            "plus_di": float(adx_data["plus_di"]),
+            "minus_di": float(adx_data["minus_di"]),
+            "trend_strength": adx_data["trend_strength"],
+            "trend_direction": adx_data["trend_direction"],
+            "adx_slope": adx_data["adx_slope"],
+        },
         "indicator_summary": {
             "price_above_vwap": latest_close > latest_vwap,
             "price_above_vwma": latest_close > latest_vwma,

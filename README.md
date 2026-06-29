@@ -373,6 +373,39 @@ ruff check --fix src/ tests/
 mypy src/
 ```
 
+### Evidence Harness (strictly-causal backtest)
+
+`volume_price_analysis.backtest` is an **internal evidence tool** (no MCP
+surface) for measuring the *forward predictive power* of the composite score, so
+scoring changes can be evaluated with before/after numbers instead of intuition.
+
+It is **strictly causal**: the signal at bar `t` is computed by slicing history
+to `data[:t+1]` and calling the existing scorer, so future bars are physically
+absent and cannot leak. The forward return (`Close[t+N]/Close[t] - 1`) is the
+*outcome* only and is never fed back into the signal; a bar is evaluated only
+when its forward bar `t+N` exists. The future-invariance contract is locked by
+`tests/test_backtest.py::test_causal_score_is_invariant_to_future_bars`.
+
+```bash
+# Single symbol, 14-day forward window over 2y of history
+python -m volume_price_analysis.backtest AAPL --period 2y --horizon 14
+
+# Pool several symbols for statistical power; subsample bars to reduce overlap
+python -m volume_price_analysis.backtest AAPL MSFT NVDA SPY --horizon 14 --step 3
+```
+
+It reports, over all evaluated bars: directional hit rate, mean directional
+return (`mean(sign(score) * forward_return)`), Spearman/Pearson IC, and a
+breakdown by score bucket, by `|score|` gate threshold, and for the production
+high-conviction gate (`|score|>=4 & ADX>=28 & IV<=50`). To compare a scoring
+change, run the harness on the same symbols/period before and after and diff the
+reports.
+
+> Caveat: overlapping forward windows are autocorrelated, so single-symbol IC is
+> directional, not conclusive — pool across symbols (and/or use `--step`) for a
+> trustworthy read. Data is ~15-20 min delayed; this measures predictive
+> information, not live tradeability.
+
 ### Environment Management
 
 See [UV_SETUP.md](UV_SETUP.md) for detailed UV usage, or use traditional venv:

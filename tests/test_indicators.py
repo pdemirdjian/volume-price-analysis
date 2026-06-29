@@ -27,6 +27,7 @@ from volume_price_analysis.indicators import (
     calculate_vpt,
     calculate_vwap,
     calculate_vwma,
+    composite_adx_period,
     detect_rsi_divergence,
     detect_volume_breakout,
 )
@@ -1700,6 +1701,9 @@ class TestIVPercentile:
 
         expected_keys = {
             "iv_percentile",
+            "hv_percentile",
+            "basis",
+            "is_proxy",
             "current_hv",
             "hv_min",
             "hv_max",
@@ -1709,6 +1713,54 @@ class TestIVPercentile:
             "strategy_suggestion",
         }
         assert expected_keys == set(result.keys())
+
+    def test_hv_percentile_matches_iv_percentile(self):
+        """hv_percentile is the correctly-labeled twin of the iv_percentile proxy."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["hv_percentile"] == result["iv_percentile"]
+
+    def test_hv_percentile_in_range(self):
+        """hv_percentile must stay within [0, 100] like the proxy it mirrors."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert 0 <= result["hv_percentile"] <= 100
+
+    def test_nan_last_close_does_not_leak_nan_percentile(self):
+        """A NaN final Close must degrade to a neutral percentile, never NaN."""
+        data = _make_iv_data(n=300)
+        data.loc[data.index[-1], "Close"] = np.nan
+
+        result = calculate_iv_percentile(data)
+
+        assert not np.isnan(result["iv_percentile"])
+        assert not np.isnan(result["hv_percentile"])
+        assert result["hv_percentile"] == result["iv_percentile"] == 50.0
+
+    def test_basis_is_historical_volatility(self):
+        """The metric basis must be honestly labeled as historical volatility."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["basis"] == "historical_volatility"
+
+    def test_is_proxy_flag_true(self):
+        """The percentile is an HV-derived proxy, not real implied volatility."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["is_proxy"] is True
+
+    def test_insufficient_data_includes_honesty_fields(self):
+        """The insufficient-data branch must still carry the proxy/basis labels."""
+        data = _make_large_uptrend(n=25)
+        result = calculate_iv_percentile(data, hv_window=20)
+
+        assert result["hv_percentile"] == result["iv_percentile"] == 50.0
+        assert result["basis"] == "historical_volatility"
+        assert result["is_proxy"] is True
 
     def test_iv_percentile_range(self):
         """Test that IV percentile is between 0 and 100."""
@@ -1980,8 +2032,75 @@ class TestCompositeScore:
             "quality_note",
             "score_breakdown",
             "indicator_summary",
+            "adx_period",
+            "adx_summary",
         }
         assert expected_keys == set(result.keys())
+
+    def test_exposes_adaptive_adx_period(self):
+        """Composite reports the ADX period it actually used (adaptive to holding)."""
+        data = _make_large_uptrend(n=80)
+
+        # Short holding period uses the responsive ADX(10)
+        short = calculate_composite_score(data, holding_period=14)
+        assert short["adx_period"] == 10
+        assert short["adx_summary"]["period"] == 10
+
+        # The 15-21 day band switches to ADX(14) (boundary distinct from the >21 band)
+        mid = calculate_composite_score(data, holding_period=21)
+        assert mid["adx_period"] == 14
+        assert mid["adx_summary"]["period"] == 14
+
+        # Longer holding periods also use ADX(14)
+        long = calculate_composite_score(data, holding_period=25)
+        assert long["adx_period"] == 14
+        assert long["adx_summary"]["period"] == 14
+
+    def test_adx_summary_is_coherent_with_internal_adx(self):
+        """adx_summary must reflect the exact ADX the score consumed, not a fixed period."""
+        data = _make_large_uptrend(n=80)
+
+        # Short hold -> ADX(10): surfaced value matches internal use and an independent calc.
+        short = calculate_composite_score(data, holding_period=14)
+        assert short["adx_summary"]["adx"] == short["indicator_summary"]["adx"]
+        assert short["adx_summary"]["adx"] == pytest.approx(calculate_adx(data, 10)["adx"])
+
+        # Longer hold -> ADX(14): the period genuinely tracks holding_period, not a constant.
+        long = calculate_composite_score(data, holding_period=25)
+        assert long["adx_summary"]["adx"] == long["indicator_summary"]["adx"]
+        assert long["adx_summary"]["adx"] == pytest.approx(calculate_adx(data, 14)["adx"])
+
+    def test_adx_summary_degrades_to_zero_on_insufficient_history(self):
+        """Too little history for ADX -> NaN is coerced to 0.0, surfaced safely (no NaN leak).
+
+        12 bars is enough for the composite to run but short of ADX(10)'s warmup
+        (~2*period), so the ADX is undefined and must surface as a safe 0.0.
+        """
+        short_data = _make_large_uptrend(n=12)
+        summary = calculate_composite_score(short_data, holding_period=14)["adx_summary"]
+        assert summary["adx"] == 0.0
+        assert not pd.isna(summary["adx"])
+
+    def test_adx_summary_has_expected_fields(self):
+        """adx_summary carries the scalar fields the scan surfaces (no pandas Series)."""
+        summary = calculate_composite_score(_make_large_uptrend(n=80))["adx_summary"]
+        assert set(summary) == {
+            "period",
+            "adx",
+            "plus_di",
+            "minus_di",
+            "trend_strength",
+            "trend_direction",
+            "adx_slope",
+        }
+
+    def test_composite_adx_period_helper(self):
+        """Single source of truth for the holding->ADX-period rule (boundary at 14)."""
+        assert composite_adx_period(7) == 10
+        assert composite_adx_period(14) == 10
+        assert composite_adx_period(15) == 14
+        assert composite_adx_period(21) == 14
+        assert composite_adx_period(30) == 14
 
     def test_composite_score_range(self):
         """Test that composite score is between -10 and +10."""
@@ -3208,3 +3327,138 @@ class TestDetectVolumeBreakoutSingleRow:
         assert result["direction"] == "none"
         assert result["current_volume"] == 1000
         assert result["signal"] == "No breakout"
+
+
+# ============================================================================
+# A6: INDICATOR EDGE-CASE HARDENING (HOM-37)
+#
+# Indicators must degrade gracefully on short / degenerate input instead of
+# raising (IndexError / int(NaN)) or emitting silent garbage (NaN / inf).
+# Additive only: behavior for normal-sized, well-formed inputs is unchanged.
+# ============================================================================
+
+
+class TestAnalyzeVolumeTrendsEdgeCases:
+    """analyze_volume_trends should not crash on short / degenerate input."""
+
+    def test_fewer_rows_than_window_no_crash(self):
+        """len(data) < window must not raise IndexError or int(NaN) ValueError."""
+        data = pd.DataFrame({"Close": [100.0, 101.0, 102.0], "Volume": [1000, 1100, 1200]})
+        result = analyze_volume_trends(data, window=20)
+
+        assert isinstance(result["current_volume"], int)
+        assert isinstance(result["average_volume"], int)
+        assert result["price_direction"] in ("up", "down")
+        assert "%" in result["volume_vs_average"]
+        assert isinstance(result["divergence_detected"], bool)
+
+    def test_zero_average_volume_no_inf(self):
+        """All-zero volume must not yield inf/NaN in the volume_vs_average string."""
+        data = pd.DataFrame({"Close": [100.0] * 25, "Volume": [0] * 25})
+        result = analyze_volume_trends(data, window=20)
+
+        assert result["average_volume"] == 0
+        assert result["current_volume"] == 0
+        assert "inf" not in result["volume_vs_average"].lower()
+        assert "nan" not in result["volume_vs_average"].lower()
+
+    def test_empty_frame_returns_safe_defaults(self):
+        """Empty frame must return safe defaults, not raise."""
+        empty = pd.DataFrame(columns=["Close", "Volume"])
+        result = analyze_volume_trends(empty, window=20)
+
+        assert result["current_volume"] == 0
+        assert result["average_volume"] == 0
+        assert result["divergence_detected"] is False
+
+    def test_sufficient_history_unchanged(self):
+        """Regression guard: len > window keeps the original close[-1] vs close[-window]."""
+        closes = [100.0 + i for i in range(30)]
+        data = pd.DataFrame({"Close": closes, "Volume": [1_000_000] * 30})
+        result = analyze_volume_trends(data, window=20)
+
+        # close[-1]=129 > close[-20]=110 -> "up"
+        assert result["price_direction"] == "up"
+        assert result["average_volume"] == 1_000_000
+
+
+class TestVolumeProfileEmptyFrame:
+    """calculate_volume_profile must not emit NaN price levels for an empty frame."""
+
+    def test_empty_frame_no_nan(self):
+        empty = pd.DataFrame(columns=["High", "Low", "Close", "Volume"])
+        profile = calculate_volume_profile(empty, num_bins=20)
+
+        assert len(profile["price_levels"]) == 20
+        assert len(profile["volumes"]) == 20
+        assert not any(np.isnan(profile["price_levels"]))
+        assert sum(profile["volumes"]) == 0
+
+
+class TestVPTZeroPrevClose:
+    """calculate_vpt must treat a zero previous close as 0% change, not div-by-zero."""
+
+    def test_zero_prev_close_no_inf(self):
+        data = pd.DataFrame({"Close": [0.0, 5.0, 6.0], "Volume": [1000, 1000, 1000]})
+        vpt = calculate_vpt(data)
+
+        assert not np.isinf(vpt).any()
+        assert not vpt.isna().any()
+        assert vpt.iloc[0] == 0
+        # Step 0 -> 5: undefined pct change guarded to 0 -> no contribution
+        assert vpt.iloc[1] == pytest.approx(0.0)
+        # Step 5 -> 6: pct change = 0.2, volume 1000 -> +200
+        assert vpt.iloc[2] == pytest.approx(200.0)
+
+
+class TestMFIFlatWindow:
+    """calculate_mfi must return neutral 50 for a fully flat window, not NaN."""
+
+    def test_flat_typical_price_window_is_neutral(self):
+        data = pd.DataFrame(
+            {
+                "High": [102.0] * 20,
+                "Low": [98.0] * 20,
+                "Close": [100.0] * 20,
+                "Volume": [1_000_000] * 20,
+            }
+        )
+        mfi = calculate_mfi(data, period=14)
+
+        # Warmup region stays NaN; settled flat window -> 50 (neutral)
+        assert mfi.iloc[:13].isna().all()
+        assert mfi.iloc[-1] == pytest.approx(50.0)
+
+    def test_all_positive_flow_window_is_100(self):
+        # Strictly rising typical price -> only positive money flow -> MFI 100
+        data = pd.DataFrame(
+            {
+                "High": [100.0 + i for i in range(20)],
+                "Low": [98.0 + i for i in range(20)],
+                "Close": [99.0 + i for i in range(20)],
+                "Volume": [1_000_000] * 20,
+            }
+        )
+        mfi = calculate_mfi(data, period=14)
+
+        assert mfi.iloc[-1] == pytest.approx(100.0)
+
+
+class TestEnhancedVolumeProfilePOCZero:
+    """calculate_enhanced_volume_profile must guard distance pct when POC/VAH/VAL == 0."""
+
+    def test_zero_price_levels_no_div_by_zero(self):
+        data = pd.DataFrame(
+            {
+                "High": [0.0] * 5,
+                "Low": [0.0] * 5,
+                "Close": [0.0] * 5,
+                "Volume": [1000] * 5,
+            }
+        )
+        result = calculate_enhanced_volume_profile(data)
+
+        assert result["poc"] == 0.0
+        assert result["poc_distance_pct"] == 0.0
+        assert result["vah_distance_pct"] == 0.0
+        assert result["val_distance_pct"] == 0.0
