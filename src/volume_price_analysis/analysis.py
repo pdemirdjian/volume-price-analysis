@@ -242,6 +242,7 @@ def analyze_single_symbol(
     min_adx: float,
     max_iv: float,
     direction: str,
+    min_avg_volume: float = 0,
 ) -> dict | None:
     """
     Analyze a single symbol for scan_candidates.
@@ -268,11 +269,13 @@ def analyze_single_symbol(
     score = composite["composite_score"]
     adx = adx_summary["adx"]
     iv_pct = iv_pct_data["iv_percentile"]
+    avg_volume = float(sym_data["Volume"].mean())
 
     # Apply filters
     passes_score = abs(score) >= min_score
     passes_adx = adx >= min_adx
     passes_iv = iv_pct <= max_iv
+    passes_volume = avg_volume >= min_avg_volume if min_avg_volume > 0 else True
 
     if direction == "bullish":
         passes_direction = score > 0
@@ -281,7 +284,7 @@ def analyze_single_symbol(
     else:
         passes_direction = True
 
-    if not (passes_score and passes_adx and passes_direction and passes_iv):
+    if not (passes_score and passes_adx and passes_direction and passes_iv and passes_volume):
         return None
 
     return {
@@ -319,6 +322,7 @@ async def _analyze_symbol_async(
     max_iv: float,
     direction: str,
     semaphore: asyncio.Semaphore,
+    min_avg_volume: float = 0,
 ) -> tuple[str, dict | None, str | None, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
@@ -337,6 +341,7 @@ async def _analyze_symbol_async(
                 min_adx,
                 max_iv,
                 direction,
+                min_avg_volume,
             )
             return (symbol, result, None, False)
         except InsufficientDataError:
@@ -356,6 +361,7 @@ async def run_scan(
     direction: str = "any",
     max_results: int = 15,
     max_concurrent: int = MAX_CONCURRENT_SCANS,
+    min_avg_daily_volume: float = 0,
 ) -> dict:
     """
     Scan the market for options trading candidates.
@@ -371,6 +377,7 @@ async def run_scan(
         direction: "bullish", "bearish", or "any".
         max_results: Maximum results per direction.
         max_concurrent: Maximum concurrent symbol analyses.
+        min_avg_daily_volume: Minimum average daily share volume (0 = no filter).
 
     Returns:
         Dictionary with scan results including candidates, summary, and errors.
@@ -413,6 +420,7 @@ async def run_scan(
             max_iv_percentile,
             direction,
             semaphore,
+            min_avg_daily_volume,
         )
         for sym in scan_symbols
     ]
@@ -476,6 +484,7 @@ async def run_scan(
             "min_score": min_score,
             "min_adx": min_adx,
             "max_iv_percentile": max_iv_percentile,
+            "min_avg_daily_volume": min_avg_daily_volume,
             "direction_filter": direction,
             # ADX lookback backing the reported `adx`, the min_adx filter, and the
             # high_conviction gate -- adaptive to holding_period (HOM-48).

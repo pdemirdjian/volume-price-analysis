@@ -14,7 +14,8 @@ import json
 import logging
 import sys
 import time
-from datetime import UTC, datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import fetch_stock_data
@@ -59,7 +60,8 @@ async def run_morning_briefing(
         holding_period=14,
         min_score=2.0,
         min_adx=20,
-        max_iv_percentile=100,
+        max_iv_percentile=70,
+        min_avg_daily_volume=500_000,
         direction="any",
         max_results=15,
     )
@@ -90,6 +92,16 @@ async def run_morning_briefing(
     elapsed_analysis = time.monotonic() - start_time
     logger.info("Analysis complete in %.1fs", elapsed_analysis)
 
+    # Step 2b: Earnings guard — batch-fetch for all analysed symbols
+    analysed_symbols = [a["symbol"] for a in deep_analyses if "symbol" in a]
+    earnings_warnings = _fetch_earnings_warnings(analysed_symbols, now)
+    if earnings_warnings:
+        logger.info("Earnings warnings: %s", earnings_warnings)
+        for analysis in deep_analyses:
+            sym = analysis.get("symbol")
+            if sym and sym in earnings_warnings:
+                analysis["earnings_warning"] = earnings_warnings[sym]
+
     # Step 3: Generate briefing
     degraded = False
     if no_ai:
@@ -101,6 +113,15 @@ async def run_morning_briefing(
             config.ai_provider,
             config.ai_model or "default model",
         )
+        earnings_preamble = ""
+        if earnings_warnings:
+            lines = [f"  - {sym}: {warn}" for sym, warn in sorted(earnings_warnings.items())]
+            earnings_preamble = (
+                "\n\n**EARNINGS EVENT RISK** — the following candidates have earnings "
+                f"within {_EARNINGS_WARN_DAYS} days. Factor event risk into sizing and strategy:\n"
+                + "\n".join(lines)
+                + "\n"
+            )
         try:
             briefing = generate_briefing(
                 scan_results=scan_results,
@@ -108,6 +129,7 @@ async def run_morning_briefing(
                 provider=config.ai_provider,
                 model=config.ai_model,
                 api_key=config.ai_provider_api_key,
+                earnings_preamble=earnings_preamble,
             )
         except Exception:
             logger.exception("AI briefing generation failed")
@@ -163,6 +185,55 @@ async def run_morning_briefing(
 
     logger.info("Morning briefing complete in %.1fs", elapsed_total)
     return not degraded
+
+
+_EARNINGS_WARN_DAYS = 14
+
+
+def _check_earnings(symbol: str, now: datetime) -> str | None:
+    """Return a warning string if the symbol has earnings within 14 days, else None."""
+    try:
+        import yfinance as yf
+
+        info = yf.Ticker(symbol).info
+        raw = info.get("earningsDate") or info.get("earningsTimestamp")
+        if raw is None:
+            return None
+
+        # yfinance may return a list (range) or a single value
+        if isinstance(raw, list):
+            raw = raw[0]
+
+        # Normalise to an aware datetime
+        if isinstance(raw, (int, float)):
+            earnings_dt = datetime.fromtimestamp(raw, tz=UTC)
+        elif isinstance(raw, datetime):
+            earnings_dt = raw if raw.tzinfo else raw.replace(tzinfo=UTC)
+        else:
+            return None
+
+        delta = earnings_dt - now
+        if timedelta(0) <= delta <= timedelta(days=_EARNINGS_WARN_DAYS):
+            days_out = delta.days
+            return f"EARNINGS in {days_out} day(s) ({earnings_dt.strftime('%Y-%m-%d')})"
+        return None
+    except Exception:
+        logger.debug("Earnings lookup failed for %s", symbol, exc_info=True)
+        return None
+
+
+def _fetch_earnings_warnings(symbols: list[str], now: datetime) -> dict[str, str]:
+    """Fetch earnings dates for all symbols concurrently. Returns symbol -> warning string."""
+    if not symbols:
+        return {}
+    with ThreadPoolExecutor(max_workers=len(symbols)) as pool:
+        futures = {sym: pool.submit(_check_earnings, sym, now) for sym in symbols}
+        result: dict[str, str] = {}
+        for sym, fut in futures.items():
+            warning = fut.result()
+            if warning is not None:
+                result[sym] = warning
+        return result
 
 
 def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:

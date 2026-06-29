@@ -4,8 +4,8 @@ import asyncio
 import json
 import signal
 import smtplib
-from datetime import datetime, time
-from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime, time, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,13 +20,16 @@ from volume_price_analysis.agent.ai_client import (
 )
 from volume_price_analysis.agent.config import AgentConfig
 from volume_price_analysis.agent.email_sender import (
+    _linkify_tickers,
     _parse_recipients,
     send_briefing_email,
     send_error_email,
     send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
+    _check_earnings,
     _fallback_briefing,
+    _fetch_earnings_warnings,
     _get_top_symbols,
     main,
     run_morning_briefing,
@@ -606,7 +609,7 @@ class TestGenerateBriefingGemini:
         )
 
         call_args = mock_client.models.generate_content.call_args
-        assert call_args.kwargs["model"] == "gemini-2.5-flash"
+        assert call_args.kwargs["model"] == "gemini-2.5-pro"
 
     def test_appends_warning_on_truncation(self, mocker):
         mock_client = MagicMock()
@@ -2467,3 +2470,134 @@ class TestGenerateBriefingGrounding:
             )
 
         assert "hallucination" not in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Earnings guard tests
+# ---------------------------------------------------------------------------
+
+NOW_UTC = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+
+
+class TestCheckEarnings:
+    """Unit tests for _check_earnings edge cases."""
+
+    def _mock_info(self, earnings_date):
+        return {"earningsDate": earnings_date}
+
+    def test_no_earnings_date_returns_none(self):
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {}
+            assert _check_earnings("AAPL", NOW_UTC) is None
+
+    def test_earnings_within_14_days_returns_warning(self):
+        upcoming = NOW_UTC + timedelta(days=7)
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"earningsDate": upcoming}
+            result = _check_earnings("AAPL", NOW_UTC)
+            assert result is not None
+            assert "EARNINGS" in result
+            assert "7 day" in result
+
+    def test_earnings_in_past_returns_none(self):
+        past = NOW_UTC - timedelta(days=3)
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"earningsDate": past}
+            assert _check_earnings("AAPL", NOW_UTC) is None
+
+    def test_earnings_more_than_14_days_out_returns_none(self):
+        far_future = NOW_UTC + timedelta(days=30)
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"earningsDate": far_future}
+            assert _check_earnings("AAPL", NOW_UTC) is None
+
+    def test_earnings_as_epoch_int(self):
+        upcoming = NOW_UTC + timedelta(days=5)
+        epoch_ts = int(upcoming.timestamp())
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"earningsDate": epoch_ts}
+            result = _check_earnings("AAPL", NOW_UTC)
+            assert result is not None
+            assert "EARNINGS" in result
+
+    def test_earnings_as_list_uses_first_element(self):
+        upcoming = NOW_UTC + timedelta(days=3)
+        also_upcoming = upcoming + timedelta(days=7)
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"earningsDate": [upcoming, also_upcoming]}
+            result = _check_earnings("AAPL", NOW_UTC)
+            assert result is not None
+            assert "3 day" in result
+
+    def test_yfinance_exception_returns_none(self):
+        with patch(
+            "yfinance.Ticker",
+            side_effect=Exception("Network error"),
+        ):
+            assert _check_earnings("AAPL", NOW_UTC) is None
+
+    def test_naive_datetime_treated_as_utc(self):
+        naive_upcoming = datetime(2026, 7, 3, 12, 0)  # naive, 5 days out
+        with patch("yfinance.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"earningsDate": naive_upcoming}
+            result = _check_earnings("AAPL", NOW_UTC)
+            assert result is not None
+
+
+class TestFetchEarningsWarnings:
+    """Tests for the concurrent batch fetch helper."""
+
+    def test_empty_symbols_returns_empty_dict(self):
+        assert _fetch_earnings_warnings([], NOW_UTC) == {}
+
+    def test_returns_only_symbols_with_warnings(self):
+        def side_effect(symbol, now):
+            return "EARNINGS in 5 day(s) (2026-07-03)" if symbol == "NVDA" else None
+
+        with patch(
+            "volume_price_analysis.agent.morning_agent._check_earnings",
+            side_effect=side_effect,
+        ):
+            result = _fetch_earnings_warnings(["AAPL", "NVDA", "MSFT"], NOW_UTC)
+            assert result == {"NVDA": "EARNINGS in 5 day(s) (2026-07-03)"}
+
+
+# ---------------------------------------------------------------------------
+# Ticker linkify tests
+# ---------------------------------------------------------------------------
+
+
+class TestLinkifyTickers:
+    """Tests for _linkify_tickers in email_sender."""
+
+    def test_wraps_ticker_in_tradingview_link(self):
+        html = "<p><strong>AAPL</strong> looks bullish.</p>"
+        result = _linkify_tickers(html)
+        assert 'href="https://www.tradingview.com/chart/?symbol=AAPL"' in result
+        assert ">AAPL<" in result
+
+    def test_skips_common_words(self):
+        html = "<p>THE stock AND the market.</p>"
+        result = _linkify_tickers(html)
+        assert "THE" in result
+        assert 'symbol=THE"' not in result
+        assert 'symbol=AND"' not in result
+
+    def test_does_not_double_link(self):
+        html = '<p><a href="https://example.com">TSLA</a> is volatile.</p>'
+        result = _linkify_tickers(html)
+        assert result.count("<a ") == 1
+
+    def test_skips_html_tag_content(self):
+        html = '<div CLASS="foo">NVDA is up</div>'
+        result = _linkify_tickers(html)
+        assert 'symbol=CLASS"' not in result
+        assert 'symbol=NVDA"' in result
+
+    def test_5_char_ticker(self):
+        html = "<p>GOOGL broke out.</p>"
+        result = _linkify_tickers(html)
+        assert 'symbol=GOOGL"' in result
+
+    def test_empty_string(self):
+        assert _linkify_tickers("") == ""
