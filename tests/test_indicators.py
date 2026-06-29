@@ -30,6 +30,8 @@ from volume_price_analysis.indicators import (
     composite_adx_period,
     detect_rsi_divergence,
     detect_volume_breakout,
+    find_pivots,
+    rsi_divergence_signal_series,
 )
 
 
@@ -3327,6 +3329,280 @@ class TestDetectVolumeBreakoutSingleRow:
         assert result["direction"] == "none"
         assert result["current_volume"] == 1000
         assert result["signal"] == "No breakout"
+
+
+# --------------------------------------------------------------------------- #
+# Causal pivot-based RSI divergence (HOM-85)
+# --------------------------------------------------------------------------- #
+
+
+def _div_sign(result: dict) -> int:
+    """Map a detect_rsi_divergence result to a signed int (+1/-1/0).
+
+    Mirrors the bullish-priority convention of the detector and the integer
+    encoding produced by rsi_divergence_signal_series.
+    """
+    if result["bullish_divergence"]:
+        return 1
+    if result["bearish_divergence"]:
+        return -1
+    return 0
+
+
+def _ohlc_from_closes(closes: list[float]) -> pd.DataFrame:
+    """Build an OHLCV frame from a close path (High/Low bracket the close)."""
+    n = len(closes)
+    dates = pd.date_range(start="2024-01-01", periods=n, freq="D")
+    return pd.DataFrame(
+        {
+            "Date": dates,
+            "Open": list(closes),
+            "High": [c + 1.0 for c in closes],
+            "Low": [c - 1.0 for c in closes],
+            "Close": closes,
+            "Volume": [1_000_000] * n,
+        }
+    )
+
+
+def _ramp(start: float, end: float, steps: int) -> list[float]:
+    """Inclusive-exclusive linear ramp helper (drops the first point)."""
+    return list(np.linspace(start, end, steps))[1:]
+
+
+def _bullish_divergence_closes() -> list[float]:
+    """Two troughs: trough2 a lower price low but reached more gently (higher RSI low).
+
+    A gentle warm-up rally prefixes the structure so both troughs land outside
+    the RSI warm-up window (where RSI is NaN and no pivot can be compared).
+    """
+    closes = [100.0]
+    closes += _ramp(100, 109, 9)  # gentle warm-up rally (RSI becomes valid)
+    closes += _ramp(109, 92, 7)  # steep decline -> deep trough1 (low RSI)
+    closes += _ramp(92, 104, 5)  # bounce
+    closes += _ramp(104, 90, 10)  # gentle decline -> lower trough2 (higher RSI)
+    closes += _ramp(90, 102, 7)  # recovery (confirms trough2's right window)
+    return closes
+
+
+def _bearish_divergence_closes() -> list[float]:
+    """Two peaks: peak2 a higher price high but reached more gently (lower RSI high)."""
+    closes = [100.0]
+    closes += _ramp(100, 92, 9)  # gentle warm-up dip (RSI becomes valid)
+    closes += _ramp(92, 112, 7)  # steep rally -> peak1 (high RSI)
+    closes += _ramp(112, 100, 5)  # pullback
+    closes += _ramp(100, 114, 10)  # gentle rally -> higher peak2 (lower RSI)
+    closes += _ramp(114, 102, 7)  # pullback (confirms peak2's right window)
+    return closes
+
+
+class TestFindPivots:
+    """Tests for the causal-aware structural pivot detector."""
+
+    def test_finds_clear_highs_and_lows(self):
+        series = pd.Series([1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 5.0, 2.0, 1.0])
+        highs, lows = find_pivots(series, left=2, right=2)
+        assert list(series.index[highs]) == [2, 6]
+        assert list(series.index[lows]) == [4]
+
+    def test_strict_no_pivot_on_plateau(self):
+        # Tie on the right neighbor -> not a strict pivot.
+        series = pd.Series([1.0, 3.0, 3.0, 1.0])
+        highs, lows = find_pivots(series, left=1, right=1)
+        assert not highs.any()
+
+    def test_endpoints_never_pivots_right_window_gate(self):
+        # The last `right` bars can never host a pivot (no room to confirm).
+        series = pd.Series([1.0, 5.0, 1.0, 1.0, 1.0])
+        highs, _ = find_pivots(series, left=1, right=2)
+        # index 1 has only... left ok, right window [2,3] ok -> pivot; but the
+        # final two bars (3,4) can never be pivots regardless of value.
+        assert not highs.iloc[-1]
+        assert not highs.iloc[-2]
+
+    def test_short_series_all_false(self):
+        series = pd.Series([1.0, 2.0, 3.0])
+        highs, lows = find_pivots(series, left=2, right=2)
+        assert not highs.any()
+        assert not lows.any()
+
+    def test_masks_are_bool_series_aligned(self):
+        series = pd.Series([1.0, 2.0, 3.0, 2.0, 1.0], index=[10, 11, 12, 13, 14])
+        highs, lows = find_pivots(series, left=1, right=1)
+        assert isinstance(highs, pd.Series)
+        assert list(highs.index) == [10, 11, 12, 13, 14]
+        assert highs.dtype == bool
+
+
+class TestCausalRSIDivergenceDetection:
+    """Behavioural tests for the pivot-based divergence detector."""
+
+    def test_bullish_divergence_detected(self):
+        data = _ohlc_from_closes(_bullish_divergence_closes())
+        rsi = calculate_rsi(data, period=7)
+        result = detect_rsi_divergence(data, rsi, lookback=14)
+        assert result["bullish_divergence"] is True
+        assert result["bearish_divergence"] is False
+        assert result["divergence_type"] == "bullish"
+        assert result["signal"] == "potential_reversal_up"
+
+    def test_bearish_divergence_detected(self):
+        data = _ohlc_from_closes(_bearish_divergence_closes())
+        rsi = calculate_rsi(data, period=7)
+        result = detect_rsi_divergence(data, rsi, lookback=14)
+        assert result["bearish_divergence"] is True
+        assert result["bullish_divergence"] is False
+        assert result["divergence_type"] == "bearish"
+        assert result["signal"] == "potential_reversal_down"
+
+    def test_explicit_search_window_override(self):
+        # A tiny search window that cannot span both pivots suppresses the signal;
+        # this also exercises the search_window override path.
+        data = _ohlc_from_closes(_bullish_divergence_closes())
+        rsi = calculate_rsi(data, period=7)
+        wide = detect_rsi_divergence(data, rsi, lookback=14, search_window=60)
+        narrow = detect_rsi_divergence(data, rsi, lookback=14, search_window=5)
+        assert wide["bullish_divergence"] is True
+        assert narrow["bullish_divergence"] is False
+
+    def test_smooth_uptrend_no_divergence(self):
+        data = _make_large_uptrend(n=60, step=1.0)
+        rsi = calculate_rsi(data, period=14)
+        result = detect_rsi_divergence(data, rsi, lookback=14)
+        assert result["bullish_divergence"] is False
+        assert result["bearish_divergence"] is False
+        assert result["divergence_type"] == "none"
+
+    def test_insufficient_data_guarded(self):
+        data = _make_large_uptrend(n=10)
+        rsi = calculate_rsi(data, period=5)
+        result = detect_rsi_divergence(data, rsi, lookback=10)
+        assert result["bullish_divergence"] is False
+        assert result["bearish_divergence"] is False
+        assert result["divergence_type"] == "none"
+        assert "Insufficient" in result["interpretation"]
+
+    def test_output_keys_unchanged_mcp_contract(self):
+        # The public dict shape must not change (clients depend on it).
+        data = _ohlc_from_closes(_bullish_divergence_closes())
+        rsi = calculate_rsi(data, period=7)
+        result = detect_rsi_divergence(data, rsi, lookback=14)
+        assert set(result.keys()) == {
+            "bullish_divergence",
+            "bearish_divergence",
+            "divergence_type",
+            "signal",
+            "interpretation",
+            "current_rsi",
+        }
+
+
+class TestRSIDivergenceCausality:
+    """The hard requirement: the detector is strictly causal (no lookahead)."""
+
+    def _long_path(self) -> list[float]:
+        # A path that contains both a bullish and a bearish divergence so the
+        # per-bar signal series has genuine +1 and -1 entries to protect.
+        closes = _bullish_divergence_closes()
+        closes += _ramp(closes[-1], 130, 7)  # rally to peak1
+        closes += _ramp(130, 120, 5)  # pullback
+        closes += _ramp(120, 134, 10)  # gentle rally -> higher peak2 (bearish)
+        closes += _ramp(134, 122, 7)  # pullback confirms peak2
+        return closes
+
+    def test_signal_series_has_both_signs(self):
+        # Sanity guard: the causality test below is only meaningful if the
+        # series actually produces divergence signals to protect.
+        data = _ohlc_from_closes(self._long_path())
+        rsi = calculate_rsi(data, period=7)
+        sig = rsi_divergence_signal_series(data, rsi, lookback=14)
+        assert (sig == 1).any()
+        assert (sig == -1).any()
+
+    def test_per_bar_series_matches_truncated_slice_truth(self):
+        # For every evaluable bar t, the as-of-t value from the full-series
+        # computation must equal the value computed from data sliced to [:t+1]
+        # (which physically cannot see the future). Any lookahead leak diverges.
+        data = _ohlc_from_closes(self._long_path())
+        rsi = calculate_rsi(data, period=7)
+        full = rsi_divergence_signal_series(data, rsi, lookback=14)
+        # Start at the first evaluable bar (lookback + 4) so the warm-up boundary
+        # guard is exercised, not just the interior.
+        for t in range(14 + 4, len(data)):
+            slice_result = detect_rsi_divergence(data.iloc[: t + 1], rsi.iloc[: t + 1], lookback=14)
+            assert full.iloc[t] == _div_sign(slice_result), f"mismatch at bar {t}"
+
+    def test_appending_future_bars_does_not_change_past_signal(self):
+        # The issue's explicit requirement: output at bar t is unchanged when
+        # future bars are appended.
+        data = _ohlc_from_closes(self._long_path())
+        rsi = calculate_rsi(data, period=7)
+        n = len(data)
+        for cut in range(14 + 5, n):  # first slice length that clears the guard
+            past = data.iloc[:cut]
+            rsi_past = rsi.iloc[:cut]
+            asof_now = _div_sign(detect_rsi_divergence(past, rsi_past, lookback=14))
+            # Recompute the SAME bar (cut-1) inside the full series that has all
+            # the future bars appended.
+            asof_full = rsi_divergence_signal_series(data, rsi, lookback=14).iloc[cut - 1]
+            assert asof_now == asof_full, f"future bars changed signal at bar {cut - 1}"
+
+    def test_recent_pivot_not_used_before_right_window_confirms(self):
+        # A structural pivot within `right` bars of the current bar must not be
+        # usable yet: dropping the final confirming bar must not *gain* a signal
+        # that depends on that unconfirmed pivot.
+        data = _ohlc_from_closes(_bullish_divergence_closes())
+        rsi = calculate_rsi(data, period=7)
+        # Find the first bar at which the bullish signal appears.
+        sig = rsi_divergence_signal_series(data, rsi, lookback=14)
+        first_fire = next((i for i, v in enumerate(sig) if v == 1), None)
+        assert first_fire is not None
+        # One bar earlier the signal must not yet be firing on that same pivot
+        # (its right-side confirmation bar had not printed).
+        earlier = detect_rsi_divergence(data.iloc[:first_fire], rsi.iloc[:first_fire], lookback=14)
+        assert _div_sign(earlier) != 1
+
+    def test_signal_series_short_data_is_all_zero(self):
+        # Below the lookback + 5 history gate the per-bar series is all zeros.
+        data = _make_large_uptrend(n=12)
+        rsi = calculate_rsi(data, period=5)
+        sig = rsi_divergence_signal_series(data, rsi, lookback=14)
+        assert len(sig) == len(data)
+        assert (sig == 0).all()
+
+    def test_output_flags_mutually_exclusive(self):
+        # The two boolean flags must never both be True (internal consistency),
+        # regardless of input, and must agree with divergence_type.
+        for closes in (_bullish_divergence_closes(), _bearish_divergence_closes()):
+            data = _ohlc_from_closes(closes)
+            rsi = calculate_rsi(data, period=7)
+            result = detect_rsi_divergence(data, rsi, lookback=14)
+            assert not (result["bullish_divergence"] and result["bearish_divergence"])
+            if result["divergence_type"] == "bullish":
+                assert result["bullish_divergence"] and not result["bearish_divergence"]
+            elif result["divergence_type"] == "bearish":
+                assert result["bearish_divergence"] and not result["bullish_divergence"]
+
+
+class TestFindPivotsEdgeCases:
+    """Edge-case coverage for the structural pivot detector."""
+
+    def test_interior_nan_window_skipped(self):
+        # A NaN anywhere in a candidate's window must skip it (no crash, no pivot).
+        series = pd.Series([1.0, 2.0, 5.0, 2.0, np.nan, 2.0, 6.0, 2.0, 1.0])
+        highs, lows = find_pivots(series, left=2, right=2)
+        # The peak at idx 2 has idx 4 (NaN) in its right window -> skipped.
+        assert not highs.iloc[2]
+        # The peak at idx 6 has idx 4 (NaN) in its left window -> skipped.
+        assert not highs.iloc[6]
+        # Function returns aligned bool Series without raising.
+        assert highs.dtype == bool and lows.dtype == bool
+
+    def test_pivot_window_below_one_yields_no_pivots(self):
+        series = pd.Series([1.0, 5.0, 1.0, 5.0, 1.0])
+        highs, lows = find_pivots(series, left=0, right=0)
+        assert not highs.any()
+        assert not lows.any()
 
 
 class TestIndicatorEdgeCaseHardening:
