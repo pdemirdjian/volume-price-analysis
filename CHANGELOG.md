@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.6.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.32...v2.6.0) (2026-06-29)
+
+
+### Features
+
+* briefing signal-to-noise projection + additive MCP response headline (HOM-50) ([#326](https://github.com/pdemirdjian/volume-price-analysis/issues/326)) ([a40a219](https://github.com/pdemirdjian/volume-price-analysis/commit/a40a219fac95cee759072568b7a1e13149489e39))
+* ground briefing output and flag hallucinated tickers (HOM-45) ([#323](https://github.com/pdemirdjian/volume-price-analysis/issues/323)) ([4424beb](https://github.com/pdemirdjian/volume-price-analysis/commit/4424bebce814e580eac3761449509379f1361a3e))
+* label volatility as HV proxy and add scan skipped/errors diagnostics (HOM-39) ([#320](https://github.com/pdemirdjian/volume-price-analysis/issues/320)) ([03e491f](https://github.com/pdemirdjian/volume-price-analysis/commit/03e491f7b0ad105756a33225541fb938e826c82e))
+* strictly-causal backtest / evidence harness (HOM-40) ([#321](https://github.com/pdemirdjian/volume-price-analysis/issues/321)) ([3399518](https://github.com/pdemirdjian/volume-price-analysis/commit/339951827aeaacc63bee831bc70de58582afed1d))
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=0.111.0 ([#329](https://github.com/pdemirdjian/volume-price-analysis/issues/329)) ([46db124](https://github.com/pdemirdjian/volume-price-analysis/commit/46db1243dba36638843c51c5fd9b167fa5d2a38a))
+* **deps:** update dependency anthropic to ~=0.112.0 ([#335](https://github.com/pdemirdjian/volume-price-analysis/issues/335)) ([08d49dd](https://github.com/pdemirdjian/volume-price-analysis/commit/08d49dd5a7a99d3f5e65450906c370fd310c8d8e))
+* **deps:** update dependency google-genai to ~=2.10.0 ([#334](https://github.com/pdemirdjian/volume-price-analysis/issues/334)) ([b99cbca](https://github.com/pdemirdjian/volume-price-analysis/commit/b99cbca884878458a6be92d8d99f9fd371378619))
+* **deps:** update dependency google-genai to ~=2.9.0 ([#330](https://github.com/pdemirdjian/volume-price-analysis/issues/330)) ([b95c7bb](https://github.com/pdemirdjian/volume-price-analysis/commit/b95c7bb41a93defc6246ba1bd018e793c45da185))
+* **deps:** update dependency numpy to v2.5.0 ([#333](https://github.com/pdemirdjian/volume-price-analysis/issues/333)) ([9df1cd3](https://github.com/pdemirdjian/volume-price-analysis/commit/9df1cd3e53b3bdd1c733314c349266cb7f78a50e))
+* guard enhanced_volume_profile against empty-frame IndexError ([#319](https://github.com/pdemirdjian/volume-price-analysis/issues/319)) ([e237fca](https://github.com/pdemirdjian/volume-price-analysis/commit/e237fcad439dbef0d9a59b16411dde9887d33a32))
+* harden indicator edge cases (HOM-37) ([#318](https://github.com/pdemirdjian/volume-price-analysis/issues/318)) ([45c0564](https://github.com/pdemirdjian/volume-price-analysis/commit/45c05642b8538c9f0f28a1373243dc4e085fbe04))
+* make scan ADX coherent with the composite score's adaptive ADX ([#325](https://github.com/pdemirdjian/volume-price-analysis/issues/325)) ([a4c7e55](https://github.com/pdemirdjian/volume-price-analysis/commit/a4c7e554be2b59512011bdffc516b56d3fa7cc49))
+
 ## [2.5.32](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.31...v2.5.32) (2026-06-20)
 
 
