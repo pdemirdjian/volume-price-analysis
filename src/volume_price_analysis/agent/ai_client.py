@@ -7,6 +7,7 @@ Supports multiple providers via the AI_PROVIDER environment variable:
 
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,13 @@ You are a professional options trading analyst writing a morning briefing email.
 
 Your audience is an experienced options trader who wants actionable intelligence,
 not generic advice. Be specific about symbols, scores, levels, and strategies.
+
+GROUNDING (CRITICAL): Use ONLY the tickers, prices, composite scores, key levels,
+and indicator readings that appear in the data provided below. Every ticker symbol
+you name MUST come from the scan results or deep-analysis data. Never invent,
+guess, infer, or substitute a symbol, price, or level that is not present in the
+input. If the data does not contain something, say so plainly instead of filling
+the gap. Do not add tickers from memory or general market knowledge.
 
 IMPORTANT: All analysis is optimized for a **14-day holding period**. Indicator
 periods, expected moves, and strategy suggestions are calibrated for this
@@ -53,6 +61,224 @@ _TRUNCATION_WARNING = (
     "Some candidates or sections may be missing.**"
 )
 
+# Uppercase tokens that look like tickers but are domain acronyms or common
+# words. Used to keep the anti-hallucination check high-precision (few false
+# positives) so its warnings stay meaningful. This is a best-effort denylist for
+# a logging guard, not a security boundary — a token here is simply never flagged
+# as a hallucinated ticker, even if some entries (e.g. "DD", "IPO") happen to
+# collide with real symbols.
+_NON_TICKER_TOKENS: frozenset[str] = frozenset(
+    {
+        # Indicator / options acronyms emitted throughout the analysis output.
+        "ADX",
+        "RSI",
+        "VWAP",
+        "VWMA",
+        "OBV",
+        "MFI",
+        "CMF",
+        "ATR",
+        "POC",
+        "VAH",
+        "VAL",
+        "IV",
+        "HV",
+        "DTE",
+        "ROC",
+        "VPT",
+        "DI",
+        "EMA",
+        "SMA",
+        "MACD",
+        "ATM",
+        "OTM",
+        "ITM",
+        "PCR",
+        "BB",
+        "STD",
+        "EM",
+        "ADL",
+        "OI",
+        # Direction / strategy / emphasis words the model may capitalize.
+        "BULLISH",
+        "BEARISH",
+        "NEUTRAL",
+        "STRONG",
+        "WEAK",
+        "HIGH",
+        "LOW",
+        "NO",
+        "YES",
+        "TREND",
+        "EXTREME",
+        "VOLUME",
+        "BREAKOUT",
+        "SQUEEZE",
+        "EXPECTED",
+        "MOVE",
+        "WARNING",
+        "URGENT",
+        "BUY",
+        "SELL",
+        "HOLD",
+        "LONG",
+        "SHORT",
+        "CALL",
+        "CALLS",
+        "PUT",
+        "PUTS",
+        "RISK",
+        "ALERT",
+        "WATCH",
+        "NOTE",
+        "KEY",
+        "TARGET",
+        "ENTRY",
+        "EXIT",
+        "STOP",
+        "GAIN",
+        "LOSS",
+        # Generic English / market abbreviations.
+        "A",
+        "I",
+        "AN",
+        "THE",
+        "AND",
+        "OR",
+        "IF",
+        "IS",
+        "IT",
+        "TO",
+        "IN",
+        "ON",
+        "AT",
+        "BY",
+        "OF",
+        "AS",
+        "BE",
+        "US",
+        "USD",
+        "ETF",
+        "ETFS",
+        "AI",
+        "PM",
+        "AM",
+        "EST",
+        "EDT",
+        "PST",
+        "PDT",
+        "UTC",
+        "GMT",
+        "EOD",
+        "EPS",
+        "PE",
+        "YOY",
+        "QOQ",
+        "FY",
+        "Q",
+        "S",
+        "P",
+        "E",
+        "R",
+        "U",
+        "N",
+        "OK",
+        "NA",
+        "TBD",
+        "FAQ",
+        "CEO",
+        "CFO",
+        "FOMC",
+        "FED",
+        "GDP",
+        "CPI",
+        "DAY",
+        "DAYS",
+        "WEEK",
+        "VS",
+        "VIA",
+        "PER",
+        "MAX",
+        "MIN",
+        "AVG",
+        "ETC",
+        "ROI",
+        "SEC",
+        "IPO",
+        "ATH",
+        "YTD",
+        "EV",
+        "ER",
+        "PT",
+        "SL",
+        "TP",
+        "DD",
+    }
+)
+
+# Matches a ticker-shaped token: an optional "$" cashtag, 1-5 uppercase letters,
+# and an optional class-share suffix (e.g. BRK.B / BRK-B). Lookarounds prevent
+# matching letters embedded in mixed-case words (e.g. the "P" in "iPhone").
+_TICKER_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9.])(\$?)([A-Z]{1,5})(?:[.\-]([A-Z]{1,2}))?(?![A-Za-z0-9])"
+)
+
+
+def _normalize_symbol(symbol: str) -> str:
+    """Uppercase and strip class-share separators for comparison (BRK.B -> BRKB)."""
+    return re.sub(r"[^A-Z]", "", symbol.upper())
+
+
+def _collect_input_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str]:
+    """Collect every ticker symbol present anywhere in the scan/analysis input.
+
+    Includes scan candidates (high-conviction / bullish / bearish) and symbols
+    the scan attempted but errored on, plus every deep-analysis symbol. A symbol
+    the scan reported on is *grounded*: naming it is not a hallucination.
+    """
+    symbols: set[str] = set()
+    for key in ("high_conviction_setups", "top_bullish", "top_bearish", "errors"):
+        for entry in scan_results.get(key, []) or []:
+            if isinstance(entry, dict) and entry.get("symbol"):
+                symbols.add(_normalize_symbol(str(entry["symbol"])))
+    for analysis in deep_analyses or []:
+        if isinstance(analysis, dict) and analysis.get("symbol"):
+            symbols.add(_normalize_symbol(str(analysis["symbol"])))
+    symbols.discard("")
+    return symbols
+
+
+def find_ungrounded_tickers(
+    briefing: str, scan_results: dict, deep_analyses: list[dict]
+) -> list[str]:
+    """Return ticker-like tokens in the briefing that are absent from the input.
+
+    Best-effort, high-precision heuristic backing the briefing anti-hallucination
+    guardrail: it extracts cashtags and uppercase ticker-shaped tokens, drops
+    known indicator/acronym/common words, and flags anything left that does not
+    appear in the scan or deep-analysis symbols. Bare single-letter tokens are
+    ignored (too noisy, e.g. "Plan B") unless written as an explicit cashtag.
+
+    The result is a sorted, de-duplicated list of the offending tokens, suitable
+    for logging. It is intentionally conservative: it favors missing a borderline
+    case over emitting a false alarm.
+    """
+    allowed = _collect_input_symbols(scan_results, deep_analyses)
+    ungrounded: set[str] = set()
+    for match in _TICKER_PATTERN.finditer(briefing or ""):
+        cashtag, core, suffix = match.group(1), match.group(2), match.group(3)
+        token = core + (suffix or "")
+        # Bare single letters ("A", "B", "F") are too noisy to treat as tickers.
+        if not cashtag and len(token) == 1:
+            continue
+        # Skip known non-ticker acronyms/words unless explicitly cashtagged.
+        if not cashtag and core in _NON_TICKER_TOKENS:
+            continue
+        normalized = _normalize_symbol(token)
+        if normalized and normalized not in allowed:
+            ungrounded.add(token)
+    return sorted(ungrounded)
+
 
 def generate_briefing(
     scan_results: dict,
@@ -80,26 +306,174 @@ def generate_briefing(
     user_content = _build_user_message(scan_results, deep_analyses)
 
     if provider == "anthropic":
-        return _generate_anthropic(user_content, model, api_key)
+        briefing = _generate_anthropic(user_content, model, api_key)
     elif provider == "gemini":
-        return _generate_gemini(user_content, model, api_key)
+        briefing = _generate_gemini(user_content, model, api_key)
     else:
         msg = f"Unknown AI provider: {provider!r}. Use 'gemini' or 'anthropic'."
         raise ValueError(msg)
 
+    # Anti-hallucination guardrail: every ticker named in the briefing should
+    # exist in the scan/analysis data we passed to the model. Log (don't block)
+    # any that don't so grounding regressions are visible in the run logs.
+    ungrounded = find_ungrounded_tickers(briefing, scan_results, deep_analyses)
+    if ungrounded:
+        logger.warning(
+            "Briefing references %d ticker(s) absent from scan/analysis data "
+            "(possible hallucination): %s",
+            len(ungrounded),
+            ", ".join(ungrounded),
+        )
+
+    return briefing
+
+
+# Curated scan-result keys passed to the model. The candidate setups are already
+# compact dicts from analyze_single_symbol; the raw per-symbol `errors` list is
+# intentionally excluded (the count is preserved in `summary`).
+_SCAN_PROJECTION_KEYS = (
+    "scan_parameters",
+    "summary",
+    "high_conviction_setups",
+    "top_bullish",
+    "top_bearish",
+)
+
+
+def _project_scan_results(scan_results: dict) -> dict:
+    """Project scan results down to the high-signal fields a briefing needs.
+
+    Keeps scan parameters, summary stats, and the already-compact candidate
+    setups; drops the verbose raw per-symbol error list (its count lives in
+    ``summary``). Missing keys are simply omitted so sparse inputs are safe.
+    """
+    return {key: scan_results[key] for key in _SCAN_PROJECTION_KEYS if key in scan_results}
+
+
+def _as_dict(value: object) -> dict:
+    """Return ``value`` if it is a dict, else an empty dict.
+
+    Guards the nested ``.get()`` chains below against malformed inputs where a
+    section is present but holds a non-dict value (so the projection degrades
+    gracefully instead of raising AttributeError).
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _project_deep_analysis(analysis: dict) -> dict:
+    """Project a full options-analysis dict to its briefing-relevant essentials.
+
+    ``run_options_analysis`` returns a deeply nested object (score breakdowns,
+    raw indicator magnitudes, tuning parameters). Dumping several of these blows
+    past the model's output budget and buries the signal. This keeps the headline
+    call, key trend/volatility readings, support/resistance levels, interpreted
+    volume signals, and the human-readable insights — dropping raw magnitudes and
+    internal tuning. Defensive against sparse or malformed inputs (e.g. fallback/
+    test dicts where a section is missing or holds a non-dict value).
+    """
+    projected: dict = {"symbol": analysis.get("symbol", "Unknown")}
+    if "latest_price" in analysis:
+        projected["latest_price"] = analysis["latest_price"]
+
+    headline = analysis.get("headline")
+    if headline:
+        projected["headline"] = headline
+
+    composite = analysis.get("composite_signal")
+    if isinstance(composite, dict):
+        projected["composite"] = {
+            "score": composite.get("score"),
+            "recommendation": composite.get("recommendation"),
+            "signal_quality": composite.get("signal_quality"),
+            "action": composite.get("action"),
+        }
+
+    trend = analysis.get("trend_analysis")
+    if isinstance(trend, dict):
+        adx = _as_dict(trend.get("adx"))
+        rsi = _as_dict(trend.get("rsi"))
+        projected["trend"] = {
+            "adx": adx.get("value"),
+            "trend_strength": adx.get("trend_strength"),
+            "trend_direction": adx.get("trend_direction"),
+            "rsi": rsi.get("value"),
+            "rsi_condition": rsi.get("condition"),
+            "rsi_divergence": rsi.get("divergence_type"),
+        }
+
+    volatility = analysis.get("volatility_analysis")
+    if isinstance(volatility, dict):
+        proxy = _as_dict(volatility.get("iv_percentile_proxy"))
+        move = _as_dict(volatility.get("expected_move"))
+        atr = _as_dict(volatility.get("atr"))
+        bbands = _as_dict(volatility.get("bollinger_bands"))
+        projected["volatility"] = {
+            "hv_percentile": proxy.get("hv_percentile", proxy.get("percentile")),
+            "hv_implication": proxy.get("options_implication"),
+            "expected_move_pct": move.get("percent"),
+            "upper_target": move.get("upper_target"),
+            "lower_target": move.get("lower_target"),
+            "atr_daily_range": atr.get("daily_range"),
+            "stop_loss": atr.get("stop_loss_suggestion"),
+            "bollinger_position": bbands.get("position"),
+            "squeeze": bbands.get("squeeze_detected"),
+        }
+
+    profile = analysis.get("volume_profile")
+    if isinstance(profile, dict):
+        projected["key_levels"] = {
+            "point_of_control": profile.get("point_of_control"),
+            "value_area_high": profile.get("value_area_high"),
+            "value_area_low": profile.get("value_area_low"),
+            "current_position": profile.get("current_position"),
+        }
+
+    volume = analysis.get("volume_indicators")
+    if isinstance(volume, dict):
+        obv = _as_dict(volume.get("obv"))
+        ad = _as_dict(volume.get("accumulation_distribution"))
+        mfi = _as_dict(volume.get("mfi"))
+        cmf = _as_dict(volume.get("cmf"))
+        rvol = _as_dict(volume.get("relative_volume"))
+        breakout = _as_dict(volume.get("volume_breakout"))
+        projected["volume_signals"] = {
+            "obv_trend": obv.get("trend"),
+            "ad_signal": ad.get("signal"),
+            "mfi_condition": mfi.get("condition"),
+            "cmf_signal": cmf.get("signal"),
+            "rvol": rvol.get("current_rvol"),
+            "volume_breakout": breakout.get("is_breakout"),
+        }
+
+    insights = analysis.get("options_insights")
+    if insights:
+        projected["insights"] = insights
+
+    return projected
+
 
 def _build_user_message(scan_results: dict, deep_analyses: list[dict]) -> str:
-    """Build the user message with structured data for the AI."""
-    user_content = "Generate a morning options trading briefing from this data:\n\n"
+    """Build the user message with a curated, high-signal projection of the data.
+
+    Rather than dumping the full raw scan/analysis JSON (noisy and prone to
+    truncation against the model's output cap), this projects each section to the
+    fields a briefing needs. Every emitted ticker/level still comes straight from
+    the scan/analysis data, so the model stays grounded in real inputs.
+    """
+    projected_scan = _project_scan_results(scan_results)
+
+    user_content = "Generate a morning options trading briefing from this data.\n"
+    user_content += "Base the briefing only on the curated data below.\n\n"
     user_content += "## Scan Results\n"
-    user_content += f"```json\n{json.dumps(scan_results, indent=2, default=str)}\n```\n\n"
+    user_content += f"```json\n{json.dumps(projected_scan, indent=2, default=str)}\n```\n\n"
 
     if deep_analyses:
         user_content += "## Deep Analysis (Top Candidates)\n"
         for analysis in deep_analyses:
-            symbol = analysis.get("symbol", "Unknown")
+            projected = _project_deep_analysis(analysis)
+            symbol = projected.get("symbol", "Unknown")
             user_content += f"### {symbol}\n"
-            user_content += f"```json\n{json.dumps(analysis, indent=2, default=str)}\n```\n\n"
+            user_content += f"```json\n{json.dumps(projected, indent=2, default=str)}\n```\n\n"
 
     return user_content
 

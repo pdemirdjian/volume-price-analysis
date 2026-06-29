@@ -30,6 +30,7 @@ from .indicators import (
     calculate_vpt,
     calculate_vwap,
     calculate_vwma,
+    composite_adx_period,
     detect_volume_breakout,
 )
 
@@ -143,6 +144,95 @@ UNIVERSES: dict[str, list[str]] = {
 }
 UNIVERSES["full_market"] = sorted(set(UNIVERSES["sp500"] + UNIVERSES["etfs"]))
 
+# Human-readable labels for composite-score recommendation values.
+_RECOMMENDATION_LABELS = {
+    "strong_bullish": "Strong bullish",
+    "bullish": "Bullish",
+    "neutral": "Neutral",
+    "bearish": "Bearish",
+    "strong_bearish": "Strong bearish",
+}
+
+# Maps composite score_breakdown keys to short labels used in the headline
+# rationale. Only signals present here are named, so the rationale never invents
+# a driver that the composite did not actually score.
+_DRIVER_LABELS = {
+    "price_vs_vwap": "price vs VWAP",
+    "price_vs_vwma": "price vs VWMA",
+    "obv_momentum": "OBV momentum",
+    "ad_momentum": "A/D line",
+    "mfi": "MFI",
+    "cmf": "CMF",
+    "rsi": "RSI",
+    "rsi_divergence": "RSI divergence",
+    "adx_direction": "ADX trend",
+    "volume_breakout": "volume breakout",
+}
+
+# Below this absolute composite score the call is treated as directionally
+# neutral (matches the +/-2 recommendation boundary in calculate_composite_score).
+_NEUTRAL_SCORE_BAND = 2.0
+
+
+def _build_rationale(score: float, label: str, signal_quality: str, breakdown: dict) -> str:
+    """Compose a one-line, data-grounded rationale for the headline.
+
+    Names the strongest score_breakdown components that point the same direction
+    as the overall score. Only signals actually present in the breakdown are
+    cited, so the sentence stays faithful to the underlying scoring.
+    """
+    if abs(score) < _NEUTRAL_SCORE_BAND:
+        return f"{label} (score {score:+.1f}/10): mixed signals, no clear directional edge."
+
+    direction = "bullish" if score > 0 else "bearish"
+    sign = 1 if score > 0 else -1
+    aligned = [
+        (key, value)
+        for key, value in breakdown.items()
+        if key in _DRIVER_LABELS and value * sign > 0
+    ]
+    # Strongest contributors first; stable label-order tiebreak for determinism.
+    aligned.sort(key=lambda kv: (-abs(kv[1]), kv[0]))
+    drivers = [_DRIVER_LABELS[key] for key, _ in aligned[:3]]
+
+    if drivers:
+        return (
+            f"{label} (score {score:+.1f}/10, {signal_quality} conviction): "
+            f"{', '.join(drivers)} aligned {direction}."
+        )
+    return (
+        f"{label} (score {score:+.1f}/10, {signal_quality} conviction): "
+        f"driven by aggregate volume-price signals."
+    )
+
+
+def build_headline(composite: dict) -> dict:
+    """Build a compact top-line headline from a composite-score result.
+
+    Additive summary for MCP tool responses (comprehensive_analysis,
+    options_analysis) and the briefing projection. Surfaces the recommendation,
+    score, signal quality, and a single grounded rationale sentence so a consumer
+    gets the bottom line without parsing the full nested analysis.
+
+    Args:
+        composite: The dict returned by ``calculate_composite_score``.
+
+    Returns:
+        ``{recommendation, composite_score, signal_quality, rationale}``.
+    """
+    score = float(composite.get("composite_score", 0.0))
+    recommendation = composite.get("recommendation", "neutral")
+    signal_quality = composite.get("signal_quality", "low")
+    label = _RECOMMENDATION_LABELS.get(recommendation, recommendation.replace("_", " ").title())
+    breakdown = composite.get("score_breakdown") or {}
+
+    return {
+        "recommendation": recommendation,
+        "composite_score": round(score, 2),
+        "signal_quality": signal_quality,
+        "rationale": _build_rationale(score, label, signal_quality, breakdown),
+    }
+
 
 def analyze_single_symbol(
     symbol: str,
@@ -166,14 +256,17 @@ def analyze_single_symbol(
 
     # Calculate composite score and key indicators
     composite = calculate_composite_score(sym_data, holding_period)
-    adx_data = calculate_adx(sym_data, 14)
+    # Reuse the ADX the composite already computed (adaptive to holding_period) so the
+    # reported adx, the min_adx filter, and signal_quality all reference the same value
+    # instead of a separate, fixed-period ADX(14). See HOM-48.
+    adx_summary = composite["adx_summary"]
     iv_pct_data = calculate_iv_percentile(sym_data, 20)
     expected_move = calculate_expected_move(sym_data, holding_period, 20)
     rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
     rvol = calculate_relative_volume(sym_data, 20)
 
     score = composite["composite_score"]
-    adx = adx_data["adx"]
+    adx = adx_summary["adx"]
     iv_pct = iv_pct_data["iv_percentile"]
 
     # Apply filters
@@ -197,8 +290,9 @@ def analyze_single_symbol(
         "recommendation": composite["recommendation"],
         "signal_quality": composite["signal_quality"],
         "adx": round(adx, 1),
-        "trend_strength": adx_data["trend_strength"],
-        "trend_direction": adx_data["trend_direction"],
+        "adx_period": adx_summary["period"],
+        "trend_strength": adx_summary["trend_strength"],
+        "trend_direction": adx_summary["trend_direction"],
         "rsi": round(rsi_data["rsi"], 1),
         "rsi_divergence": rsi_data["divergence_type"],
         # iv_percentile kept for backward compat; hv_percentile is the honest name
@@ -363,7 +457,10 @@ async def run_scan(
     bullish = [c for c in candidates if c["composite_score"] >= 0]
     bearish = [c for c in candidates if c["composite_score"] < 0]
 
-    # Find highest conviction setups
+    # Find highest conviction setups. NOTE: c["adx"] is the composite's adaptive-period
+    # ADX (ADX(10) for holding_period<=14, else ADX(14)) -- coherent with min_adx and
+    # signal_quality. The 28 gate is read against that period; adx_period is reported in
+    # scan_parameters so clients can interpret it. See HOM-48.
     high_conviction = [
         c
         for c in candidates
@@ -380,6 +477,9 @@ async def run_scan(
             "min_adx": min_adx,
             "max_iv_percentile": max_iv_percentile,
             "direction_filter": direction,
+            # ADX lookback backing the reported `adx`, the min_adx filter, and the
+            # high_conviction gate -- adaptive to holding_period (HOM-48).
+            "adx_period": composite_adx_period(holding_period),
             # iv_percentile / hv_percentile are an HV-based proxy, not options
             # implied volatility. See indicators.calculate_iv_percentile.
             "volatility_basis": "historical_volatility",
@@ -579,6 +679,8 @@ def run_options_analysis(
         "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
         "period": f"{start_dt} to {end_dt}",
         "latest_price": float(latest_close),
+        # Additive top-line summary (recommendation/score/1-line rationale).
+        "headline": build_headline(composite),
         "parameters": {
             "holding_period": holding_period,
             "days_to_expiration": days_to_expiration,
