@@ -143,6 +143,95 @@ UNIVERSES: dict[str, list[str]] = {
 }
 UNIVERSES["full_market"] = sorted(set(UNIVERSES["sp500"] + UNIVERSES["etfs"]))
 
+# Human-readable labels for composite-score recommendation values.
+_RECOMMENDATION_LABELS = {
+    "strong_bullish": "Strong bullish",
+    "bullish": "Bullish",
+    "neutral": "Neutral",
+    "bearish": "Bearish",
+    "strong_bearish": "Strong bearish",
+}
+
+# Maps composite score_breakdown keys to short labels used in the headline
+# rationale. Only signals present here are named, so the rationale never invents
+# a driver that the composite did not actually score.
+_DRIVER_LABELS = {
+    "price_vs_vwap": "price vs VWAP",
+    "price_vs_vwma": "price vs VWMA",
+    "obv_momentum": "OBV momentum",
+    "ad_momentum": "A/D line",
+    "mfi": "MFI",
+    "cmf": "CMF",
+    "rsi": "RSI",
+    "rsi_divergence": "RSI divergence",
+    "adx_direction": "ADX trend",
+    "volume_breakout": "volume breakout",
+}
+
+# Below this absolute composite score the call is treated as directionally
+# neutral (matches the +/-2 recommendation boundary in calculate_composite_score).
+_NEUTRAL_SCORE_BAND = 2.0
+
+
+def _build_rationale(score: float, label: str, signal_quality: str, breakdown: dict) -> str:
+    """Compose a one-line, data-grounded rationale for the headline.
+
+    Names the strongest score_breakdown components that point the same direction
+    as the overall score. Only signals actually present in the breakdown are
+    cited, so the sentence stays faithful to the underlying scoring.
+    """
+    if abs(score) < _NEUTRAL_SCORE_BAND:
+        return f"{label} (score {score:+.1f}/10): mixed signals, no clear directional edge."
+
+    direction = "bullish" if score > 0 else "bearish"
+    sign = 1 if score > 0 else -1
+    aligned = [
+        (key, value)
+        for key, value in breakdown.items()
+        if key in _DRIVER_LABELS and value * sign > 0
+    ]
+    # Strongest contributors first; stable label-order tiebreak for determinism.
+    aligned.sort(key=lambda kv: (-abs(kv[1]), kv[0]))
+    drivers = [_DRIVER_LABELS[key] for key, _ in aligned[:3]]
+
+    if drivers:
+        return (
+            f"{label} (score {score:+.1f}/10, {signal_quality} conviction): "
+            f"{', '.join(drivers)} aligned {direction}."
+        )
+    return (
+        f"{label} (score {score:+.1f}/10, {signal_quality} conviction): "
+        f"driven by aggregate volume-price signals."
+    )
+
+
+def build_headline(composite: dict) -> dict:
+    """Build a compact top-line headline from a composite-score result.
+
+    Additive summary for MCP tool responses (comprehensive_analysis,
+    options_analysis) and the briefing projection. Surfaces the recommendation,
+    score, signal quality, and a single grounded rationale sentence so a consumer
+    gets the bottom line without parsing the full nested analysis.
+
+    Args:
+        composite: The dict returned by ``calculate_composite_score``.
+
+    Returns:
+        ``{recommendation, composite_score, signal_quality, rationale}``.
+    """
+    score = float(composite.get("composite_score", 0.0))
+    recommendation = composite.get("recommendation", "neutral")
+    signal_quality = composite.get("signal_quality", "low")
+    label = _RECOMMENDATION_LABELS.get(recommendation, recommendation.replace("_", " ").title())
+    breakdown = composite.get("score_breakdown") or {}
+
+    return {
+        "recommendation": recommendation,
+        "composite_score": round(score, 2),
+        "signal_quality": signal_quality,
+        "rationale": _build_rationale(score, label, signal_quality, breakdown),
+    }
+
 
 def analyze_single_symbol(
     symbol: str,
@@ -579,6 +668,8 @@ def run_options_analysis(
         "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
         "period": f"{start_dt} to {end_dt}",
         "latest_price": float(latest_close),
+        # Additive top-line summary (recommendation/score/1-line rationale).
+        "headline": build_headline(composite),
         "parameters": {
             "holding_period": holding_period,
             "days_to_expiration": days_to_expiration,

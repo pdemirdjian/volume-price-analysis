@@ -7,6 +7,7 @@ from volume_price_analysis.analysis import (
     InsufficientDataError,
     _build_sp500_symbols,
     analyze_single_symbol,
+    build_headline,
     run_options_analysis,
     run_scan,
 )
@@ -84,6 +85,20 @@ class TestRunOptionsAnalysis:
         assert "recommendation" in signal
         assert "action" in signal
         assert -10 <= signal["score"] <= 10
+
+    def test_includes_headline(self, sample_stock_data):
+        """Additive top-line headline summarises the composite call (O4)."""
+        result = run_options_analysis("TEST", sample_stock_data)
+        headline = result["headline"]
+        assert set(headline) == {
+            "recommendation",
+            "composite_score",
+            "signal_quality",
+            "rationale",
+        }
+        # Headline must agree with the detailed composite_signal it summarises.
+        assert headline["recommendation"] == result["composite_signal"]["recommendation"]
+        assert headline["composite_score"] == round(result["composite_signal"]["score"], 2)
 
     def test_adaptive_periods_short(self, sample_stock_data):
         result = run_options_analysis("TEST", sample_stock_data, holding_period=14)
@@ -479,3 +494,78 @@ class TestRunScan:
 
         with pytest.raises(ValueError, match="timed out"):
             await run_scan(symbols=["AAPL"])
+
+
+class TestBuildHeadline:
+    """Test the additive top-line headline derived from a composite-score result."""
+
+    def _composite(self, score, recommendation, quality, breakdown):
+        return {
+            "composite_score": score,
+            "recommendation": recommendation,
+            "signal_quality": quality,
+            "quality_note": "note",
+            "score_breakdown": breakdown,
+        }
+
+    def test_returns_expected_keys(self):
+        composite = self._composite(
+            6.0, "strong_bullish", "high", {"price_vs_vwap": 2, "obv_momentum": 2}
+        )
+        headline = build_headline(composite)
+        assert set(headline) == {
+            "recommendation",
+            "composite_score",
+            "signal_quality",
+            "rationale",
+        }
+        assert headline["recommendation"] == "strong_bullish"
+        assert headline["composite_score"] == 6.0
+        assert headline["signal_quality"] == "high"
+
+    def test_bullish_rationale_names_aligned_drivers(self):
+        composite = self._composite(
+            4.0,
+            "bullish",
+            "high",
+            {"price_vs_vwap": 2, "obv_momentum": 2, "rsi": -1, "cmf": 0},
+        )
+        rationale = build_headline(composite)["rationale"]
+        assert "bullish" in rationale.lower()
+        # Strongest positive drivers should be named; negative ones excluded.
+        assert "VWAP" in rationale
+        assert "OBV" in rationale
+        assert "RSI" not in rationale
+
+    def test_bearish_rationale_names_aligned_drivers(self):
+        composite = self._composite(
+            -5.0,
+            "strong_bearish",
+            "high",
+            {"price_vs_vwap": -2, "rsi": -2, "mfi": -1, "obv_momentum": 1},
+        )
+        rationale = build_headline(composite)["rationale"]
+        assert "bearish" in rationale.lower()
+        assert "RSI" in rationale
+        # A bullish-signed driver must not be cited for a bearish call.
+        assert "OBV" not in rationale
+
+    def test_neutral_rationale_flags_no_edge(self):
+        composite = self._composite(0.7, "neutral", "low", {"price_vs_vwap": 1, "rsi": -1})
+        rationale = build_headline(composite)["rationale"]
+        assert "no clear" in rationale.lower() or "mixed" in rationale.lower()
+
+    def test_rounds_score(self):
+        composite = self._composite(4.66667, "bullish", "medium", {"price_vs_vwap": 2})
+        assert build_headline(composite)["composite_score"] == 4.67
+
+    def test_handles_missing_breakdown(self):
+        composite = {
+            "composite_score": 3.0,
+            "recommendation": "bullish",
+            "signal_quality": "medium",
+        }
+        headline = build_headline(composite)
+        assert headline["recommendation"] == "bullish"
+        assert isinstance(headline["rationale"], str)
+        assert headline["rationale"]

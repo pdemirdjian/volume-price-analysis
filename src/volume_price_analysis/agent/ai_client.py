@@ -328,18 +328,152 @@ def generate_briefing(
     return briefing
 
 
+# Curated scan-result keys passed to the model. The candidate setups are already
+# compact dicts from analyze_single_symbol; the raw per-symbol `errors` list is
+# intentionally excluded (the count is preserved in `summary`).
+_SCAN_PROJECTION_KEYS = (
+    "scan_parameters",
+    "summary",
+    "high_conviction_setups",
+    "top_bullish",
+    "top_bearish",
+)
+
+
+def _project_scan_results(scan_results: dict) -> dict:
+    """Project scan results down to the high-signal fields a briefing needs.
+
+    Keeps scan parameters, summary stats, and the already-compact candidate
+    setups; drops the verbose raw per-symbol error list (its count lives in
+    ``summary``). Missing keys are simply omitted so sparse inputs are safe.
+    """
+    return {key: scan_results[key] for key in _SCAN_PROJECTION_KEYS if key in scan_results}
+
+
+def _as_dict(value: object) -> dict:
+    """Return ``value`` if it is a dict, else an empty dict.
+
+    Guards the nested ``.get()`` chains below against malformed inputs where a
+    section is present but holds a non-dict value (so the projection degrades
+    gracefully instead of raising AttributeError).
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _project_deep_analysis(analysis: dict) -> dict:
+    """Project a full options-analysis dict to its briefing-relevant essentials.
+
+    ``run_options_analysis`` returns a deeply nested object (score breakdowns,
+    raw indicator magnitudes, tuning parameters). Dumping several of these blows
+    past the model's output budget and buries the signal. This keeps the headline
+    call, key trend/volatility readings, support/resistance levels, interpreted
+    volume signals, and the human-readable insights — dropping raw magnitudes and
+    internal tuning. Defensive against sparse or malformed inputs (e.g. fallback/
+    test dicts where a section is missing or holds a non-dict value).
+    """
+    projected: dict = {"symbol": analysis.get("symbol", "Unknown")}
+    if "latest_price" in analysis:
+        projected["latest_price"] = analysis["latest_price"]
+
+    headline = analysis.get("headline")
+    if headline:
+        projected["headline"] = headline
+
+    composite = analysis.get("composite_signal")
+    if isinstance(composite, dict):
+        projected["composite"] = {
+            "score": composite.get("score"),
+            "recommendation": composite.get("recommendation"),
+            "signal_quality": composite.get("signal_quality"),
+            "action": composite.get("action"),
+        }
+
+    trend = analysis.get("trend_analysis")
+    if isinstance(trend, dict):
+        adx = _as_dict(trend.get("adx"))
+        rsi = _as_dict(trend.get("rsi"))
+        projected["trend"] = {
+            "adx": adx.get("value"),
+            "trend_strength": adx.get("trend_strength"),
+            "trend_direction": adx.get("trend_direction"),
+            "rsi": rsi.get("value"),
+            "rsi_condition": rsi.get("condition"),
+            "rsi_divergence": rsi.get("divergence_type"),
+        }
+
+    volatility = analysis.get("volatility_analysis")
+    if isinstance(volatility, dict):
+        proxy = _as_dict(volatility.get("iv_percentile_proxy"))
+        move = _as_dict(volatility.get("expected_move"))
+        atr = _as_dict(volatility.get("atr"))
+        bbands = _as_dict(volatility.get("bollinger_bands"))
+        projected["volatility"] = {
+            "hv_percentile": proxy.get("hv_percentile", proxy.get("percentile")),
+            "hv_implication": proxy.get("options_implication"),
+            "expected_move_pct": move.get("percent"),
+            "upper_target": move.get("upper_target"),
+            "lower_target": move.get("lower_target"),
+            "atr_daily_range": atr.get("daily_range"),
+            "stop_loss": atr.get("stop_loss_suggestion"),
+            "bollinger_position": bbands.get("position"),
+            "squeeze": bbands.get("squeeze_detected"),
+        }
+
+    profile = analysis.get("volume_profile")
+    if isinstance(profile, dict):
+        projected["key_levels"] = {
+            "point_of_control": profile.get("point_of_control"),
+            "value_area_high": profile.get("value_area_high"),
+            "value_area_low": profile.get("value_area_low"),
+            "current_position": profile.get("current_position"),
+        }
+
+    volume = analysis.get("volume_indicators")
+    if isinstance(volume, dict):
+        obv = _as_dict(volume.get("obv"))
+        ad = _as_dict(volume.get("accumulation_distribution"))
+        mfi = _as_dict(volume.get("mfi"))
+        cmf = _as_dict(volume.get("cmf"))
+        rvol = _as_dict(volume.get("relative_volume"))
+        breakout = _as_dict(volume.get("volume_breakout"))
+        projected["volume_signals"] = {
+            "obv_trend": obv.get("trend"),
+            "ad_signal": ad.get("signal"),
+            "mfi_condition": mfi.get("condition"),
+            "cmf_signal": cmf.get("signal"),
+            "rvol": rvol.get("current_rvol"),
+            "volume_breakout": breakout.get("is_breakout"),
+        }
+
+    insights = analysis.get("options_insights")
+    if insights:
+        projected["insights"] = insights
+
+    return projected
+
+
 def _build_user_message(scan_results: dict, deep_analyses: list[dict]) -> str:
-    """Build the user message with structured data for the AI."""
-    user_content = "Generate a morning options trading briefing from this data:\n\n"
+    """Build the user message with a curated, high-signal projection of the data.
+
+    Rather than dumping the full raw scan/analysis JSON (noisy and prone to
+    truncation against the model's output cap), this projects each section to the
+    fields a briefing needs. Every emitted ticker/level still comes straight from
+    the scan/analysis data, so the model stays grounded in real inputs.
+    """
+    projected_scan = _project_scan_results(scan_results)
+
+    user_content = "Generate a morning options trading briefing from this data.\n"
+    user_content += "Base the briefing only on the curated data below.\n\n"
     user_content += "## Scan Results\n"
-    user_content += f"```json\n{json.dumps(scan_results, indent=2, default=str)}\n```\n\n"
+    user_content += f"```json\n{json.dumps(projected_scan, indent=2, default=str)}\n```\n\n"
 
     if deep_analyses:
         user_content += "## Deep Analysis (Top Candidates)\n"
         for analysis in deep_analyses:
-            symbol = analysis.get("symbol", "Unknown")
+            projected = _project_deep_analysis(analysis)
+            symbol = projected.get("symbol", "Unknown")
             user_content += f"### {symbol}\n"
-            user_content += f"```json\n{json.dumps(analysis, indent=2, default=str)}\n```\n\n"
+            user_content += f"```json\n{json.dumps(projected, indent=2, default=str)}\n```\n\n"
 
     return user_content
 
