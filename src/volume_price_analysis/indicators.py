@@ -970,7 +970,11 @@ def calculate_iv_percentile(
         lookback_days: Days to look back for percentile calculation
 
     Returns:
-        Dictionary with IV percentile proxy data
+        Dictionary with IV percentile proxy data. ``iv_percentile`` is retained
+        for backward compatibility, but the value is derived from historical
+        volatility, NOT options-market implied volatility. The honestly-labeled
+        ``hv_percentile`` carries the same number, with ``basis`` and ``is_proxy``
+        marking it as an HV-based proxy.
     """
     # Calculate rolling HV
     log_returns = (data["Close"] / data["Close"].shift(1)).apply(np.log)
@@ -983,6 +987,9 @@ def calculate_iv_percentile(
         hv_val = hv.iloc[-1]
         return {
             "iv_percentile": 50.0,
+            "hv_percentile": 50.0,
+            "basis": "historical_volatility",
+            "is_proxy": True,
             "current_hv": 0.0 if pd.isna(hv_val) else float(hv_val),  # type: ignore[arg-type]
             "hv_min": 0.0,
             "hv_max": 0.0,
@@ -1004,6 +1011,11 @@ def calculate_iv_percentile(
     if hv_range > 0:
         iv_percentile = ((current_hv - hv_min) / hv_range) * 100
     else:
+        iv_percentile = 50.0
+
+    # Guard NaN propagation: a NaN current_hv (e.g. a NaN final Close) would make
+    # the percentile NaN. Degrade to a neutral 50.0 rather than leak NaN to callers.
+    if pd.isna(iv_percentile):
         iv_percentile = 50.0
 
     # Interpretation
@@ -1030,6 +1042,9 @@ def calculate_iv_percentile(
 
     return {
         "iv_percentile": float(iv_percentile),
+        "hv_percentile": float(iv_percentile),
+        "basis": "historical_volatility",
+        "is_proxy": True,
         "current_hv": 0.0 if pd.isna(current_hv) else float(current_hv),  # type: ignore[arg-type]
         "hv_min": float(hv_min),
         "hv_max": float(hv_max),
@@ -1135,6 +1150,17 @@ def calculate_expected_move(
 # ============================================================================
 
 
+def composite_adx_period(holding_period: int) -> int:
+    """Return the ADX lookback the composite score uses for a holding period.
+
+    Short holding periods use a more responsive ADX(10); 15+ day holds use the
+    standard ADX(14). Centralised so the scan can report and filter on the exact
+    same period the composite score consumed, rather than a separate fixed ADX(14)
+    (see HOM-48). Keep this the single source of truth for the rule.
+    """
+    return 10 if holding_period <= 14 else 14
+
+
 def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> dict[str, Any]:
     """
     Calculate composite signal score for options trading.
@@ -1156,17 +1182,15 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         mfi_period = 7
         volume_window = 10
         rsi_period = 7
-        adx_period = 10
     elif holding_period <= 21:
         mfi_period = 10
         volume_window = 14
         rsi_period = 10
-        adx_period = 14
     else:  # 22-30 days
         mfi_period = 14
         volume_window = 20
         rsi_period = 14
-        adx_period = 14
+    adx_period = composite_adx_period(holding_period)
 
     # Calculate indicators
     obv = calculate_obv(data)
@@ -1327,6 +1351,19 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         "signal_quality": signal_quality,
         "quality_note": quality_note,
         "score_breakdown": score_breakdown,
+        # Surface the ADX the score actually consumed (adaptive to holding_period) so
+        # callers can report a value coherent with signal_quality/adx_direction instead
+        # of recomputing a separate, fixed-period ADX. JSON-safe scalars only (no Series).
+        "adx_period": adx_period,
+        "adx_summary": {
+            "period": adx_period,
+            "adx": float(adx_data["adx"]),
+            "plus_di": float(adx_data["plus_di"]),
+            "minus_di": float(adx_data["minus_di"]),
+            "trend_strength": adx_data["trend_strength"],
+            "trend_direction": adx_data["trend_direction"],
+            "adx_slope": adx_data["adx_slope"],
+        },
         "indicator_summary": {
             "price_above_vwap": latest_close > latest_vwap,
             "price_above_vwma": latest_close > latest_vwma,

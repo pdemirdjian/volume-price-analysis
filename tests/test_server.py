@@ -514,6 +514,75 @@ class TestCallToolComprehensive:
         assert "summary" in data
         assert isinstance(data["summary"], list)
 
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_comprehensive_analysis_includes_headline(self, mock_fetch):
+        """Additive top-line headline is present without disturbing existing keys (O4)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=30, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(30)],
+                "High": [102 + i * 0.5 for i in range(30)],
+                "Low": [98 + i * 0.5 for i in range(30)],
+                "Close": [101 + i * 0.5 for i in range(30)],
+                "Volume": [1000000 + i * 20000 for i in range(30)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "1mo"}
+        )
+        data = json.loads(result.content[0].text)
+
+        headline = data["headline"]
+        assert set(headline) == {
+            "recommendation",
+            "composite_score",
+            "signal_quality",
+            "rationale",
+        }
+        assert isinstance(headline["rationale"], str) and headline["rationale"]
+        # Existing narrative summary must remain a list (contract preserved).
+        assert isinstance(data["summary"], list)
+
+
+class TestCallToolOptions:
+    """Tests for options_analysis tool."""
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_options_analysis_includes_headline(self, mock_fetch):
+        """options_analysis response carries an additive headline (O4)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=60, freq="D"),
+                "Open": [100 + i * 0.3 for i in range(60)],
+                "High": [102 + i * 0.3 for i in range(60)],
+                "Low": [98 + i * 0.3 for i in range(60)],
+                "Close": [101 + i * 0.3 for i in range(60)],
+                "Volume": [1000000 + i * 15000 for i in range(60)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="options_analysis",
+            arguments={"symbol": "SPY", "period": "3mo", "holding_period": 14},
+        )
+        data = json.loads(result.content[0].text)
+
+        assert "headline" in data
+        headline = data["headline"]
+        assert set(headline) == {
+            "recommendation",
+            "composite_score",
+            "signal_quality",
+            "rationale",
+        }
+        # Headline summarises the same call as the detailed composite_signal.
+        assert headline["recommendation"] == data["composite_signal"]["recommendation"]
+
 
 class TestErrorHandling:
     """Tests for error handling in tools."""

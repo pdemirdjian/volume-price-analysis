@@ -27,6 +27,7 @@ from volume_price_analysis.indicators import (
     calculate_vpt,
     calculate_vwap,
     calculate_vwma,
+    composite_adx_period,
     detect_rsi_divergence,
     detect_volume_breakout,
 )
@@ -1674,6 +1675,9 @@ class TestIVPercentile:
 
         expected_keys = {
             "iv_percentile",
+            "hv_percentile",
+            "basis",
+            "is_proxy",
             "current_hv",
             "hv_min",
             "hv_max",
@@ -1683,6 +1687,54 @@ class TestIVPercentile:
             "strategy_suggestion",
         }
         assert expected_keys == set(result.keys())
+
+    def test_hv_percentile_matches_iv_percentile(self):
+        """hv_percentile is the correctly-labeled twin of the iv_percentile proxy."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["hv_percentile"] == result["iv_percentile"]
+
+    def test_hv_percentile_in_range(self):
+        """hv_percentile must stay within [0, 100] like the proxy it mirrors."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert 0 <= result["hv_percentile"] <= 100
+
+    def test_nan_last_close_does_not_leak_nan_percentile(self):
+        """A NaN final Close must degrade to a neutral percentile, never NaN."""
+        data = _make_iv_data(n=300)
+        data.loc[data.index[-1], "Close"] = np.nan
+
+        result = calculate_iv_percentile(data)
+
+        assert not np.isnan(result["iv_percentile"])
+        assert not np.isnan(result["hv_percentile"])
+        assert result["hv_percentile"] == result["iv_percentile"] == 50.0
+
+    def test_basis_is_historical_volatility(self):
+        """The metric basis must be honestly labeled as historical volatility."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["basis"] == "historical_volatility"
+
+    def test_is_proxy_flag_true(self):
+        """The percentile is an HV-derived proxy, not real implied volatility."""
+        data = _make_iv_data(n=300)
+        result = calculate_iv_percentile(data)
+
+        assert result["is_proxy"] is True
+
+    def test_insufficient_data_includes_honesty_fields(self):
+        """The insufficient-data branch must still carry the proxy/basis labels."""
+        data = _make_large_uptrend(n=25)
+        result = calculate_iv_percentile(data, hv_window=20)
+
+        assert result["hv_percentile"] == result["iv_percentile"] == 50.0
+        assert result["basis"] == "historical_volatility"
+        assert result["is_proxy"] is True
 
     def test_iv_percentile_range(self):
         """Test that IV percentile is between 0 and 100."""
@@ -1954,8 +2006,75 @@ class TestCompositeScore:
             "quality_note",
             "score_breakdown",
             "indicator_summary",
+            "adx_period",
+            "adx_summary",
         }
         assert expected_keys == set(result.keys())
+
+    def test_exposes_adaptive_adx_period(self):
+        """Composite reports the ADX period it actually used (adaptive to holding)."""
+        data = _make_large_uptrend(n=80)
+
+        # Short holding period uses the responsive ADX(10)
+        short = calculate_composite_score(data, holding_period=14)
+        assert short["adx_period"] == 10
+        assert short["adx_summary"]["period"] == 10
+
+        # The 15-21 day band switches to ADX(14) (boundary distinct from the >21 band)
+        mid = calculate_composite_score(data, holding_period=21)
+        assert mid["adx_period"] == 14
+        assert mid["adx_summary"]["period"] == 14
+
+        # Longer holding periods also use ADX(14)
+        long = calculate_composite_score(data, holding_period=25)
+        assert long["adx_period"] == 14
+        assert long["adx_summary"]["period"] == 14
+
+    def test_adx_summary_is_coherent_with_internal_adx(self):
+        """adx_summary must reflect the exact ADX the score consumed, not a fixed period."""
+        data = _make_large_uptrend(n=80)
+
+        # Short hold -> ADX(10): surfaced value matches internal use and an independent calc.
+        short = calculate_composite_score(data, holding_period=14)
+        assert short["adx_summary"]["adx"] == short["indicator_summary"]["adx"]
+        assert short["adx_summary"]["adx"] == pytest.approx(calculate_adx(data, 10)["adx"])
+
+        # Longer hold -> ADX(14): the period genuinely tracks holding_period, not a constant.
+        long = calculate_composite_score(data, holding_period=25)
+        assert long["adx_summary"]["adx"] == long["indicator_summary"]["adx"]
+        assert long["adx_summary"]["adx"] == pytest.approx(calculate_adx(data, 14)["adx"])
+
+    def test_adx_summary_degrades_to_zero_on_insufficient_history(self):
+        """Too little history for ADX -> NaN is coerced to 0.0, surfaced safely (no NaN leak).
+
+        12 bars is enough for the composite to run but short of ADX(10)'s warmup
+        (~2*period), so the ADX is undefined and must surface as a safe 0.0.
+        """
+        short_data = _make_large_uptrend(n=12)
+        summary = calculate_composite_score(short_data, holding_period=14)["adx_summary"]
+        assert summary["adx"] == 0.0
+        assert not pd.isna(summary["adx"])
+
+    def test_adx_summary_has_expected_fields(self):
+        """adx_summary carries the scalar fields the scan surfaces (no pandas Series)."""
+        summary = calculate_composite_score(_make_large_uptrend(n=80))["adx_summary"]
+        assert set(summary) == {
+            "period",
+            "adx",
+            "plus_di",
+            "minus_di",
+            "trend_strength",
+            "trend_direction",
+            "adx_slope",
+        }
+
+    def test_composite_adx_period_helper(self):
+        """Single source of truth for the holding->ADX-period rule (boundary at 14)."""
+        assert composite_adx_period(7) == 10
+        assert composite_adx_period(14) == 10
+        assert composite_adx_period(15) == 14
+        assert composite_adx_period(21) == 14
+        assert composite_adx_period(30) == 14
 
     def test_composite_score_range(self):
         """Test that composite score is between -10 and +10."""

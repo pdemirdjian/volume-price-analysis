@@ -15,7 +15,7 @@ from mcp.types import (
     Tool,
 )
 
-from .analysis import run_options_analysis, run_scan
+from .analysis import build_headline, run_options_analysis, run_scan
 from .data_fetcher import fetch_stock_data
 from .indicators import (
     analyze_volume_trends,
@@ -23,6 +23,7 @@ from .indicators import (
     calculate_atr,
     calculate_bollinger_bands,
     calculate_chaikin_money_flow,
+    calculate_composite_score,
     calculate_enhanced_volume_profile,
     calculate_historical_volatility,
     calculate_mfi,
@@ -491,7 +492,12 @@ async def handle_list_tools() -> list[Tool]:
                     },
                     "max_iv_percentile": {
                         "type": "number",
-                        "description": "Max IV percentile (default: 100, use 50 for cheap options)",
+                        "description": (
+                            "Max volatility percentile (default: 100, use 50 for cheap "
+                            "options). Note: this is a historical-volatility (HV) proxy, "
+                            "not options-implied volatility; results expose both "
+                            "iv_percentile (compat) and hv_percentile."
+                        ),
                         "default": 100,
                     },
                     "direction": {
@@ -833,11 +839,16 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             else:
                 atr_interp = "N/A"
 
+            # Additive top-line headline (recommendation/score/1-line rationale).
+            # The detailed `summary` list below is left untouched.
+            headline = build_headline(calculate_composite_score(data))
+
             result = {
                 "symbol": symbol,
                 "analysis_type": "Comprehensive Volume-Price Analysis",
                 "period": f"{start_dt} to {end_dt}",
                 "latest_price": float(latest_close),
+                "headline": headline,
                 "volume_indicators": {
                     "obv": {
                         "value": float(obv.iloc[-1]),
