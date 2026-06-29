@@ -215,8 +215,16 @@ def calculate_mfi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     positive_mf = positive_flow.rolling(window=period).sum()
     negative_mf = negative_flow.rolling(window=period).sum()
 
-    mfr = positive_mf / negative_mf
+    # Guard division by zero in the money-flow ratio. Computing the ratio only
+    # where negative_mf > 0 avoids inf/NaN; the two .where() passes then assign
+    # the conventional values for the degenerate windows:
+    #   - negative_mf == 0 with positive flow -> fully overbought (MFI = 100)
+    #   - flat window (no flow either way)     -> neutral (MFI = 50)
+    # Leading insufficient-history values (rolling sum still NaN) stay NaN.
+    mfr = positive_mf / negative_mf.where(negative_mf > 0)
     mfi = 100 - (100 / (1 + mfr))
+    mfi = mfi.where(~((negative_mf == 0) & (positive_mf > 0)), 100.0)
+    mfi = mfi.where(~((negative_mf == 0) & (positive_mf == 0)), 50.0)
 
     # Flat window: no positive AND no negative money flow gives 0/0 -> NaN.
     # (One-sided flow already resolves correctly: negative_mf == 0 with positive
@@ -649,6 +657,26 @@ def calculate_enhanced_volume_profile(
     Returns:
         Dictionary with POC, VAH, VAL, and full profile data
     """
+    # Empty input has no last close: data["Close"].iloc[-1] below would raise
+    # IndexError, and the delegate calculate_volume_profile yields NaN price
+    # levels for an empty frame. Degrade gracefully to neutral, non-NaN defaults
+    # consistent with the delegate's HOM-37 hardening (see HOM-41).
+    if data.empty:
+        return {
+            "price_levels": [0.0] * num_bins,
+            "volumes": [0.0] * num_bins,
+            "poc": 0.0,
+            "vah": 0.0,
+            "val": 0.0,
+            "value_area_pct": value_area_pct,
+            "current_price": 0.0,
+            "position": "within_value_area",
+            "interpretation": "No price data available",
+            "poc_distance_pct": 0.0,
+            "vah_distance_pct": 0.0,
+            "val_distance_pct": 0.0,
+        }
+
     # Get basic profile
     basic_profile = calculate_volume_profile(data, num_bins)
 
@@ -1166,6 +1194,17 @@ def calculate_expected_move(
 # ============================================================================
 
 
+def composite_adx_period(holding_period: int) -> int:
+    """Return the ADX lookback the composite score uses for a holding period.
+
+    Short holding periods use a more responsive ADX(10); 15+ day holds use the
+    standard ADX(14). Centralised so the scan can report and filter on the exact
+    same period the composite score consumed, rather than a separate fixed ADX(14)
+    (see HOM-48). Keep this the single source of truth for the rule.
+    """
+    return 10 if holding_period <= 14 else 14
+
+
 def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> dict[str, Any]:
     """
     Calculate composite signal score for options trading.
@@ -1187,17 +1226,15 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         mfi_period = 7
         volume_window = 10
         rsi_period = 7
-        adx_period = 10
     elif holding_period <= 21:
         mfi_period = 10
         volume_window = 14
         rsi_period = 10
-        adx_period = 14
     else:  # 22-30 days
         mfi_period = 14
         volume_window = 20
         rsi_period = 14
-        adx_period = 14
+    adx_period = composite_adx_period(holding_period)
 
     # Calculate indicators
     obv = calculate_obv(data)
@@ -1358,6 +1395,19 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         "signal_quality": signal_quality,
         "quality_note": quality_note,
         "score_breakdown": score_breakdown,
+        # Surface the ADX the score actually consumed (adaptive to holding_period) so
+        # callers can report a value coherent with signal_quality/adx_direction instead
+        # of recomputing a separate, fixed-period ADX. JSON-safe scalars only (no Series).
+        "adx_period": adx_period,
+        "adx_summary": {
+            "period": adx_period,
+            "adx": float(adx_data["adx"]),
+            "plus_di": float(adx_data["plus_di"]),
+            "minus_di": float(adx_data["minus_di"]),
+            "trend_strength": adx_data["trend_strength"],
+            "trend_direction": adx_data["trend_direction"],
+            "adx_slope": adx_data["adx_slope"],
+        },
         "indicator_summary": {
             "price_above_vwap": latest_close > latest_vwap,
             "price_above_vwma": latest_close > latest_vwma,
