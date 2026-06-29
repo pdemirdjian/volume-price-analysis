@@ -51,8 +51,8 @@ Format the briefing in markdown with clear sections:
 Keep it concise but thorough. Use bullet points. No fluff."""
 
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-flash",
-    "anthropic": "claude-sonnet-4-5-20250929",
+    "gemini": "gemini-2.5-pro",
+    "anthropic": "claude-sonnet-4-6",
 }
 
 _TRUNCATION_WARNING = (
@@ -286,6 +286,7 @@ def generate_briefing(
     provider: str = "gemini",
     model: str = "",
     api_key: str = "",
+    earnings_preamble: str = "",
 ) -> str:
     """
     Generate a natural-language briefing from scan results and deep analyses.
@@ -296,6 +297,7 @@ def generate_briefing(
         provider: AI provider ("gemini" or "anthropic").
         model: Model name. If empty, uses the default for the provider.
         api_key: API key for the selected provider.
+        earnings_preamble: Optional earnings-event-risk warning block prepended to user message.
 
     Returns:
         Markdown-formatted briefing text.
@@ -303,7 +305,7 @@ def generate_briefing(
     if not model:
         model = DEFAULT_MODELS.get(provider, DEFAULT_MODELS["gemini"])
 
-    user_content = _build_user_message(scan_results, deep_analyses)
+    user_content = _build_user_message(scan_results, deep_analyses, earnings_preamble)
 
     if provider == "anthropic":
         briefing = _generate_anthropic(user_content, model, api_key)
@@ -452,18 +454,14 @@ def _project_deep_analysis(analysis: dict) -> dict:
     return projected
 
 
-def _build_user_message(scan_results: dict, deep_analyses: list[dict]) -> str:
-    """Build the user message with a curated, high-signal projection of the data.
-
-    Rather than dumping the full raw scan/analysis JSON (noisy and prone to
-    truncation against the model's output cap), this projects each section to the
-    fields a briefing needs. Every emitted ticker/level still comes straight from
-    the scan/analysis data, so the model stays grounded in real inputs.
-    """
+def _build_user_message(
+    scan_results: dict, deep_analyses: list[dict], earnings_preamble: str = ""
+) -> str:
+    """Build the user message with structured data for the AI."""
     projected_scan = _project_scan_results(scan_results)
-
-    user_content = "Generate a morning options trading briefing from this data.\n"
-    user_content += "Base the briefing only on the curated data below.\n\n"
+    user_content = "Generate a morning options trading briefing from this data:\n\n"
+    if earnings_preamble:
+        user_content += earnings_preamble + "\n"
     user_content += "## Scan Results\n"
     user_content += f"```json\n{json.dumps(projected_scan, indent=2, default=str)}\n```\n\n"
 

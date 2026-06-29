@@ -22,6 +22,151 @@ def _parse_recipients(to_addr: str) -> list[str]:
     return recipients
 
 
+# Matches standalone 1-5 uppercase-letter words NOT already inside an <a> tag.
+# We use a negative lookahead so we don't double-wrap existing links.
+_TICKER_RE = re.compile(r"(?<![a-zA-Z<>])([A-Z]{1,5})(?![a-z>])")
+_TRADINGVIEW_BASE = "https://www.tradingview.com/chart/?symbol="
+
+# Common English words that look like tickers — skip linking them.
+_SKIP_WORDS: frozenset[str] = frozenset(
+    {
+        "A",
+        "AN",
+        "BE",
+        "BY",
+        "DO",
+        "GO",
+        "HE",
+        "IN",
+        "IS",
+        "IT",
+        "ME",
+        "MY",
+        "NO",
+        "OF",
+        "ON",
+        "OR",
+        "TO",
+        "UP",
+        "US",
+        "WE",
+        "ALL",
+        "AND",
+        "ARE",
+        "BUT",
+        "CAN",
+        "FOR",
+        "HAS",
+        "NOT",
+        "THE",
+        "WAS",
+        "YOU",
+        "ALSO",
+        "BEEN",
+        "FROM",
+        "HAVE",
+        "HIGH",
+        "INTO",
+        "LONG",
+        "MOST",
+        "NOTE",
+        "ONLY",
+        "OVER",
+        "PAST",
+        "PUTS",
+        "RISK",
+        "SELL",
+        "SOME",
+        "THAN",
+        "THAT",
+        "THEM",
+        "THEN",
+        "THEY",
+        "THIS",
+        "TIME",
+        "VERY",
+        "WEAK",
+        "WITH",
+        "YOUR",
+        "CALLS",
+        "COULD",
+        "DAILY",
+        "DELTA",
+        "ENTRY",
+        "FOCUS",
+        "GIVEN",
+        "INDEX",
+        "LARGE",
+        "LEVEL",
+        "LOWER",
+        "MAJOR",
+        "MACRO",
+        "MIXED",
+        "MODEL",
+        "MONEY",
+        "MONTHLY",
+        "MULTI",
+        "PRICE",
+        "RANGE",
+        "RATIO",
+        "SETUP",
+        "SHORT",
+        "SINCE",
+        "SMALL",
+        "STATS",
+        "STILL",
+        "STOCK",
+        "THESE",
+        "TIGHT",
+        "TODAY",
+        "TOTAL",
+        "TRADE",
+        "TREND",
+        "ULTRA",
+        "UNDER",
+        "UPPER",
+        "WATCH",
+        "WEEKS",
+        "WHERE",
+        "WHILE",
+        "WHICH",
+        "WHOSE",
+        "YIELD",
+    }
+)
+
+
+def _linkify_tickers(html: str) -> str:
+    """Wrap uppercase ticker tokens in TradingView chart links."""
+
+    def replace(m: re.Match[str]) -> str:
+        ticker = m.group(1)
+        if ticker in _SKIP_WORDS:
+            return m.group(0)
+        url = f"{_TRADINGVIEW_BASE}{ticker}"
+        return m.group(0).replace(
+            ticker, f'<a href="{url}" rel="noopener noreferrer" target="_blank">{ticker}</a>'
+        )
+
+    # Only process text nodes — skip tag content and anything inside <a>…</a>.
+    parts = re.split(r"(<[^>]+>)", html)
+    result = []
+    in_anchor = 0  # nesting depth: >0 means inside an <a> tag
+    for part in parts:
+        if part.startswith("<"):
+            tag_lower = part.lower()
+            if tag_lower.startswith("<a ") or tag_lower == "<a>":
+                in_anchor += 1
+            elif tag_lower.startswith("</a"):
+                in_anchor = max(0, in_anchor - 1)
+            result.append(part)
+        elif in_anchor:
+            result.append(part)
+        else:
+            result.append(_TICKER_RE.sub(replace, part))
+    return "".join(result)
+
+
 def send_briefing_email(
     subject: str,
     body_markdown: str,
@@ -56,8 +201,9 @@ def send_briefing_email(
     # Plain text part
     msg.attach(MIMEText(body_markdown, "plain"))
 
-    # HTML part (convert markdown to HTML, then sanitize)
+    # HTML part (convert markdown to HTML, sanitize, then linkify tickers)
     html_body = nh3.clean(markdown.markdown(body_markdown, extensions=["tables", "fenced_code"]))
+    html_body = _linkify_tickers(html_body)
     # Wrap in minimal styling for email clients
     html_full = f"""\
 <html>
