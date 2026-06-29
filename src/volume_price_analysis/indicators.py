@@ -1113,6 +1113,17 @@ def calculate_expected_move(
 # ============================================================================
 
 
+def composite_adx_period(holding_period: int) -> int:
+    """Return the ADX lookback the composite score uses for a holding period.
+
+    Short holding periods use a more responsive ADX(10); 15+ day holds use the
+    standard ADX(14). Centralised so the scan can report and filter on the exact
+    same period the composite score consumed, rather than a separate fixed ADX(14)
+    (see HOM-48). Keep this the single source of truth for the rule.
+    """
+    return 10 if holding_period <= 14 else 14
+
+
 def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> dict[str, Any]:
     """
     Calculate composite signal score for options trading.
@@ -1134,17 +1145,15 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         mfi_period = 7
         volume_window = 10
         rsi_period = 7
-        adx_period = 10
     elif holding_period <= 21:
         mfi_period = 10
         volume_window = 14
         rsi_period = 10
-        adx_period = 14
     else:  # 22-30 days
         mfi_period = 14
         volume_window = 20
         rsi_period = 14
-        adx_period = 14
+    adx_period = composite_adx_period(holding_period)
 
     # Calculate indicators
     obv = calculate_obv(data)
@@ -1305,6 +1314,19 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> d
         "signal_quality": signal_quality,
         "quality_note": quality_note,
         "score_breakdown": score_breakdown,
+        # Surface the ADX the score actually consumed (adaptive to holding_period) so
+        # callers can report a value coherent with signal_quality/adx_direction instead
+        # of recomputing a separate, fixed-period ADX. JSON-safe scalars only (no Series).
+        "adx_period": adx_period,
+        "adx_summary": {
+            "period": adx_period,
+            "adx": float(adx_data["adx"]),
+            "plus_di": float(adx_data["plus_di"]),
+            "minus_di": float(adx_data["minus_di"]),
+            "trend_strength": adx_data["trend_strength"],
+            "trend_direction": adx_data["trend_direction"],
+            "adx_slope": adx_data["adx_slope"],
+        },
         "indicator_summary": {
             "price_above_vwap": latest_close > latest_vwap,
             "price_above_vwma": latest_close > latest_vwma,
