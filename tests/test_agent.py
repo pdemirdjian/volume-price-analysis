@@ -15,6 +15,7 @@ from volume_price_analysis.agent.ai_client import (
     _build_user_message,
     _project_deep_analysis,
     _project_scan_results,
+    find_ungrounded_tickers,
     generate_briefing,
 )
 from volume_price_analysis.agent.config import AgentConfig
@@ -2315,3 +2316,154 @@ class TestSystemPromptVolatilityLabeling:
         """The prompt must tell the model the metric is not options-implied vol."""
         lowered = SYSTEM_PROMPT.lower()
         assert "implied volatility" in lowered
+
+
+class TestSystemPromptGrounding:
+    """HOM-45: SYSTEM_PROMPT must instruct the model to only use provided data."""
+
+    def test_prompt_has_grounding_clause(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "use only" in lowered
+        assert "never invent" in lowered
+
+    def test_prompt_mentions_tickers_must_come_from_data(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "ticker" in lowered
+
+
+class TestFindUngroundedTickers:
+    """HOM-45: flag ticker-like tokens that are absent from the scan/analysis input."""
+
+    @staticmethod
+    def _scan(*, bullish=(), bearish=(), high_conviction=(), errors=()):
+        return {
+            "summary": {},
+            "high_conviction_setups": [{"symbol": s} for s in high_conviction],
+            "top_bullish": [{"symbol": s} for s in bullish],
+            "top_bearish": [{"symbol": s} for s in bearish],
+            "errors": [{"symbol": s, "error": "boom"} for s in errors],
+        }
+
+    def test_grounded_briefing_returns_empty(self):
+        scan = self._scan(bullish=["AAPL"], bearish=["TSLA"])
+        briefing = "## Top Picks\n- AAPL looks bullish\n- TSLA looks bearish"
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_detects_hallucinated_ticker(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = "AAPL is great. Also consider ZZZZ for a play."
+        assert find_ungrounded_tickers(briefing, scan, []) == ["ZZZZ"]
+
+    def test_ignores_indicator_acronyms(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = (
+            "AAPL: ADX 31, RSI 62, VWAP above, POC/VAH/VAL aligned, "
+            "HV percentile high, OBV rising, MFI 70, CMF positive, ATR wide, BB squeeze, "
+            "14-day DTE, ROC up."
+        )
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_ignores_emphasis_and_common_words(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = (
+            "STRONG BULLISH on AAPL. NO TREND elsewhere. VOLUME BREAKOUT, "
+            "EXTREME OVERBOUGHT. WARNING: IMPORTANT risk. US markets, ETF flows, AI theme."
+        )
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_recognizes_symbols_from_deep_analyses(self):
+        scan = self._scan()
+        deep = [{"symbol": "NVDA"}]
+        briefing = "NVDA shows accumulation into the close."
+        assert find_ungrounded_tickers(briefing, scan, deep) == []
+
+    def test_recognizes_symbols_from_error_list(self):
+        scan = self._scan(errors=["GOOGL"])
+        briefing = "Note: GOOGL failed to fetch but was in scope."
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_cashtag_grounded(self):
+        scan = self._scan(bullish=["AAPL"])
+        assert find_ungrounded_tickers("Buy $AAPL calls.", scan, []) == []
+
+    def test_cashtag_hallucinated_is_flagged(self):
+        scan = self._scan(bullish=["AAPL"])
+        assert find_ungrounded_tickers("Rotate into $ZM here.", scan, []) == ["ZM"]
+
+    def test_ignores_bare_single_letters(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = "Plan B is fine; option A too; F was not analyzed."
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_handles_class_share_symbol(self):
+        scan = self._scan(bullish=["BRK-B"])
+        briefing = "BRK.B is consolidating near its POC."
+        assert find_ungrounded_tickers(briefing, scan, []) == []
+
+    def test_dedupes_and_sorts(self):
+        scan = self._scan(bullish=["AAPL"])
+        briefing = "WXYZ and MNOP and WXYZ again, plus AAPL."
+        assert find_ungrounded_tickers(briefing, scan, []) == ["MNOP", "WXYZ"]
+
+    def test_handles_empty_briefing(self):
+        scan = self._scan(bullish=["AAPL"])
+        assert find_ungrounded_tickers("", scan, []) == []
+
+    def test_handles_empty_scan_data(self):
+        assert find_ungrounded_tickers("Consider ZZZZ today.", {}, []) == ["ZZZZ"]
+
+
+class TestGenerateBriefingGrounding:
+    """HOM-45: generate_briefing logs a warning when the briefing names unknown tickers."""
+
+    @staticmethod
+    def _scan():
+        return {
+            "summary": {"total_candidates": 1},
+            "high_conviction_setups": [],
+            "top_bullish": [{"symbol": "AAPL"}],
+            "top_bearish": [],
+            "errors": [],
+        }
+
+    def test_logs_warning_on_hallucinated_ticker(self, mocker, caplog):
+        import logging
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "AAPL is bullish. Also buy ZZZZ calls."
+        mock_response.candidates = []
+        mock_client.models.generate_content.return_value = mock_response
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
+            result = generate_briefing(
+                scan_results=self._scan(),
+                deep_analyses=[],
+                provider="gemini",
+                api_key="test-key",
+            )
+
+        assert "ZZZZ" in result
+        assert "ZZZZ" in caplog.text
+        assert "hallucination" in caplog.text.lower()
+
+    def test_no_warning_when_grounded(self, mocker, caplog):
+        import logging
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "AAPL is bullish today; watch the VWAP."
+        mock_response.candidates = []
+        mock_client.models.generate_content.return_value = mock_response
+        mocker.patch("google.genai.Client", return_value=mock_client)
+
+        with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
+            generate_briefing(
+                scan_results=self._scan(),
+                deep_analyses=[],
+                provider="gemini",
+                api_key="test-key",
+            )
+
+        assert "hallucination" not in caplog.text.lower()
