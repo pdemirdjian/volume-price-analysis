@@ -639,6 +639,26 @@ def calculate_enhanced_volume_profile(
     Returns:
         Dictionary with POC, VAH, VAL, and full profile data
     """
+    # Empty input has no last close: data["Close"].iloc[-1] below would raise
+    # IndexError, and the delegate calculate_volume_profile yields NaN price
+    # levels for an empty frame. Degrade gracefully to neutral, non-NaN defaults
+    # consistent with the delegate's HOM-37 hardening (see HOM-41).
+    if data.empty:
+        return {
+            "price_levels": [0.0] * num_bins,
+            "volumes": [0.0] * num_bins,
+            "poc": 0.0,
+            "vah": 0.0,
+            "val": 0.0,
+            "value_area_pct": value_area_pct,
+            "current_price": 0.0,
+            "position": "within_value_area",
+            "interpretation": "No price data available",
+            "poc_distance_pct": 0.0,
+            "vah_distance_pct": 0.0,
+            "val_distance_pct": 0.0,
+        }
+
     # Get basic profile
     basic_profile = calculate_volume_profile(data, num_bins)
 

@@ -1185,6 +1185,32 @@ class TestEnhancedVolumeProfile:
             assert len(result["price_levels"]) == bins
             assert len(result["volumes"]) == bins
 
+    def test_empty_dataframe_returns_safe_defaults(self):
+        """Empty input degrades gracefully to neutral defaults, not IndexError.
+
+        Mirrors the HOM-37 hardening of the delegate calculate_volume_profile,
+        which returns an all-zero profile rather than raising on empty input.
+        """
+        empty_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+        result = calculate_enhanced_volume_profile(empty_df, num_bins=20)
+
+        # Shape contract is preserved (same keys, lists sized to num_bins).
+        assert len(result["price_levels"]) == 20
+        assert len(result["volumes"]) == 20
+        # Safe, non-NaN defaults — no silent garbage.
+        assert result["poc"] == 0.0
+        assert result["vah"] == 0.0
+        assert result["val"] == 0.0
+        assert result["current_price"] == 0.0
+        # No division-by-zero leaking into distance percentages.
+        assert result["poc_distance_pct"] == 0.0
+        assert result["vah_distance_pct"] == 0.0
+        assert result["val_distance_pct"] == 0.0
+        # Neutral position, within the existing enum so consumers don't break.
+        assert result["position"] == "within_value_area"
+        assert result["value_area_pct"] == 0.70
+
 
 class TestADX:
     """Tests for Average Directional Index calculation."""
