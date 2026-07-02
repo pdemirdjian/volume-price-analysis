@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.7.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.6.0...v2.7.0) (2026-07-01)
+
+
+### Features
+
+* **briefing:** model upgrade, earnings guard, liquidity filter, ticker links ([#336](https://github.com/pdemirdjian/volume-price-analysis/issues/336)) ([4d2b1a3](https://github.com/pdemirdjian/volume-price-analysis/commit/4d2b1a3c98c3103e7ee6cdaf90c885862db3e064))
+
+
+### Bug Fixes
+
+* **deps:** update dependency mcp to v1.28.1 ([#339](https://github.com/pdemirdjian/volume-price-analysis/issues/339)) ([33346c9](https://github.com/pdemirdjian/volume-price-analysis/commit/33346c9b3f398872248fabaff414206cb750fb74))
+* **deps:** update dependency yfinance to v1.5.1 ([#340](https://github.com/pdemirdjian/volume-price-analysis/issues/340)) ([1b3926c](https://github.com/pdemirdjian/volume-price-analysis/commit/1b3926cd027cfc42aea5562e8452f8839fa7f0ac))
+
 ## [2.6.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.5.32...v2.6.0) (2026-06-29)
 
 
