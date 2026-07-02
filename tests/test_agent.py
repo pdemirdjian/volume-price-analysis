@@ -13,6 +13,7 @@ from volume_price_analysis.agent.ai_client import (
     _TRUNCATION_WARNING,
     SYSTEM_PROMPT,
     _build_user_message,
+    _drop_superseded_scan_fields,
     _project_deep_analysis,
     _project_scan_results,
     find_ungrounded_tickers,
@@ -412,6 +413,55 @@ class TestProjectScanResults:
         assert _project_scan_results({"summary": {}}) == {"summary": {}}
 
 
+class TestDropSupersededScanFields:
+    """Scan-level targets must be dropped for symbols that have a deep analysis."""
+
+    def _scan(self):
+        return {
+            "summary": {"total_candidates": 2},
+            "top_bullish": [
+                {
+                    "symbol": "BSX",
+                    "composite_score": -4.0,
+                    "expected_move_pct": 6.4,
+                    "key_levels": {"upper_target": 45.8, "lower_target": 40.32},
+                },
+                {
+                    "symbol": "AAPL",
+                    "composite_score": 3.0,
+                    "expected_move_pct": 4.1,
+                    "key_levels": {"upper_target": 160.0, "lower_target": 148.0},
+                },
+            ],
+        }
+
+    def test_strips_targets_for_deep_analyzed_symbols(self):
+        result = _drop_superseded_scan_fields(self._scan(), [{"symbol": "BSX"}])
+        bsx, aapl = result["top_bullish"]
+        # BSX has a deep analysis: its scan targets would conflict, so drop them.
+        assert "key_levels" not in bsx
+        assert "expected_move_pct" not in bsx
+        assert bsx["composite_score"] == -4.0
+        # AAPL has no deep analysis: its scan targets are the only ones, keep them.
+        assert aapl["key_levels"]["lower_target"] == 148.0
+        assert aapl["expected_move_pct"] == 4.1
+
+    def test_does_not_mutate_input(self):
+        scan = self._scan()
+        _drop_superseded_scan_fields(scan, [{"symbol": "BSX"}])
+        assert "key_levels" in scan["top_bullish"][0]
+
+    def test_no_deep_analyses_returns_unchanged(self):
+        scan = self._scan()
+        assert _drop_superseded_scan_fields(scan, []) is scan
+
+    def test_handles_malformed_entries(self):
+        scan = {"top_bullish": "not-a-list", "top_bearish": [None, {"symbol": "BSX"}]}
+        result = _drop_superseded_scan_fields(scan, [{"symbol": "BSX"}, "junk", {}])
+        assert result["top_bullish"] == "not-a-list"
+        assert result["top_bearish"][0] is None
+
+
 class TestProjectDeepAnalysis:
     """Test the curated deep-analysis projection (O3)."""
 
@@ -501,6 +551,30 @@ class TestBuildUserMessageProjection:
         # Internal scoring detail is dropped from the model-facing prompt.
         assert "score_breakdown" not in curated
         assert "plus_di" not in curated
+
+    def test_deep_analyzed_symbol_gets_single_target_source(self):
+        # A symbol with a deep analysis must not also carry scan-level targets:
+        # the two are computed from different data windows and the model would
+        # cite both (e.g. "$40.32 scan target" vs "$39.75 lower target").
+        scan = {
+            "summary": {"total_candidates": 1},
+            "top_bearish": [
+                {
+                    "symbol": "BSX",
+                    "expected_move_pct": 6.4,
+                    "key_levels": {"upper_target": 45.8, "lower_target": 40.32},
+                }
+            ],
+        }
+        deep = {
+            "symbol": "BSX",
+            "volatility_analysis": {
+                "expected_move": {"upper_target": 46.37, "lower_target": 39.75},
+            },
+        }
+        curated = _build_user_message(scan, [deep])
+        assert "40.32" not in curated
+        assert "39.75" in curated
 
 
 class TestGenerateBriefingAnthropic:
@@ -1954,6 +2028,86 @@ class TestDryRunNoAi:
         assert "total_candidates" in captured.out
 
 
+class TestStatsLineFooter:
+    """The footer must distinguish symbols scanned from candidates found."""
+
+    @pytest.mark.asyncio
+    async def test_footer_reports_scanned_and_found_separately(self, mocker, capsys):
+        scan_data = {
+            "scan_parameters": {"symbols_scanned": 540},
+            "summary": {
+                "total_candidates": 96,
+                "bullish_setups": 47,
+                "bearish_setups": 49,
+                "high_conviction": 4,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value=scan_data,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="Briefing body",
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+
+        await run_morning_briefing(config, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "540 symbols scanned" in captured.out
+        assert "96 candidates found" in captured.out
+        assert "candidates scanned" not in captured.out
+
+    @pytest.mark.asyncio
+    async def test_footer_omits_scanned_count_when_absent(self, mocker, capsys):
+        scan_data = {
+            "summary": {
+                "total_candidates": 3,
+                "bullish_setups": 2,
+                "bearish_setups": 1,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value=scan_data,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="Briefing body",
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+
+        await run_morning_briefing(config, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "symbols scanned" not in captured.out
+        assert "3 candidates found" in captured.out
+
+
 class TestMain:
     """Test the main() entry point (lines 212-252, 256)."""
 
@@ -2354,6 +2508,24 @@ class TestSystemPromptGrounding:
     def test_prompt_mentions_tickers_must_come_from_data(self):
         lowered = SYSTEM_PROMPT.lower()
         assert "ticker" in lowered
+
+
+class TestSystemPromptConsistency:
+    """The prompt must forbid conflicting values and overstated target labels."""
+
+    def test_prompt_requires_one_value_per_metric(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "one value per metric" in lowered
+        assert "deep-analysis values" in lowered
+
+    def test_prompt_labels_targets_as_one_sigma_expected_move(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "standard deviation" in lowered
+        assert "not as predictions" in lowered
+
+    def test_prompt_clarifies_hv_percentile_is_relative(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "own recent history" in lowered
 
 
 class TestFindUngroundedTickers:
