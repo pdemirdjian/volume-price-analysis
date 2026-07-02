@@ -13,6 +13,7 @@ from volume_price_analysis.agent.ai_client import (
     _TRUNCATION_WARNING,
     SYSTEM_PROMPT,
     _build_user_message,
+    _drop_superseded_scan_fields,
     _project_deep_analysis,
     _project_scan_results,
     find_ungrounded_tickers,
@@ -27,6 +28,7 @@ from volume_price_analysis.agent.email_sender import (
     send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
+    _candidate_symbols,
     _check_earnings,
     _fallback_briefing,
     _fetch_earnings_warnings,
@@ -43,6 +45,22 @@ from volume_price_analysis.agent.scheduler import (
 from volume_price_analysis.agent.scheduler import (
     main as scheduler_main,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_network_earnings_fetch(mocker):
+    """Keep unit tests off the network.
+
+    run_morning_briefing's earnings guard otherwise makes real yfinance calls
+    (and leaks its sqlite cache connection) for every analysed symbol. Tests
+    that exercise the earnings helpers directly are unaffected: they call the
+    functions through this module's imports, not the patched morning_agent
+    attribute.
+    """
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent._fetch_earnings_warnings",
+        return_value={},
+    )
 
 
 class TestAgentConfig:
@@ -208,6 +226,27 @@ class TestGetTopSymbols:
         }
         symbols = _get_top_symbols(scan_results, 5)
         assert symbols == []
+
+
+class TestCandidateSymbols:
+    """Test symbol collection for ticker linkification."""
+
+    def test_collects_from_all_lists(self):
+        scan_results = {
+            "high_conviction_setups": [{"symbol": "NVDA"}],
+            "top_bullish": [{"symbol": "AAPL"}, {"symbol": "NVDA"}],
+            "top_bearish": [{"symbol": "TSLA"}],
+        }
+        deep_analyses = [{"symbol": "MSFT"}, {"score": 1.0}]
+        assert _candidate_symbols(scan_results, deep_analyses) == {
+            "NVDA",
+            "AAPL",
+            "TSLA",
+            "MSFT",
+        }
+
+    def test_handles_empty_results(self):
+        assert _candidate_symbols({}, []) == set()
 
 
 class TestFallbackBriefing:
@@ -390,6 +429,55 @@ class TestProjectScanResults:
         assert _project_scan_results({"summary": {}}) == {"summary": {}}
 
 
+class TestDropSupersededScanFields:
+    """Scan-level targets must be dropped for symbols that have a deep analysis."""
+
+    def _scan(self):
+        return {
+            "summary": {"total_candidates": 2},
+            "top_bullish": [
+                {
+                    "symbol": "BSX",
+                    "composite_score": -4.0,
+                    "expected_move_pct": 6.4,
+                    "key_levels": {"upper_target": 45.8, "lower_target": 40.32},
+                },
+                {
+                    "symbol": "AAPL",
+                    "composite_score": 3.0,
+                    "expected_move_pct": 4.1,
+                    "key_levels": {"upper_target": 160.0, "lower_target": 148.0},
+                },
+            ],
+        }
+
+    def test_strips_targets_for_deep_analyzed_symbols(self):
+        result = _drop_superseded_scan_fields(self._scan(), [{"symbol": "BSX"}])
+        bsx, aapl = result["top_bullish"]
+        # BSX has a deep analysis: its scan targets would conflict, so drop them.
+        assert "key_levels" not in bsx
+        assert "expected_move_pct" not in bsx
+        assert bsx["composite_score"] == -4.0
+        # AAPL has no deep analysis: its scan targets are the only ones, keep them.
+        assert aapl["key_levels"]["lower_target"] == 148.0
+        assert aapl["expected_move_pct"] == 4.1
+
+    def test_does_not_mutate_input(self):
+        scan = self._scan()
+        _drop_superseded_scan_fields(scan, [{"symbol": "BSX"}])
+        assert "key_levels" in scan["top_bullish"][0]
+
+    def test_no_deep_analyses_returns_unchanged(self):
+        scan = self._scan()
+        assert _drop_superseded_scan_fields(scan, []) is scan
+
+    def test_handles_malformed_entries(self):
+        scan = {"top_bullish": "not-a-list", "top_bearish": [None, {"symbol": "BSX"}]}
+        result = _drop_superseded_scan_fields(scan, [{"symbol": "BSX"}, "junk", {}])
+        assert result["top_bullish"] == "not-a-list"
+        assert result["top_bearish"][0] is None
+
+
 class TestProjectDeepAnalysis:
     """Test the curated deep-analysis projection (O3)."""
 
@@ -479,6 +567,30 @@ class TestBuildUserMessageProjection:
         # Internal scoring detail is dropped from the model-facing prompt.
         assert "score_breakdown" not in curated
         assert "plus_di" not in curated
+
+    def test_deep_analyzed_symbol_gets_single_target_source(self):
+        # A symbol with a deep analysis must not also carry scan-level targets:
+        # the two are computed from different data windows and the model would
+        # cite both (e.g. "$40.32 scan target" vs "$39.75 lower target").
+        scan = {
+            "summary": {"total_candidates": 1},
+            "top_bearish": [
+                {
+                    "symbol": "BSX",
+                    "expected_move_pct": 6.4,
+                    "key_levels": {"upper_target": 45.8, "lower_target": 40.32},
+                }
+            ],
+        }
+        deep = {
+            "symbol": "BSX",
+            "volatility_analysis": {
+                "expected_move": {"upper_target": 46.37, "lower_target": 39.75},
+            },
+        }
+        curated = _build_user_message(scan, [deep])
+        assert "40.32" not in curated
+        assert "39.75" in curated
 
 
 class TestGenerateBriefingAnthropic:
@@ -1342,12 +1454,17 @@ class TestRunLoop:
 
         stop_event = asyncio.Event()
 
-        # Schedule stop_event.set() to fire during the await inside the loop body
-        async def set_stop_soon():
-            await asyncio.sleep(0)
+        # The mocked past date makes delay=0, so the loop body runs immediately.
+        # Stub the briefing (a real one would hit the network) and use it to
+        # stop the loop after one iteration.
+        async def fake_briefing(cfg):
             stop_event.set()
+            return True
 
-        asyncio.create_task(set_stop_soon())
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.run_morning_briefing",
+            side_effect=fake_briefing,
+        )
 
         await _run_loop(time(8, 30), ET, stop_event, skip_holidays=True)
 
@@ -1381,11 +1498,17 @@ class TestRunLoop:
 
         stop_event = asyncio.Event()
 
-        async def set_stop_soon():
-            await asyncio.sleep(0)
+        # The mocked past date makes delay=0, so the loop body runs immediately.
+        # Stub the briefing (a real one would hit the network) and use it to
+        # stop the loop after one iteration.
+        async def fake_briefing(cfg):
             stop_event.set()
+            return True
 
-        asyncio.create_task(set_stop_soon())
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.run_morning_briefing",
+            side_effect=fake_briefing,
+        )
 
         await _run_loop(time(8, 30), ET, stop_event, skip_holidays=False)
 
@@ -1932,6 +2055,86 @@ class TestDryRunNoAi:
         assert "total_candidates" in captured.out
 
 
+class TestStatsLineFooter:
+    """The footer must distinguish symbols scanned from candidates found."""
+
+    @pytest.mark.asyncio
+    async def test_footer_reports_scanned_and_found_separately(self, mocker, capsys):
+        scan_data = {
+            "scan_parameters": {"symbols_scanned": 540},
+            "summary": {
+                "total_candidates": 96,
+                "bullish_setups": 47,
+                "bearish_setups": 49,
+                "high_conviction": 4,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value=scan_data,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="Briefing body",
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+
+        await run_morning_briefing(config, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "540 symbols scanned" in captured.out
+        assert "96 candidates found" in captured.out
+        assert "candidates scanned" not in captured.out
+
+    @pytest.mark.asyncio
+    async def test_footer_omits_scanned_count_when_absent(self, mocker, capsys):
+        scan_data = {
+            "summary": {
+                "total_candidates": 3,
+                "bullish_setups": 2,
+                "bearish_setups": 1,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value=scan_data,
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="Briefing body",
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+        )
+
+        await run_morning_briefing(config, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert "symbols scanned" not in captured.out
+        assert "3 candidates found" in captured.out
+
+
 class TestMain:
     """Test the main() entry point (lines 212-252, 256)."""
 
@@ -1955,6 +2158,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_config_validation_failure_exits(self, mocker):
         """Config validation errors cause sys.exit(1)."""
@@ -1994,6 +2200,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_dry_run_with_ai_needs_api_key(self, mocker):
         """--dry-run without --no-ai still validates AI config."""
@@ -2033,6 +2242,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_dry_run_with_valid_ai_config_succeeds(self, mocker):
         """--dry-run with valid AI config passes validation."""
@@ -2054,6 +2266,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_critical_failure_sends_error_email(self, mocker):
         """Critical exception triggers send_error_email and sys.exit(1)."""
@@ -2068,7 +2283,7 @@ class TestMain:
                 email_to="c@d.com",
             ),
         )
-        mocker.patch(
+        mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             side_effect=RuntimeError("Critical failure"),
         )
@@ -2082,6 +2297,8 @@ class TestMain:
 
         mock_send_error.assert_called_once()
         assert "Critical failure" in mock_send_error.call_args.kwargs["error_message"]
+        # Close the real coroutine main() handed to the mocked asyncio.run.
+        mock_run.call_args[0][0].close()
 
     def test_main_critical_failure_dry_run_no_error_email(self, mocker):
         """dry-run critical failure does NOT send error email."""
@@ -2096,7 +2313,7 @@ class TestMain:
                 email_to="c@d.com",
             ),
         )
-        mocker.patch(
+        mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             side_effect=RuntimeError("Critical failure"),
         )
@@ -2109,6 +2326,8 @@ class TestMain:
         assert exc_info.value.code == 1
 
         mock_send_error.assert_not_called()
+        # Close the real coroutine main() handed to the mocked asyncio.run.
+        mock_run.call_args[0][0].close()
 
     def test_main_critical_failure_missing_email_password_skips_error_email(self, mocker):
         """Missing email_password means error email is not sent on failure."""
@@ -2142,7 +2361,7 @@ class TestMain:
                 email_to="c@d.com",
             ),
         )
-        mocker.patch(
+        mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             return_value=False,
         )
@@ -2150,6 +2369,8 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 2
+        # Close the real coroutine main() handed to the mocked asyncio.run.
+        mock_run.call_args[0][0].close()
 
 
 class TestSubjectHeaderInjection:
@@ -2332,6 +2553,24 @@ class TestSystemPromptGrounding:
     def test_prompt_mentions_tickers_must_come_from_data(self):
         lowered = SYSTEM_PROMPT.lower()
         assert "ticker" in lowered
+
+
+class TestSystemPromptConsistency:
+    """The prompt must forbid conflicting values and overstated target labels."""
+
+    def test_prompt_requires_one_value_per_metric(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "one value per metric" in lowered
+        assert "deep-analysis values" in lowered
+
+    def test_prompt_labels_targets_as_one_sigma_expected_move(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "standard deviation" in lowered
+        assert "not as predictions" in lowered
+
+    def test_prompt_clarifies_hv_percentile_is_relative(self):
+        lowered = SYSTEM_PROMPT.lower()
+        assert "own recent history" in lowered
 
 
 class TestFindUngroundedTickers:
@@ -2572,32 +2811,62 @@ class TestLinkifyTickers:
 
     def test_wraps_ticker_in_tradingview_link(self):
         html = "<p><strong>AAPL</strong> looks bullish.</p>"
-        result = _linkify_tickers(html)
+        result = _linkify_tickers(html, {"AAPL"})
         assert 'href="https://www.tradingview.com/chart/?symbol=AAPL"' in result
         assert ">AAPL<" in result
 
-    def test_skips_common_words(self):
-        html = "<p>THE stock AND the market.</p>"
-        result = _linkify_tickers(html)
-        assert "THE" in result
-        assert 'symbol=THE"' not in result
-        assert 'symbol=AND"' not in result
+    def test_no_symbols_returns_unchanged(self):
+        html = "<p>AAPL and NVDA look bullish.</p>"
+        assert _linkify_tickers(html) == html
+        assert _linkify_tickers(html, set()) == html
+
+    def test_only_links_whitelisted_symbols(self):
+        html = "<p>AAPL is up but NVDA is down.</p>"
+        result = _linkify_tickers(html, {"AAPL"})
+        assert 'symbol=AAPL"' in result
+        assert 'symbol=NVDA"' not in result
+
+    def test_skips_indicator_acronyms(self):
+        html = "<p>RSI is 26.7 and ADX is 47.0 with HV at 21.5%.</p>"
+        result = _linkify_tickers(html, {"BSX"})
+        assert "<a " not in result
+
+    def test_does_not_truncate_long_caps_words(self):
+        html = "<p>EXTREME OVERSOLD CONDITION.</p>"
+        result = _linkify_tickers(html, {"EXTRE", "OVERS", "CONDI"})
+        assert "<a " not in result
+
+    def test_does_not_link_option_strikes(self):
+        html = "<p>Buy the 430C and sell the 475C.</p>"
+        result = _linkify_tickers(html, {"C"})
+        assert "<a " not in result
+
+    def test_links_common_word_ticker_when_candidate(self):
+        html = "<p><strong>HAS</strong> shows a bullish divergence.</p>"
+        result = _linkify_tickers(html, {"HAS"})
+        assert 'symbol=HAS"' in result
+
+    def test_longest_symbol_wins_overlap(self):
+        html = "<p>GOOGL broke out.</p>"
+        result = _linkify_tickers(html, {"GOOG", "GOOGL"})
+        assert 'symbol=GOOGL"' in result
+        assert 'symbol=GOOG"' not in result
 
     def test_does_not_double_link(self):
         html = '<p><a href="https://example.com">TSLA</a> is volatile.</p>'
-        result = _linkify_tickers(html)
+        result = _linkify_tickers(html, {"TSLA"})
         assert result.count("<a ") == 1
 
     def test_skips_html_tag_content(self):
         html = '<div CLASS="foo">NVDA is up</div>'
-        result = _linkify_tickers(html)
+        result = _linkify_tickers(html, {"CLASS", "NVDA"})
         assert 'symbol=CLASS"' not in result
         assert 'symbol=NVDA"' in result
 
-    def test_5_char_ticker(self):
-        html = "<p>GOOGL broke out.</p>"
-        result = _linkify_tickers(html)
-        assert 'symbol=GOOGL"' in result
+    def test_hyphenated_symbol(self):
+        html = "<p>BRK-B is consolidating.</p>"
+        result = _linkify_tickers(html, {"BRK-B"})
+        assert 'symbol=BRK-B"' in result
 
     def test_empty_string(self):
-        assert _linkify_tickers("") == ""
+        assert _linkify_tickers("", {"AAPL"}) == ""

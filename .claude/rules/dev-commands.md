@@ -4,7 +4,8 @@
 uv sync --all-extras --dev          # install dependencies
 uv run pytest                       # run all tests
 uv run pytest tests/test_indicators.py                        # single file
-uv run pytest tests/test_indicators.py::test_calculate_obv   # single test
+uv run pytest tests/test_indicators.py::TestOBV::test_obv_basic_calculation  # single test
+uv run pytest -n 0                  # serial run (disable pytest-xdist parallelism, e.g. for pdb)
 uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing  # coverage
 uv run ruff format src/ tests/      # format
 uv run ruff check --fix src/ tests/ # lint + auto-fix

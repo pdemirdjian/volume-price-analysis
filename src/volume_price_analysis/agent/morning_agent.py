@@ -139,13 +139,16 @@ async def run_morning_briefing(
 
     # Step 4: Deliver
     elapsed_total = time.monotonic() - start_time
+    symbols_scanned = scan_results.get("scan_parameters", {}).get("symbols_scanned")
+    scanned_part = f"{symbols_scanned} symbols scanned | " if symbols_scanned else ""
     stats_line = (
         f"\n\n---\n"
         f"**14-day holding period** - Indicators, expected moves, and strategies "
         f"are calibrated for approx. 14 DTE options. Shorter-duration plays (0-5 DTE) "
         f"may need different setups.\n\n"
         f"*Generated in {elapsed_total:.1f}s | "
-        f"{total_candidates} candidates scanned | "
+        f"{scanned_part}"
+        f"{total_candidates} candidates found | "
         f"{len(deep_analyses)} deep analyses*"
     )
 
@@ -181,6 +184,7 @@ async def run_morning_briefing(
             to_addr=config.email_to,
             smtp_host=config.email_smtp_host,
             smtp_port=config.email_smtp_port,
+            ticker_symbols=_candidate_symbols(scan_results, deep_analyses),
         )
 
     logger.info("Morning briefing complete in %.1fs", elapsed_total)
@@ -263,6 +267,18 @@ def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
             seen.add(sym)
 
     return symbols[:max_count]
+
+
+def _candidate_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str]:
+    """Collect every symbol the briefing may mention, for ticker linkification."""
+    symbols = {
+        candidate["symbol"]
+        for key in ("high_conviction_setups", "top_bullish", "top_bearish")
+        for candidate in scan_results.get(key, [])
+        if "symbol" in candidate
+    }
+    symbols.update(a["symbol"] for a in deep_analyses if "symbol" in a)
+    return symbols
 
 
 def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:

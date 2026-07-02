@@ -32,6 +32,7 @@ dev = [
     "pytest-mock==3.15.1",
     "ruff==0.15.20",
     "mypy==2.1.0",
+    "pytest-xdist==3.8.0",
 ]
 
 [tool.pytest.ini_options]
@@ -42,6 +43,10 @@ python_functions = ["test_*"]
 addopts = [
     "-v",
     "--strict-markers",
+    # Parallelize across CPU cores (pytest-xdist). Coverage still aggregates
+    # correctly across workers via pytest-cov. Override with `-p no:xdist` or
+    # `-n 0` when debugging a single test.
+    "-n=auto",
     "--cov=src/volume_price_analysis",
     "--cov-report=term-missing",
     "--cov-report=html",

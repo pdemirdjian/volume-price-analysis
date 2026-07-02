@@ -36,7 +36,17 @@ VOLATILITY HONESTY: The volatility percentile in the data (fields named
 realized price moves — it is NOT options-market implied volatility (IV). Always
 label it as an HV percentile (e.g., "HV percentile 78% (proxy)") and never
 present it as implied volatility. Frame cheap/expensive options conclusions as
-inferences from HV, not measured IV.
+inferences from HV, not measured IV. Note the percentile ranks the symbol
+against its OWN recent history: a low HV percentile means volatility is low
+for that symbol, not that the expected move is small in absolute terms.
+
+CONSISTENCY: Cite exactly ONE value per metric per symbol. If a symbol appears
+in both the scan results and the deep analysis, use the deep-analysis values
+for prices, targets, and levels — never quote a second, conflicting number for
+the same metric elsewhere in the briefing. The "upper_target" / "lower_target"
+fields are a ±1 standard deviation expected move over the holding period;
+label them as such (e.g., "14-day ±1σ upper target"), not as predictions or
+price objectives.
 
 Format the briefing in markdown with clear sections:
 1. **Executive Summary** - 2-3 sentence overview of today's market setup
@@ -454,11 +464,46 @@ def _project_deep_analysis(analysis: dict) -> dict:
     return projected
 
 
+# Scan-candidate fields superseded by the deep analysis for the same symbol.
+# The scan and the deep analysis compute expected-move targets from different
+# data windows, so passing both invites the model to cite two conflicting
+# targets for one symbol (e.g. a "$40.32 scan target" next to a "$39.75
+# 14-day lower target").
+_SCAN_FIELDS_SUPERSEDED_BY_DEEP = ("key_levels", "expected_move_pct")
+
+
+def _drop_superseded_scan_fields(projected_scan: dict, deep_analyses: list[dict]) -> dict:
+    """Strip scan-level targets from candidates that also have a deep analysis.
+
+    Returns a copy; candidate dicts are shared with the caller's scan results
+    and must not be mutated.
+    """
+    deep_symbols = {
+        a.get("symbol") for a in deep_analyses or [] if isinstance(a, dict) and a.get("symbol")
+    }
+    if not deep_symbols:
+        return projected_scan
+
+    result = dict(projected_scan)
+    for key in ("high_conviction_setups", "top_bullish", "top_bearish"):
+        candidates = result.get(key)
+        if not isinstance(candidates, list):
+            continue
+        result[key] = [
+            {k: v for k, v in c.items() if k not in _SCAN_FIELDS_SUPERSEDED_BY_DEEP}
+            if isinstance(c, dict) and c.get("symbol") in deep_symbols
+            else c
+            for c in candidates
+        ]
+    return result
+
+
 def _build_user_message(
     scan_results: dict, deep_analyses: list[dict], earnings_preamble: str = ""
 ) -> str:
     """Build the user message with structured data for the AI."""
     projected_scan = _project_scan_results(scan_results)
+    projected_scan = _drop_superseded_scan_fields(projected_scan, deep_analyses)
     user_content = "Generate a morning options trading briefing from this data:\n\n"
     if earnings_preamble:
         user_content += earnings_preamble + "\n"
