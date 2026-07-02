@@ -1438,12 +1438,17 @@ class TestRunLoop:
 
         stop_event = asyncio.Event()
 
-        # Schedule stop_event.set() to fire during the await inside the loop body
-        async def set_stop_soon():
-            await asyncio.sleep(0)
+        # The mocked past date makes delay=0, so the loop body runs immediately.
+        # Stub the briefing (a real one would hit the network) and use it to
+        # stop the loop after one iteration.
+        async def fake_briefing(cfg):
             stop_event.set()
+            return True
 
-        asyncio.create_task(set_stop_soon())
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.run_morning_briefing",
+            side_effect=fake_briefing,
+        )
 
         await _run_loop(time(8, 30), ET, stop_event, skip_holidays=True)
 
@@ -1477,11 +1482,17 @@ class TestRunLoop:
 
         stop_event = asyncio.Event()
 
-        async def set_stop_soon():
-            await asyncio.sleep(0)
+        # The mocked past date makes delay=0, so the loop body runs immediately.
+        # Stub the briefing (a real one would hit the network) and use it to
+        # stop the loop after one iteration.
+        async def fake_briefing(cfg):
             stop_event.set()
+            return True
 
-        asyncio.create_task(set_stop_soon())
+        mocker.patch(
+            "volume_price_analysis.agent.scheduler.run_morning_briefing",
+            side_effect=fake_briefing,
+        )
 
         await _run_loop(time(8, 30), ET, stop_event, skip_holidays=False)
 
