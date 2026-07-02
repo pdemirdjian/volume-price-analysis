@@ -47,6 +47,22 @@ from volume_price_analysis.agent.scheduler import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_network_earnings_fetch(mocker):
+    """Keep unit tests off the network.
+
+    run_morning_briefing's earnings guard otherwise makes real yfinance calls
+    (and leaks its sqlite cache connection) for every analysed symbol. Tests
+    that exercise the earnings helpers directly are unaffected: they call the
+    functions through this module's imports, not the patched morning_agent
+    attribute.
+    """
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent._fetch_earnings_warnings",
+        return_value={},
+    )
+
+
 class TestAgentConfig:
     """Test configuration loading and validation."""
 
@@ -2142,6 +2158,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_config_validation_failure_exits(self, mocker):
         """Config validation errors cause sys.exit(1)."""
@@ -2181,6 +2200,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_dry_run_with_ai_needs_api_key(self, mocker):
         """--dry-run without --no-ai still validates AI config."""
@@ -2220,6 +2242,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_dry_run_with_valid_ai_config_succeeds(self, mocker):
         """--dry-run with valid AI config passes validation."""
@@ -2241,6 +2266,9 @@ class TestMain:
         main()
 
         mock_run.assert_called_once()
+        # Close the real coroutine main() handed to the mocked asyncio.run,
+        # else it warns "coroutine was never awaited" at GC time.
+        mock_run.call_args[0][0].close()
 
     def test_main_critical_failure_sends_error_email(self, mocker):
         """Critical exception triggers send_error_email and sys.exit(1)."""
@@ -2255,7 +2283,7 @@ class TestMain:
                 email_to="c@d.com",
             ),
         )
-        mocker.patch(
+        mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             side_effect=RuntimeError("Critical failure"),
         )
@@ -2269,6 +2297,8 @@ class TestMain:
 
         mock_send_error.assert_called_once()
         assert "Critical failure" in mock_send_error.call_args.kwargs["error_message"]
+        # Close the real coroutine main() handed to the mocked asyncio.run.
+        mock_run.call_args[0][0].close()
 
     def test_main_critical_failure_dry_run_no_error_email(self, mocker):
         """dry-run critical failure does NOT send error email."""
@@ -2283,7 +2313,7 @@ class TestMain:
                 email_to="c@d.com",
             ),
         )
-        mocker.patch(
+        mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             side_effect=RuntimeError("Critical failure"),
         )
@@ -2296,6 +2326,8 @@ class TestMain:
         assert exc_info.value.code == 1
 
         mock_send_error.assert_not_called()
+        # Close the real coroutine main() handed to the mocked asyncio.run.
+        mock_run.call_args[0][0].close()
 
     def test_main_critical_failure_missing_email_password_skips_error_email(self, mocker):
         """Missing email_password means error email is not sent on failure."""
@@ -2329,7 +2361,7 @@ class TestMain:
                 email_to="c@d.com",
             ),
         )
-        mocker.patch(
+        mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             return_value=False,
         )
@@ -2337,6 +2369,8 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 2
+        # Close the real coroutine main() handed to the mocked asyncio.run.
+        mock_run.call_args[0][0].close()
 
 
 class TestSubjectHeaderInjection:
