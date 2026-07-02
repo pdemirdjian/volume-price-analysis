@@ -181,6 +181,7 @@ async def run_morning_briefing(
             to_addr=config.email_to,
             smtp_host=config.email_smtp_host,
             smtp_port=config.email_smtp_port,
+            ticker_symbols=_candidate_symbols(scan_results, deep_analyses),
         )
 
     logger.info("Morning briefing complete in %.1fs", elapsed_total)
@@ -263,6 +264,18 @@ def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
             seen.add(sym)
 
     return symbols[:max_count]
+
+
+def _candidate_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str]:
+    """Collect every symbol the briefing may mention, for ticker linkification."""
+    symbols = {
+        candidate["symbol"]
+        for key in ("high_conviction_setups", "top_bullish", "top_bearish")
+        for candidate in scan_results.get(key, [])
+        if "symbol" in candidate
+    }
+    symbols.update(a["symbol"] for a in deep_analyses if "symbol" in a)
+    return symbols
 
 
 def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:

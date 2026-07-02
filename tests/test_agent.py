@@ -27,6 +27,7 @@ from volume_price_analysis.agent.email_sender import (
     send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
+    _candidate_symbols,
     _check_earnings,
     _fallback_briefing,
     _fetch_earnings_warnings,
@@ -208,6 +209,27 @@ class TestGetTopSymbols:
         }
         symbols = _get_top_symbols(scan_results, 5)
         assert symbols == []
+
+
+class TestCandidateSymbols:
+    """Test symbol collection for ticker linkification."""
+
+    def test_collects_from_all_lists(self):
+        scan_results = {
+            "high_conviction_setups": [{"symbol": "NVDA"}],
+            "top_bullish": [{"symbol": "AAPL"}, {"symbol": "NVDA"}],
+            "top_bearish": [{"symbol": "TSLA"}],
+        }
+        deep_analyses = [{"symbol": "MSFT"}, {"score": 1.0}]
+        assert _candidate_symbols(scan_results, deep_analyses) == {
+            "NVDA",
+            "AAPL",
+            "TSLA",
+            "MSFT",
+        }
+
+    def test_handles_empty_results(self):
+        assert _candidate_symbols({}, []) == set()
 
 
 class TestFallbackBriefing:
@@ -2572,32 +2594,62 @@ class TestLinkifyTickers:
 
     def test_wraps_ticker_in_tradingview_link(self):
         html = "<p><strong>AAPL</strong> looks bullish.</p>"
-        result = _linkify_tickers(html)
+        result = _linkify_tickers(html, {"AAPL"})
         assert 'href="https://www.tradingview.com/chart/?symbol=AAPL"' in result
         assert ">AAPL<" in result
 
-    def test_skips_common_words(self):
-        html = "<p>THE stock AND the market.</p>"
-        result = _linkify_tickers(html)
-        assert "THE" in result
-        assert 'symbol=THE"' not in result
-        assert 'symbol=AND"' not in result
+    def test_no_symbols_returns_unchanged(self):
+        html = "<p>AAPL and NVDA look bullish.</p>"
+        assert _linkify_tickers(html) == html
+        assert _linkify_tickers(html, set()) == html
+
+    def test_only_links_whitelisted_symbols(self):
+        html = "<p>AAPL is up but NVDA is down.</p>"
+        result = _linkify_tickers(html, {"AAPL"})
+        assert 'symbol=AAPL"' in result
+        assert 'symbol=NVDA"' not in result
+
+    def test_skips_indicator_acronyms(self):
+        html = "<p>RSI is 26.7 and ADX is 47.0 with HV at 21.5%.</p>"
+        result = _linkify_tickers(html, {"BSX"})
+        assert "<a " not in result
+
+    def test_does_not_truncate_long_caps_words(self):
+        html = "<p>EXTREME OVERSOLD CONDITION.</p>"
+        result = _linkify_tickers(html, {"EXTRE", "OVERS", "CONDI"})
+        assert "<a " not in result
+
+    def test_does_not_link_option_strikes(self):
+        html = "<p>Buy the 430C and sell the 475C.</p>"
+        result = _linkify_tickers(html, {"C"})
+        assert "<a " not in result
+
+    def test_links_common_word_ticker_when_candidate(self):
+        html = "<p><strong>HAS</strong> shows a bullish divergence.</p>"
+        result = _linkify_tickers(html, {"HAS"})
+        assert 'symbol=HAS"' in result
+
+    def test_longest_symbol_wins_overlap(self):
+        html = "<p>GOOGL broke out.</p>"
+        result = _linkify_tickers(html, {"GOOG", "GOOGL"})
+        assert 'symbol=GOOGL"' in result
+        assert 'symbol=GOOG"' not in result
 
     def test_does_not_double_link(self):
         html = '<p><a href="https://example.com">TSLA</a> is volatile.</p>'
-        result = _linkify_tickers(html)
+        result = _linkify_tickers(html, {"TSLA"})
         assert result.count("<a ") == 1
 
     def test_skips_html_tag_content(self):
         html = '<div CLASS="foo">NVDA is up</div>'
-        result = _linkify_tickers(html)
+        result = _linkify_tickers(html, {"CLASS", "NVDA"})
         assert 'symbol=CLASS"' not in result
         assert 'symbol=NVDA"' in result
 
-    def test_5_char_ticker(self):
-        html = "<p>GOOGL broke out.</p>"
-        result = _linkify_tickers(html)
-        assert 'symbol=GOOGL"' in result
+    def test_hyphenated_symbol(self):
+        html = "<p>BRK-B is consolidating.</p>"
+        result = _linkify_tickers(html, {"BRK-B"})
+        assert 'symbol=BRK-B"' in result
 
     def test_empty_string(self):
-        assert _linkify_tickers("") == ""
+        assert _linkify_tickers("", {"AAPL"}) == ""
