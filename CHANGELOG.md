@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.7.0...v2.7.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **agent:** linkify only actual scan symbols in briefing emails ([#341](https://github.com/pdemirdjian/volume-price-analysis/issues/341)) ([cf8e6ab](https://github.com/pdemirdjian/volume-price-analysis/commit/cf8e6ab8c01b4be03168073453aba9fa0f7faac0))
+
 ## [2.7.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.6.0...v2.7.0) (2026-07-01)
 
 
