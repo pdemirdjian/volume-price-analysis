@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.7.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.7.3...v2.7.4) (2026-07-12)
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=2.11.0 ([#362](https://github.com/pdemirdjian/volume-price-analysis/issues/362)) ([4152773](https://github.com/pdemirdjian/volume-price-analysis/commit/41527737564a9bac5a08b98599050694ecedb596))
+* **deps:** update dependency numpy to v2.5.1 ([#355](https://github.com/pdemirdjian/volume-price-analysis/issues/355)) ([41621f0](https://github.com/pdemirdjian/volume-price-analysis/commit/41621f0b1002b5d9d154462e3414bee415497a39))
+
 ## [2.7.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.7.2...v2.7.3) (2026-07-06)
 
 
