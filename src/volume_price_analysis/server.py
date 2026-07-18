@@ -31,6 +31,7 @@ from .indicators import (
     calculate_obv,
     calculate_price_roc,
     calculate_relative_volume,
+    calculate_rsi_divergence,
     calculate_volume_profile,
     calculate_vpt,
     calculate_vwap,
@@ -522,6 +523,56 @@ async def handle_list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
+        Tool(
+            name="calculate_rsi_divergence",
+            description=(
+                "Detect causal RSI divergence at the latest bar using pivot-based analysis. "
+                "Bullish divergence: price makes a lower low while RSI makes a higher low "
+                "(potential reversal up). Bearish divergence: price makes a higher high while "
+                "RSI makes a lower high (potential reversal down). Uses confirmed swing pivots "
+                "only — no lookahead. Default period '3mo' to ensure enough pivots."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Stock ticker symbol",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format (optional)",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format (optional)",
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": (
+                            "Period if dates not specified (default: '3mo'). "
+                            "At least 3mo recommended — 1mo rarely holds two confirmed pivots."
+                        ),
+                        "default": "3mo",
+                    },
+                    "rsi_period": {
+                        "type": "integer",
+                        "description": "RSI calculation period (default: 14)",
+                        "default": 14,
+                        "minimum": 1,
+                        "maximum": 200,
+                    },
+                    "divergence_lookback": {
+                        "type": "integer",
+                        "description": "Minimum bars for divergence history gate (default: 10)",
+                        "default": 10,
+                        "minimum": 5,
+                        "maximum": 200,
+                    },
+                },
+                "required": ["symbol"],
+            },
+        ),
     ]
 
 
@@ -557,6 +608,7 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             "analyze_volume_trends",
             "comprehensive_analysis",
             "options_analysis",
+            "calculate_rsi_divergence",
         }
         if name not in single_symbol_tools:
             raise ValueError(f"Unknown tool: {name}")
@@ -569,7 +621,8 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
         end_date = arguments.get("end_date")
 
         # Set default period based on tool type
-        default_period = "3mo" if name == "options_analysis" else "1mo"
+        long_period_tools = {"options_analysis", "calculate_rsi_divergence"}
+        default_period = "3mo" if name in long_period_tools else "1mo"
         period = arguments.get("period", default_period)
 
         # Validate tool-specific integer parameters before fetching data (fail fast)
@@ -589,6 +642,9 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                 1,
                 365,
             )
+        elif name == "calculate_rsi_divergence":
+            _validate_range(arguments.get("rsi_period", 14), "rsi_period", 1, 200)
+            _validate_range(arguments.get("divergence_lookback", 10), "divergence_lookback", 5, 200)
 
         # Fetch stock data
         data = fetch_stock_data(symbol, start_date, end_date, period)
@@ -957,6 +1013,13 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                 days_to_expiration=days_to_expiration,
             )
 
+            return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
+
+        elif name == "calculate_rsi_divergence":
+            rsi_period = arguments.get("rsi_period", 14)
+            divergence_lookback = arguments.get("divergence_lookback", 10)
+            divergence_result = calculate_rsi_divergence(data, rsi_period, divergence_lookback)
+            result = {"symbol": symbol, **divergence_result}
             return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
         raise AssertionError(f"Unhandled tool: {name}")  # pragma: no cover
