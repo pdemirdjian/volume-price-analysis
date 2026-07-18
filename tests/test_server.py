@@ -1534,3 +1534,25 @@ class TestComprehensiveAnalysisBranches:
         assert "volume_indicators" in data
         assert data["volume_indicators"]["mfi"]["condition"] == "Oversold"
         assert data["volume_indicators"]["cmf"]["condition"] == "Strong selling"
+
+
+class TestServerVersion:
+    """Tests for the MCP server version reporting."""
+
+    def test_server_version_matches_package_metadata(self):
+        """_SERVER_VERSION must equal the installed package version."""
+        from importlib.metadata import PackageNotFoundError, version
+
+        from volume_price_analysis.server import _SERVER_VERSION
+
+        try:
+            expected = version("volume-price-analysis-mcp")
+        except PackageNotFoundError:
+            expected = "0.0.0"
+        assert _SERVER_VERSION == expected
+
+    def test_server_version_is_string(self):
+        """_SERVER_VERSION must be a non-empty string."""
+        from volume_price_analysis.server import _SERVER_VERSION
+
+        assert isinstance(_SERVER_VERSION, str) and _SERVER_VERSION
