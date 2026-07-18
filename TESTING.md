@@ -4,17 +4,17 @@ Comprehensive testing documentation for the Volume-Price Analysis MCP Server.
 
 ## Test Suite Overview
 
-The project includes **600+ tests** organized into seven test modules:
+The project includes **639 tests** organized into seven test modules:
 
 | Test Module            | Tests | Coverage                              |
 | ---------------------- | ----- | ------------------------------------- |
 | `test_indicators.py`   | 282   | All volume-price indicators           |
-| `test_agent.py`        | 131   | Morning briefing agent & AI providers |
+| `test_agent.py`        | 151   | Morning briefing agent & AI providers |
+| `test_server.py`       | 72    | MCP server integration                |
+| `test_analysis.py`     | 41    | Scan, options analysis, universes     |
+| `test_data_fetcher.py` | 40    | Data fetching & validation            |
 | `test_backtest.py`     | 34    | Strictly-causal backtest harness      |
-| `test_data_fetcher.py` | 28    | Data fetching & validation            |
-| `test_analysis.py`     | 27    | Scan, options analysis, universes     |
-| `test_server.py`       | 23    | MCP server integration                |
-| `test_scheduler.py`    | 12    | Asyncio scheduler                     |
+| `test_scheduler.py`    | 19    | Asyncio scheduler                     |
 
 ## Quick Start
 
