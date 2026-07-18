@@ -1539,11 +1539,17 @@ class TestComprehensiveAnalysisBranches:
 class TestServerVersion:
     """Tests for the MCP server version reporting."""
 
-    def test_server_version_not_hardcoded(self):
-        """_SERVER_VERSION must not be the old hardcoded value "1.0.0"."""
+    def test_server_version_matches_package_metadata(self):
+        """_SERVER_VERSION must equal the installed package version."""
+        from importlib.metadata import PackageNotFoundError, version
+
         from volume_price_analysis.server import _SERVER_VERSION
 
-        assert _SERVER_VERSION != "1.0.0"
+        try:
+            expected = version("volume-price-analysis-mcp")
+        except PackageNotFoundError:
+            expected = "0.0.0"
+        assert _SERVER_VERSION == expected
 
     def test_server_version_is_string(self):
         """_SERVER_VERSION must be a non-empty string."""
