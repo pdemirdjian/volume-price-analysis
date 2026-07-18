@@ -1534,3 +1534,19 @@ class TestComprehensiveAnalysisBranches:
         assert "volume_indicators" in data
         assert data["volume_indicators"]["mfi"]["condition"] == "Oversold"
         assert data["volume_indicators"]["cmf"]["condition"] == "Strong selling"
+
+
+class TestServerVersion:
+    """Tests for the MCP server version reporting."""
+
+    def test_server_version_not_hardcoded(self):
+        """_SERVER_VERSION must not be the old hardcoded value "1.0.0"."""
+        from volume_price_analysis.server import _SERVER_VERSION
+
+        assert _SERVER_VERSION != "1.0.0"
+
+    def test_server_version_is_string(self):
+        """_SERVER_VERSION must be a non-empty string."""
+        from volume_price_analysis.server import _SERVER_VERSION
+
+        assert isinstance(_SERVER_VERSION, str) and _SERVER_VERSION
