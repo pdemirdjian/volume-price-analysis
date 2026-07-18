@@ -25,12 +25,12 @@ for contributing to the project.
    # Using UV (recommended)
    uv venv
    source .venv/bin/activate
-   uv pip install -e ".[dev]"
+   uv sync --all-extras --dev
 
    # Or using pip
    python -m venv .venv
    source .venv/bin/activate
-   pip install -e ".[dev]"
+   pip install -e .
    ```
 
 3. Run the tests to verify your setup:
