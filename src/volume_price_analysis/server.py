@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+from importlib.metadata import PackageNotFoundError, version
 
 import pandas as pd
 from mcp.server import NotificationOptions, Server
@@ -38,6 +39,11 @@ from .indicators import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    _SERVER_VERSION = version("volume-price-analysis-mcp")
+except PackageNotFoundError:
+    _SERVER_VERSION = "0.0.0"
 
 
 def _sanitize_for_json(obj: object) -> object:
@@ -1064,7 +1070,7 @@ async def main():
             write_stream,
             InitializationOptions(
                 server_name="volume-price-analysis",
-                server_version="1.0.0",
+                server_version=_SERVER_VERSION,
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
