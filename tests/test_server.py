@@ -40,9 +40,10 @@ class TestListTools:
             "comprehensive_analysis",
             "options_analysis",
             "scan_candidates",
+            "calculate_rsi_divergence",
         ]
 
-        assert len(tools) == 11
+        assert len(tools) == 12
         for expected_tool in expected_tools:
             assert expected_tool in tool_names
 
@@ -1556,3 +1557,92 @@ class TestServerVersion:
         from volume_price_analysis.server import _SERVER_VERSION
 
         assert isinstance(_SERVER_VERSION, str) and _SERVER_VERSION
+
+
+class TestCallToolRSIDivergence:
+    """Tests for calculate_rsi_divergence tool."""
+
+    def _make_data(self, n: int = 60) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
+                "Open": [100.0 + i * 0.5 for i in range(n)],
+                "High": [102.0 + i * 0.5 for i in range(n)],
+                "Low": [98.0 + i * 0.5 for i in range(n)],
+                "Close": [100.5 + i * 0.5 for i in range(n)],
+                "Volume": [1_000_000] * n,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_listed(self):
+        """calculate_rsi_divergence appears in handle_list_tools."""
+        tools = await handle_list_tools()
+        names = [t.name for t in tools]
+        assert "calculate_rsi_divergence" in names
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_called_returns_expected_keys(self, mock_fetch):
+        """Tool returns symbol + all divergence result keys."""
+        mock_fetch.return_value = self._make_data()
+
+        result = await handle_call_tool(
+            name="calculate_rsi_divergence",
+            arguments={"symbol": "AAPL", "period": "3mo"},
+        )
+
+        assert not result.isError
+        data = json.loads(result.content[0].text)
+        assert data["symbol"] == "AAPL"
+        for key in (
+            "rsi",
+            "condition",
+            "period",
+            "bullish_divergence",
+            "bearish_divergence",
+            "divergence_type",
+            "signal",
+            "interpretation",
+            "current_rsi",
+        ):
+            assert key in data, f"Missing key: {key}"
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_custom_params_passed_through(self, mock_fetch):
+        """rsi_period and divergence_lookback are forwarded correctly."""
+        mock_fetch.return_value = self._make_data(80)
+
+        result = await handle_call_tool(
+            name="calculate_rsi_divergence",
+            arguments={"symbol": "MSFT", "rsi_period": 9, "divergence_lookback": 15},
+        )
+
+        assert not result.isError
+        data = json.loads(result.content[0].text)
+        assert data["period"] == 9
+
+    @pytest.mark.asyncio
+    async def test_error_invalid_rsi_period(self):
+        """Out-of-range rsi_period returns an error response."""
+        result = await handle_call_tool(
+            name="calculate_rsi_divergence",
+            arguments={"symbol": "TSLA", "rsi_period": 0},
+        )
+
+        assert result.isError
+        data = json.loads(result.content[0].text)
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_error_missing_symbol(self):
+        """Missing symbol returns an error response."""
+        result = await handle_call_tool(
+            name="calculate_rsi_divergence",
+            arguments={"symbol": ""},
+        )
+
+        assert result.isError
+        data = json.loads(result.content[0].text)
+        assert "error" in data

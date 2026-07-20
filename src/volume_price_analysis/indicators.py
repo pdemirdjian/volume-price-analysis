@@ -1159,6 +1159,28 @@ def calculate_rsi_with_divergence(
     }
 
 
+def calculate_rsi_divergence(
+    data: pd.DataFrame, period: int = 14, divergence_lookback: int = 10
+) -> dict[str, Any]:
+    """JSON-serializable RSI-divergence result for the standalone MCP tool.
+
+    Wraps :func:`calculate_rsi_with_divergence`, dropping ``rsi_series``
+    so the output can be safely serialized to JSON.
+    """
+    inner = calculate_rsi_with_divergence(data, period, divergence_lookback)
+    return {
+        "rsi": inner["rsi"],
+        "condition": inner["condition"],
+        "period": inner["period"],
+        "bullish_divergence": inner["bullish_divergence"],
+        "bearish_divergence": inner["bearish_divergence"],
+        "divergence_type": inner["divergence_type"],
+        "signal": inner["signal"],
+        "interpretation": inner["interpretation"],
+        "current_rsi": inner["current_rsi"],
+    }
+
+
 # ============================================================================
 # OPTIONS-SPECIFIC CALCULATIONS
 # ============================================================================

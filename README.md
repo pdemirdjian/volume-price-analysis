@@ -23,6 +23,7 @@ VWAP, Volume Profile, Money Flow Index, and more.
 9. **comprehensive_analysis** - Complete analysis with all indicators
 10. **options_analysis** - Specialized analysis for short-term options trading
 11. **scan_candidates** - Scan ~200 symbols for top options trading candidates
+12. **calculate_rsi_divergence** - Causal pivot-based RSI divergence detector (standalone)
 
 ### Key Indicators Explained
 
