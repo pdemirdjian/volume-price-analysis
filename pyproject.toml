@@ -13,8 +13,8 @@ dependencies = [
     "yfinance==1.5.1",
     "pandas==3.0.3",
     "numpy==2.5.1",
-    "anthropic~=0.116.0",
-    "google-genai~=2.11.0",
+    "anthropic~=0.117.0",
+    "google-genai~=2.12.0",
     "markdown~=3.10.0",
     "holidays~=0.91",
     "pytickersymbols~=1.17.0",
@@ -82,16 +82,6 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
-
-[tool.uv]
-# Security override: force curl-cffi>=0.15.0,<0.16 to patch CVE-2026-33752 (SSRF via redirect).
-# yfinance 1.2.0 pins curl_cffi<0.14, blocking the fix. Capped at <0.16 to match this project's
-# tight-pinning policy and limit unvetted compatibility risk with yfinance.
-# NOTE: this override is uv-only; pip installs remain constrained by yfinance's <0.14 upper bound.
-# TODO: remove this override once yfinance relaxes its curl_cffi<0.14 upper bound.
-#   Track: https://github.com/ranaroussi/yfinance/issues/2737
-#   Before removing: verify by running yfinance's own test suite on macOS with curl-cffi 0.15.0.
-override-dependencies = ["curl-cffi>=0.15.0,<0.16"]
 
 [project.scripts]
 volume-price-analysis = "volume_price_analysis.server:main"

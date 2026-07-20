@@ -23,6 +23,7 @@ VWAP, Volume Profile, Money Flow Index, and more.
 9. **comprehensive_analysis** - Complete analysis with all indicators
 10. **options_analysis** - Specialized analysis for short-term options trading
 11. **scan_candidates** - Scan ~200 symbols for top options trading candidates
+12. **calculate_rsi_divergence** - Causal pivot-based RSI divergence detector (standalone)
 
 ### Key Indicators Explained
 
@@ -122,7 +123,7 @@ source .venv/bin/activate  # macOS/Linux
 .venv\Scripts\activate  # Windows
 
 # Install the package with dev tools
-uv pip install -e ".[dev]"
+uv sync --all-extras --dev
 ```
 
 ### Alternative: Traditional pip Installation
@@ -327,25 +328,23 @@ All tools return structured JSON data. Example output from
 
 ### Running Tests
 
-Comprehensive test suite with 100 tests covering all functionality:
+Comprehensive test suite with 600+ tests covering all functionality:
 
 ```bash
 # Install with dev dependencies
-uv pip install -e ".[dev]"
-# or
-pip install -e ".[dev]"
+uv sync --all-extras --dev
 
 # Run all tests
-pytest
+uv run pytest
 
 # Run with coverage report
-pytest --cov=src/volume_price_analysis --cov-report=term-missing --cov-report=html
+uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing --cov-report=html
 
 # Run specific test file
-pytest tests/test_indicators.py
+uv run pytest tests/test_indicators.py
 
 # Run with verbose output
-pytest -v
+uv run pytest -v
 ```
 
 Test coverage includes:
@@ -418,8 +417,8 @@ python -m venv .venv
 source .venv/bin/activate  # macOS/Linux
 .venv\Scripts\activate     # Windows
 
-# Install dependencies
-pip install -e ".[dev]"
+# Install runtime dependencies (dev tools require uv — see UV_SETUP.md)
+pip install -e .
 ```
 
 ## Morning Briefing Agent
@@ -442,10 +441,11 @@ candidates, and email you an AI-generated briefing.
    EMAIL_TO=recipient@example.com
    ```
 
-3. Run with Docker:
+3. Build and run with Docker:
 
    ```bash
-   docker compose up -d
+   docker build -t volume-price-analysis .
+   docker run --env-file .env volume-price-analysis
    ```
 
 ### Manual Run

@@ -4,21 +4,23 @@ Comprehensive testing documentation for the Volume-Price Analysis MCP Server.
 
 ## Test Suite Overview
 
-The project includes **100 tests** organized into five test modules:
+The project includes **639 tests** organized into seven test modules:
 
 | Test Module            | Tests | Coverage                              |
 | ---------------------- | ----- | ------------------------------------- |
-| `test_indicators.py`   | 25+   | All volume-price indicators           |
-| `test_data_fetcher.py` | 15+   | Data fetching & validation            |
-| `test_server.py`       | 15+   | MCP server integration                |
-| `test_agent.py`        | 25    | Morning briefing agent & AI providers |
-| `test_analysis.py`     | 18    | Scan, options analysis, universes     |
+| `test_indicators.py`   | 282   | All volume-price indicators           |
+| `test_agent.py`        | 151   | Morning briefing agent & AI providers |
+| `test_server.py`       | 72    | MCP server integration                |
+| `test_analysis.py`     | 41    | Scan, options analysis, universes     |
+| `test_data_fetcher.py` | 40    | Data fetching & validation            |
+| `test_backtest.py`     | 34    | Strictly-causal backtest harness      |
+| `test_scheduler.py`    | 19    | Asyncio scheduler                     |
 
 ## Quick Start
 
 ```bash
 # Install with test dependencies
-uv pip install -e ".[dev]"
+uv sync --all-extras --dev
 
 # Run all tests
 pytest
@@ -387,7 +389,7 @@ def test_validate_multiple_symbols(symbol, expected):
 
 ```bash
 # Ensure package is installed
-uv pip install -e ".[dev]"
+uv sync --all-extras --dev
 ```
 
 ### ModuleNotFoundError
@@ -456,7 +458,7 @@ jobs:
       - name: Install UV
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Install dependencies
-        run: uv pip install -e ".[dev]"
+        run: uv sync --all-extras --dev
       - name: Run tests
         run: pytest --cov --cov-report=xml
       - name: Upload coverage

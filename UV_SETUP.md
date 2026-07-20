@@ -88,7 +88,7 @@ source .venv/bin/activate
 uv pip install -e .
 
 # Install with development dependencies
-uv pip install -e ".[dev]"
+uv sync --all-extras --dev
 ```
 
 That's it! UV will install everything blazingly fast.
@@ -104,14 +104,11 @@ uv pip install pandas
 # Install specific version
 uv pip install "pandas>=2.2.0"
 
-# Install from requirements.txt
-uv pip install -r requirements.txt
-
 # Install project in editable mode
 uv pip install -e .
 
 # Install with optional dependencies
-uv pip install -e ".[dev]"
+uv sync --all-extras --dev
 ```
 
 ### Package Management
@@ -126,8 +123,6 @@ uv pip show mcp
 # Uninstall package
 uv pip uninstall yfinance
 
-# Freeze dependencies
-uv pip freeze > requirements.txt
 ```
 
 ### Python Version Management
@@ -157,7 +152,7 @@ source .venv/bin/activate  # macOS/Linux
 .venv\Scripts\activate  # Windows
 
 # 4. Install project with dev dependencies
-uv pip install -e ".[dev]"
+uv sync --all-extras --dev
 
 # 5. Verify installation
 python example_usage.py
@@ -214,11 +209,9 @@ mypy src/
 # Upgrade a specific package
 uv pip install --upgrade pandas
 
-# Upgrade all packages
-uv pip install --upgrade -r requirements.txt
 
 # Upgrade to latest compatible versions
-uv pip install -e ".[dev]" --upgrade
+uv sync --all-extras --dev --upgrade
 ```
 
 ## Troubleshooting
@@ -335,6 +328,6 @@ UV replaces or improves upon:
 1. ✅ Install UV
 2. ✅ Create virtual environment: `uv venv`
 3. ✅ Activate it: `source .venv/bin/activate`
-4. ✅ Install project: `uv pip install -e ".[dev]"`
+4. ✅ Install project: `uv sync --all-extras --dev`
 5. ✅ Run tests: `pytest`
 6. ✅ Start coding! 🚀

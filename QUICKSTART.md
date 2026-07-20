@@ -17,7 +17,7 @@ cd volume-price-analysis
 # Create virtual environment and install
 uv venv
 source .venv/bin/activate  # macOS/Linux (.venv\Scripts\activate on Windows)
-uv pip install -e ".[dev]"
+uv sync --all-extras --dev
 ```
 
 ### Option B: With pip (Traditional)
