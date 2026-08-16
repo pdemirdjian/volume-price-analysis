@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "mcp==1.29.0",
-    "yfinance==1.5.2",
+    "yfinance==1.6.0",
     "pandas==3.0.5",
     "numpy==2.5.2",
     "anthropic~=0.121.0",
