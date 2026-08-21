@@ -27,12 +27,12 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 RUN /usr/local/bin/python -m pip uninstall -y pip
 
 # Run as non-root user
-RUN useradd --create-home appuser \
+RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /home/appuser/.cache/py-yfinance \
     && chown -R appuser:appuser /app /home/appuser/.cache
-USER appuser
+USER 10001
 
 HEALTHCHECK --interval=300s --timeout=5s --retries=3 \
-  CMD python -c "open('/proc/1/cmdline').read()" || exit 1
+  CMD ["python", "-c", "open('/proc/1/cmdline').read()"]
 
 CMD ["morning-scheduler"]
