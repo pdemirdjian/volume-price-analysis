@@ -368,7 +368,7 @@ async def run_scan(
 
     Args:
         symbols: Custom list of symbols (overrides universe if provided).
-        universe: Pre-built universe name (e.g., "full_market", "tech").
+        universe: Pre-built universe name. Valid values: "sp500", "etfs", "full_market".
         period: Historical data period for analysis.
         holding_period: Expected options holding period in days.
         min_score: Minimum |composite_score| to include.
@@ -399,6 +399,11 @@ async def run_scan(
         scan_symbols = UNIVERSES[universe.lower()]
         universe_used = universe.lower()
     else:
+        logger.warning(
+            "Unknown universe %r; falling back to 'full_market'. Valid values: %s",
+            universe,
+            ", ".join(sorted(UNIVERSES)),
+        )
         scan_symbols = UNIVERSES["full_market"]
         universe_used = "full_market"
 

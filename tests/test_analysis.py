@@ -283,6 +283,34 @@ class TestRunScan:
         assert result["scan_parameters"]["universe"] == "full_market"
 
     @pytest.mark.asyncio
+    async def test_invalid_universe_logs_warning(self, mocker):
+        """Unknown universe should emit a WARNING naming the bad value and the fallback."""
+        import pandas as pd
+
+        small_data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=10),
+                "Open": [100] * 10,
+                "High": [101] * 10,
+                "Low": [99] * 10,
+                "Close": [100] * 10,
+                "Volume": [1000000] * 10,
+            }
+        )
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=small_data,
+        )
+        mock_warning = mocker.patch("volume_price_analysis.analysis.logger.warning")
+
+        await run_scan(universe="tech", symbols=None)
+
+        assert mock_warning.called, "Expected logger.warning to be called for unknown universe"
+        calls_text = " ".join(str(c) for c in mock_warning.call_args_list)
+        assert "tech" in calls_text, f"Expected 'tech' in warning call; got: {calls_text}"
+        assert "full_market" in calls_text, f"Expected 'full_market' in warning; got: {calls_text}"
+
+    @pytest.mark.asyncio
     async def test_scan_result_structure(self, mocker):
         """Verify scan results have expected structure."""
         import pandas as pd
