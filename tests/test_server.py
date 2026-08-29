@@ -6,15 +6,19 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from mcp.types import CallToolResult
+from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult
 
 from volume_price_analysis.server import (
+    _SERVER_VERSION,
     _json_response,
+    _on_call_tool,
+    _on_list_tools,
     _sanitize_for_json,
     _validate_range,
     generate_enhanced_summary,
     handle_call_tool,
     handle_list_tools,
+    server,
 )
 
 
@@ -55,15 +59,46 @@ class TestListTools:
         for tool in tools:
             assert tool.name
             assert tool.description
-            assert tool.inputSchema
-            assert "type" in tool.inputSchema
-            assert tool.inputSchema["type"] == "object"
-            assert "properties" in tool.inputSchema
+            assert tool.input_schema
+            assert "type" in tool.input_schema
+            assert tool.input_schema["type"] == "object"
+            assert "properties" in tool.input_schema
             # scan_candidates uses "symbols" (plural) instead of "symbol"
             if tool.name == "scan_candidates":
-                assert "symbols" in tool.inputSchema["properties"]
+                assert "symbols" in tool.input_schema["properties"]
             else:
-                assert "symbol" in tool.inputSchema["properties"]
+                assert "symbol" in tool.input_schema["properties"]
+
+
+class TestMcpV2ProtocolHandlers:
+    """Tests for MCP v2 on_* constructor wrappers."""
+
+    @pytest.mark.asyncio
+    async def test_on_list_tools_returns_list_tools_result(self):
+        """Protocol handler returns ListToolsResult with the same tools."""
+        result = await _on_list_tools(None, None)  # type: ignore[arg-type]
+        assert isinstance(result, ListToolsResult)
+        assert len(result.tools) == 12
+
+    @pytest.mark.asyncio
+    async def test_on_call_tool_forwards_unknown_tool(self):
+        """Protocol handler forwards name/arguments and preserves is_error."""
+        params = CallToolRequestParams(name="unknown_tool", arguments={"symbol": "AAPL"})
+        result = await _on_call_tool(None, params)  # type: ignore[arg-type]
+        assert isinstance(result, CallToolResult)
+        assert result.is_error is True
+
+    @pytest.mark.asyncio
+    async def test_on_call_tool_defaults_none_arguments(self):
+        """None arguments are treated as an empty dict."""
+        params = CallToolRequestParams(name="get_stock_data")
+        result = await _on_call_tool(None, params)  # type: ignore[arg-type]
+        assert result.is_error is True
+
+    def test_server_has_name_and_version(self):
+        """Low-level Server is constructed with identity metadata."""
+        assert server.name == "volume-price-analysis"
+        assert server.version == _SERVER_VERSION
 
 
 class TestCallToolGetStockData:
@@ -599,7 +634,7 @@ class TestErrorHandling:
         )
 
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "No data found" in data["error"]
@@ -621,7 +656,7 @@ class TestErrorHandling:
         result = await handle_call_tool(name="unknown_tool", arguments={"symbol": "AAPL"})
 
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "Unknown tool" in data["error"]
@@ -634,7 +669,7 @@ class TestErrorHandling:
         )
 
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         # ValueError message should be passed through to the caller
@@ -651,7 +686,7 @@ class TestErrorHandling:
         )
 
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert data["error"] == "An internal error occurred"
@@ -667,7 +702,7 @@ class TestErrorHandling:
         )
 
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "symbol" in data["error"].lower()
@@ -678,15 +713,15 @@ class TestErrorHandling:
         result = await handle_call_tool(name="get_stock_data", arguments={"period": "1mo"})
 
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
 
     @pytest.mark.asyncio
     async def test_unknown_tool_returns_error_with_flag(self):
-        """Test that an unknown tool name returns isError=True."""
+        """Test that an unknown tool name returns is_error=True."""
         result = await handle_call_tool(name="nonexistent_tool", arguments={"symbol": "AAPL"})
 
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
 
 
 class TestScanCandidates:
@@ -881,7 +916,7 @@ class TestParameterValidation:
             arguments={"symbol": "AAPL", "num_bins": 0},
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "num_bins" in data["error"]
@@ -894,7 +929,7 @@ class TestParameterValidation:
             arguments={"symbol": "AAPL", "mfi_period": -5},
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "mfi_period" in data["error"]
@@ -907,7 +942,7 @@ class TestParameterValidation:
             arguments={"symbol": "AAPL", "cmf_period": 250},
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "cmf_period" in data["error"]
@@ -920,7 +955,7 @@ class TestParameterValidation:
             arguments={"symbol": "AAPL", "window": 999},
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "window" in data["error"]
@@ -933,7 +968,7 @@ class TestParameterValidation:
             arguments={"symbols": ["AAPL"], "holding_period": 0},
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "holding_period" in data["error"]
@@ -946,7 +981,7 @@ class TestParameterValidation:
             arguments={"symbols": ["AAPL"], "max_results": 0},
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "max_results" in data["error"]
@@ -963,7 +998,7 @@ class TestParameterValidation:
             },
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "holding_period" in data["error"]
@@ -980,7 +1015,7 @@ class TestParameterValidation:
             },
         )
         assert isinstance(result, CallToolResult)
-        assert result.isError is True
+        assert result.is_error is True
         data = json.loads(result.content[0].text)
         assert "error" in data
         assert "days_to_expiration" in data["error"]
@@ -1592,7 +1627,7 @@ class TestCallToolRSIDivergence:
             arguments={"symbol": "AAPL", "period": "3mo"},
         )
 
-        assert not result.isError
+        assert not result.is_error
         data = json.loads(result.content[0].text)
         assert data["symbol"] == "AAPL"
         for key in (
@@ -1619,7 +1654,7 @@ class TestCallToolRSIDivergence:
             arguments={"symbol": "MSFT", "rsi_period": 9, "divergence_lookback": 15},
         )
 
-        assert not result.isError
+        assert not result.is_error
         data = json.loads(result.content[0].text)
         assert data["period"] == 9
 
@@ -1631,7 +1666,7 @@ class TestCallToolRSIDivergence:
             arguments={"symbol": "TSLA", "rsi_period": 0},
         )
 
-        assert result.isError
+        assert result.is_error
         data = json.loads(result.content[0].text)
         assert "error" in data
 
@@ -1643,6 +1678,6 @@ class TestCallToolRSIDivergence:
             arguments={"symbol": ""},
         )
 
-        assert result.isError
+        assert result.is_error
         data = json.loads(result.content[0].text)
         assert "error" in data

@@ -7,11 +7,14 @@ import math
 from importlib.metadata import PackageNotFoundError, version
 
 import pandas as pd
-from mcp.server import NotificationOptions, Server
+from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
+    CallToolRequestParams,
     CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
     TextContent,
     Tool,
 )
@@ -63,10 +66,6 @@ def _json_response(result: dict) -> str:
     return json.dumps(_sanitize_for_json(result), indent=2, default=str)
 
 
-# Initialize MCP server
-server = Server("volume-price-analysis")
-
-
 async def _handle_scan_candidates(arguments: dict) -> CallToolResult:
     """Handle scan_candidates tool - delegates to analysis.run_scan."""
     holding_period = arguments.get("holding_period", 14)
@@ -89,14 +88,13 @@ async def _handle_scan_candidates(arguments: dict) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
 
 
-@server.list_tools()
 async def handle_list_tools() -> list[Tool]:
     """List available volume-price analysis tools."""
     return [
         Tool(
             name="get_stock_data",
             description="Fetch historical stock data for a given symbol and time period",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -129,7 +127,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Calculate On-Balance Volume (OBV) - cumulative volume "
                 "indicator that adds volume on up days and subtracts on down days"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -159,7 +157,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Calculate Volume Weighted Average Price (VWAP) - average "
                 "price weighted by volume, used as a trading benchmark"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -189,7 +187,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Calculate Volume Profile - distribution of volume at "
                 "different price levels, useful for identifying support/resistance"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -226,7 +224,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Calculate Money Flow Index (MFI) - volume-weighted RSI "
                 "that oscillates 0-100, >80 overbought, <20 oversold"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -263,7 +261,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Calculate Accumulation/Distribution Line (A/D Line) - measures "
                 "cumulative flow of money into and out of a security"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -294,7 +292,7 @@ async def handle_list_tools() -> list[Tool]:
                 "pressure over a set period (ranges -1 to +1). "
                 "> 0 indicates buying, < 0 indicates selling"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -328,7 +326,7 @@ async def handle_list_tools() -> list[Tool]:
         Tool(
             name="analyze_volume_trends",
             description="Analyze volume trends and detect price-volume divergences",
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -365,7 +363,7 @@ async def handle_list_tools() -> list[Tool]:
                 "Perform comprehensive volume-price analysis including "
                 "OBV, VWAP, MFI, and volume trends"
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -398,7 +396,7 @@ async def handle_list_tools() -> list[Tool]:
                 "expected move calculations, and composite signal scoring. "
                 "Automatically adapts indicator periods based on holding_period."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -455,7 +453,7 @@ async def handle_list_tools() -> list[Tool]:
                 "'sp500' (~503 constituents via pytickersymbols), 'etfs' (50 ETFs). "
                 "Or provide custom 'symbols' list. Returns ranked results with composite scores."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbols": {
@@ -532,7 +530,7 @@ async def handle_list_tools() -> list[Tool]:
                 "RSI makes a lower high (potential reversal down). Uses confirmed swing pivots "
                 "only — no lookahead. Default period '3mo' to ensure enough pivots."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "symbol": {
@@ -585,7 +583,6 @@ def _validate_range(
         raise ValueError(msg)
 
 
-@server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
     """Handle tool execution requests."""
     logger.info("Tool called: %s", name)
@@ -1028,7 +1025,7 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
         logger.warning("Tool %s validation error: %s", name, str(e))
         return CallToolResult(
             content=[TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))],
-            isError=True,
+            is_error=True,
         )
     except Exception as e:
         logger.error("Tool %s failed: %s", name, str(e), exc_info=True)
@@ -1039,8 +1036,30 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                     text=json.dumps({"error": "An internal error occurred"}, indent=2),
                 )
             ],
-            isError=True,
+            is_error=True,
         )
+
+
+async def _on_list_tools(
+    _ctx: ServerRequestContext, _params: PaginatedRequestParams | None
+) -> ListToolsResult:
+    """MCP v2 list_tools handler wrapping handle_list_tools()."""
+    return ListToolsResult(tools=await handle_list_tools())
+
+
+async def _on_call_tool(
+    _ctx: ServerRequestContext, params: CallToolRequestParams
+) -> CallToolResult:
+    """MCP v2 call_tool handler wrapping handle_call_tool()."""
+    return await handle_call_tool(params.name, params.arguments or {})
+
+
+server = Server(
+    "volume-price-analysis",
+    version=_SERVER_VERSION,
+    on_list_tools=_on_list_tools,
+    on_call_tool=_on_call_tool,
+)
 
 
 def generate_enhanced_summary(
