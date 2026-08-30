@@ -1,5 +1,51 @@
 # Changelog
 
+## [2.8.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.7.4...v2.8.0) (2026-08-30)
+
+
+### Features
+
+* **server:** expose causal RSI-divergence detector as dedicated MCP tool ([#368](https://github.com/pdemirdjian/volume-price-analysis/issues/368)) ([fa98d39](https://github.com/pdemirdjian/volume-price-analysis/commit/fa98d39341e87e47d59d43dfdca07a19e4da1675))
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=0.117.0 ([#373](https://github.com/pdemirdjian/volume-price-analysis/issues/373)) ([60a007f](https://github.com/pdemirdjian/volume-price-analysis/commit/60a007f1220570c0a617331b0341243ad5387b97))
+* **deps:** update dependency anthropic to ~=0.118.0 ([#380](https://github.com/pdemirdjian/volume-price-analysis/issues/380)) ([6d3ef2d](https://github.com/pdemirdjian/volume-price-analysis/commit/6d3ef2d93d52fe3131f16e09a04391dd9445255f))
+* **deps:** update dependency anthropic to ~=0.119.0 ([#384](https://github.com/pdemirdjian/volume-price-analysis/issues/384)) ([0cb647b](https://github.com/pdemirdjian/volume-price-analysis/commit/0cb647bc01bb8ad5c6b026e86d5b0034f57b9de3))
+* **deps:** update dependency anthropic to ~=0.120.0 ([#389](https://github.com/pdemirdjian/volume-price-analysis/issues/389)) ([9782530](https://github.com/pdemirdjian/volume-price-analysis/commit/9782530a9b28975420520315fe79dc09a51730da))
+* **deps:** update dependency anthropic to ~=0.121.0 ([#405](https://github.com/pdemirdjian/volume-price-analysis/issues/405)) ([a30aad6](https://github.com/pdemirdjian/volume-price-analysis/commit/a30aad6582698c501301277e9d6690c4792f4ba0))
+* **deps:** update dependency anthropic to ~=0.122.0 ([#411](https://github.com/pdemirdjian/volume-price-analysis/issues/411)) ([5b56493](https://github.com/pdemirdjian/volume-price-analysis/commit/5b56493c738b17cc166e2c630bb7000bf2494252))
+* **deps:** update dependency anthropic to ~=0.124.0 ([#416](https://github.com/pdemirdjian/volume-price-analysis/issues/416)) ([ed4ebc6](https://github.com/pdemirdjian/volume-price-analysis/commit/ed4ebc680b0b4a9508f14c9a0b108ee3087c5ffc))
+* **deps:** update dependency anthropic to ~=0.125.0 ([#417](https://github.com/pdemirdjian/volume-price-analysis/issues/417)) ([4c42f6a](https://github.com/pdemirdjian/volume-price-analysis/commit/4c42f6ade846c4d0cd6f6fefb69b7a4a6ce150ff))
+* **deps:** update dependency google-genai to ~=2.12.0 ([#371](https://github.com/pdemirdjian/volume-price-analysis/issues/371)) ([8cfe1e1](https://github.com/pdemirdjian/volume-price-analysis/commit/8cfe1e1441153557fcbcd4af32f34ce8f93872ba))
+* **deps:** update dependency google-genai to ~=2.13.0 ([#378](https://github.com/pdemirdjian/volume-price-analysis/issues/378)) ([a6c9e29](https://github.com/pdemirdjian/volume-price-analysis/commit/a6c9e29b4452af48cf0578a16c08ee83f6fcae32))
+* **deps:** update dependency google-genai to ~=2.14.0 ([#382](https://github.com/pdemirdjian/volume-price-analysis/issues/382)) ([b970f98](https://github.com/pdemirdjian/volume-price-analysis/commit/b970f98ccaac8e99c7d6691e4d4bf67b77c13202))
+* **deps:** update dependency google-genai to ~=2.15.0 ([#394](https://github.com/pdemirdjian/volume-price-analysis/issues/394)) ([089ef4d](https://github.com/pdemirdjian/volume-price-analysis/commit/089ef4d8a6ac66c6bfbbc673a290e854698dea98))
+* **deps:** update dependency google-genai to ~=2.16.0 ([#397](https://github.com/pdemirdjian/volume-price-analysis/issues/397)) ([eee6ff9](https://github.com/pdemirdjian/volume-price-analysis/commit/eee6ff94bbb7d1064fc1dff986029dbfecbc3cd2))
+* **deps:** update dependency google-genai to ~=2.17.0 ([#403](https://github.com/pdemirdjian/volume-price-analysis/issues/403)) ([5f42c10](https://github.com/pdemirdjian/volume-price-analysis/commit/5f42c10e6c980a11611b6d2d2ee98b542d91e8cf))
+* **deps:** update dependency google-genai to ~=2.18.0 ([#408](https://github.com/pdemirdjian/volume-price-analysis/issues/408)) ([2a1c98b](https://github.com/pdemirdjian/volume-price-analysis/commit/2a1c98bbfa5b6ef29b0c9ac033acf1026b2cf9fd))
+* **deps:** update dependency google-genai to ~=2.19.0 ([#418](https://github.com/pdemirdjian/volume-price-analysis/issues/418)) ([9b5416d](https://github.com/pdemirdjian/volume-price-analysis/commit/9b5416d365504c57ed0fce3819f679e425cf8b51))
+* **deps:** update dependency google-genai to ~=2.20.0 ([#422](https://github.com/pdemirdjian/volume-price-analysis/issues/422)) ([c2076dd](https://github.com/pdemirdjian/volume-price-analysis/commit/c2076ddb85f766bb87674c7e5a992bf4b333ff9c))
+* **deps:** update dependency mcp to v1.29.0 ([#392](https://github.com/pdemirdjian/volume-price-analysis/issues/392)) ([b4a9d7f](https://github.com/pdemirdjian/volume-price-analysis/commit/b4a9d7ffb9b6d287cb21a1d9aea115a767e76247))
+* **deps:** update dependency mcp to v1.29.1 ([#421](https://github.com/pdemirdjian/volume-price-analysis/issues/421)) ([feef9c1](https://github.com/pdemirdjian/volume-price-analysis/commit/feef9c108d4651460323cc9b9a3a561bde591e9e))
+* **deps:** update dependency mcp to v2 ([#398](https://github.com/pdemirdjian/volume-price-analysis/issues/398)) ([6ba2de7](https://github.com/pdemirdjian/volume-price-analysis/commit/6ba2de7ce1c9eb9911bde54bc21a47857914e9ec))
+* **deps:** update dependency numpy to v2.5.2 ([#406](https://github.com/pdemirdjian/volume-price-analysis/issues/406)) ([88c84ea](https://github.com/pdemirdjian/volume-price-analysis/commit/88c84eaad8835e057b67cef10c7f51e53dfcb325))
+* **deps:** update dependency pandas to v3.0.5 ([#381](https://github.com/pdemirdjian/volume-price-analysis/issues/381)) ([8eae82c](https://github.com/pdemirdjian/volume-price-analysis/commit/8eae82cb05d06a8333090a0cde312f337ce55bb8))
+* **deps:** update dependency yfinance to v1.5.2 ([#385](https://github.com/pdemirdjian/volume-price-analysis/issues/385)) ([3a7cc13](https://github.com/pdemirdjian/volume-price-analysis/commit/3a7cc135a993af6b068473144c8614bf561565ea))
+* **deps:** update dependency yfinance to v1.6.0 ([#410](https://github.com/pdemirdjian/volume-price-analysis/issues/410)) ([e6c0786](https://github.com/pdemirdjian/volume-price-analysis/commit/e6c078627e782136f27318238df1699bc4f411de))
+* **deps:** update dependency yfinance to v1.7.0 ([#424](https://github.com/pdemirdjian/volume-price-analysis/issues/424)) ([bdb3b1b](https://github.com/pdemirdjian/volume-price-analysis/commit/bdb3b1bdf5982411bb27446862f328f8ee8d9915))
+* **deps:** update python docker tag to v3.14.7 ([#402](https://github.com/pdemirdjian/volume-price-analysis/issues/402)) ([aa83569](https://github.com/pdemirdjian/volume-price-analysis/commit/aa83569923a96c8f81dd8ac93978d25309d06f86))
+* **docker:** satisfy hadolint 2.15 and bump hadolint-action to v3.4.0 ([#415](https://github.com/pdemirdjian/volume-price-analysis/issues/415)) ([67de439](https://github.com/pdemirdjian/volume-price-analysis/commit/67de439532c2e6f9f5da2f68bf3af514d08ad091))
+* scheduler robustness — bounded sleep chunks, config reload, bounded thread pool ([#425](https://github.com/pdemirdjian/volume-price-analysis/issues/425)) ([49f5c22](https://github.com/pdemirdjian/volume-price-analysis/commit/49f5c22518f610158145aedf40110f74ce980c34))
+* **server:** report real package version in MCP InitializationOptions ([#369](https://github.com/pdemirdjian/volume-price-analysis/issues/369)) ([7db2dc3](https://github.com/pdemirdjian/volume-price-analysis/commit/7db2dc30f86e0b01d95b96a35a4fa8bdf2691fdf))
+* warn on unknown universe instead of silently falling back ([#366](https://github.com/pdemirdjian/volume-price-analysis/issues/366)) ([827adb9](https://github.com/pdemirdjian/volume-price-analysis/commit/827adb98296d7c25081a0fcd23da7ba8f8d0eb49))
+
+
+### Documentation
+
+* fix stale install commands, phantom compose ref, and dead requirements.txt ([#367](https://github.com/pdemirdjian/volume-price-analysis/issues/367)) ([74dc5a0](https://github.com/pdemirdjian/volume-price-analysis/commit/74dc5a0d29dad8bf2e392492c8586aceac301af4))
+
 ## [2.7.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.7.3...v2.7.4) (2026-07-12)
 
 
