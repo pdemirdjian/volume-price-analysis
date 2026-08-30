@@ -575,13 +575,15 @@ class TestRunScheduler:
             mock_sys.platform = "linux"
             await run_scheduler(time(8, 30), ET)
 
-        assert mock_loop.add_signal_handler.call_count == 2
-        registered_signals = {call.args[0] for call in mock_loop.add_signal_handler.call_args_list}
-        assert registered_signals == {signal.SIGTERM, signal.SIGINT}
+            assert mock_loop.add_signal_handler.call_count == 2
+            registered_signals = {
+                call.args[0] for call in mock_loop.add_signal_handler.call_args_list
+            }
+            assert registered_signals == {signal.SIGTERM, signal.SIGINT}
 
-        handler = mock_loop.add_signal_handler.call_args_list[0].args[1]
-        handler()
-        assert "Received shutdown signal" in caplog.text
+            handler = mock_loop.add_signal_handler.call_args_list[0].args[1]
+            handler()
+            assert "Received shutdown signal" in caplog.text
 
     @pytest.mark.asyncio
     async def test_windows_uses_signal_signal(self, caplog):
@@ -620,7 +622,6 @@ class TestSchedulerMain:
             patch("sys.argv", ["morning-scheduler"]),
             patch(
                 "volume_price_analysis.agent.scheduler.run_scheduler",
-                new_callable=AsyncMock,
             ) as mock_sched,
             patch("volume_price_analysis.agent.scheduler.asyncio.run"),
         ):
@@ -633,7 +634,6 @@ class TestSchedulerMain:
             patch("sys.argv", ["morning-scheduler", "--time", "10:45"]),
             patch(
                 "volume_price_analysis.agent.scheduler.run_scheduler",
-                new_callable=AsyncMock,
             ) as mock_sched,
             patch("volume_price_analysis.agent.scheduler.asyncio.run"),
         ):
@@ -646,7 +646,6 @@ class TestSchedulerMain:
             patch("sys.argv", ["morning-scheduler", "--skip-holidays"]),
             patch(
                 "volume_price_analysis.agent.scheduler.run_scheduler",
-                new_callable=AsyncMock,
             ) as mock_sched,
             patch("volume_price_analysis.agent.scheduler.asyncio.run"),
         ):
