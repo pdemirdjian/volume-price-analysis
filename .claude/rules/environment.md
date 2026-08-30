@@ -13,6 +13,6 @@ Required for the morning briefing agent only. Not needed for the MCP server. See
 | `EMAIL_SMTP_HOST` | No | `smtp.gmail.com` | SMTP server |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP port |
 | `SCAN_UNIVERSE` | No | `full_market` | Symbol universe |
-| `MAX_DEEP_ANALYSIS` | No | `5` | Max candidates for deep analysis |
+| `MAX_DEEP_ANALYSIS` | No | `5` | Max candidates for deep analysis (1–20; out-of-range values fall back/clamp) |
 
 Store in `.env` (gitignored) or pass via Docker `--env-file`.

@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
+# Never sleep longer than this in one stretch: asyncio timeouts run on the
+# monotonic clock, which drifts from wall time across DST transitions, NTP
+# steps, and container suspend/resume. Waking regularly and re-checking wall
+# time bounds any such error to one chunk.
+_MAX_SLEEP_CHUNK_SECONDS = 15 * 60
+
 # NYSE holidays instance (reused across calls)
 _nyse_holidays = holidays.financial_holidays("NYSE")
 
@@ -78,6 +84,43 @@ def _next_run(
     return candidate
 
 
+async def _wait_for_next_run(
+    next_dt: datetime,
+    target: time,
+    tz: ZoneInfo,
+    stop_event: asyncio.Event,
+    skip_holidays: bool = False,
+) -> bool:
+    """Sleep until *next_dt* in bounded chunks, re-deriving the schedule each wake.
+
+    Returns True when the scheduled time has arrived, False if *stop_event*
+    was set first.
+    """
+    while True:
+        now = datetime.now(tz)
+        delay = (next_dt - now).total_seconds()
+        if delay <= 0:
+            return True
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=min(delay, _MAX_SLEEP_CHUNK_SECONDS))
+            return False  # stop_event was set
+        except TimeoutError:
+            now = datetime.now(tz)
+            # Check against the original schedule first: if the clock jumped
+            # past the target while we slept, fire now rather than re-deriving
+            # (which would push the run to the next day).
+            if now >= next_dt:
+                return True
+            rederived = _next_run(target, tz, now=now, skip_holidays=skip_holidays)
+            if rederived != next_dt:
+                logger.info(
+                    "Schedule shifted (clock or DST change); next briefing now %s",
+                    rederived.strftime("%Y-%m-%d %H:%M"),
+                )
+                next_dt = rederived
+
+
 async def _run_loop(
     target: time,
     tz: ZoneInfo,
@@ -94,8 +137,6 @@ async def _run_loop(
 
     while not stop_event.is_set():
         next_dt = _next_run(target, tz, skip_holidays=skip_holidays)
-        now = datetime.now(tz)
-        delay = max(0, (next_dt - now).total_seconds())
 
         # Log next run (with holiday info if applicable)
         holiday_name = _nyse_holidays.get(next_dt.date())
@@ -121,12 +162,20 @@ async def _run_loop(
             )
 
         # Sleep until next run or stop signal
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=delay)
-            # If we get here, stop_event was set
+        if not await _wait_for_next_run(
+            next_dt, target, tz, stop_event, skip_holidays=skip_holidays
+        ):
             break
-        except TimeoutError:
-            pass  # Timer expired — time to run
+
+        # Re-load config so rotated credentials/keys are picked up without a
+        # container restart; keep the last valid config if the new one is bad.
+        fresh_config = AgentConfig.from_env()
+        fresh_errors = fresh_config.validate()
+        if fresh_errors:
+            for error in fresh_errors:
+                logger.error("Config error on reload: %s — keeping previous config", error)
+        else:
+            config = fresh_config
 
         # Execute briefing
         try:

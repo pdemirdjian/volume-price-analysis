@@ -6,6 +6,11 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# Upper bound for MAX_DEEP_ANALYSIS: each candidate costs a data fetch, an
+# options analysis, and an earnings lookup, so an unbounded value would hammer
+# Yahoo Finance and spawn an equally unbounded thread pool.
+MAX_DEEP_ANALYSIS_CAP = 20
+
 
 @dataclass
 class AgentConfig:
@@ -54,6 +59,17 @@ class AgentConfig:
             max_deep = int(raw)
         except ValueError:
             logger.warning("MAX_DEEP_ANALYSIS=%r is not a valid integer, using default 5", raw)
+        else:
+            if max_deep < 1:
+                logger.warning("MAX_DEEP_ANALYSIS=%d must be at least 1, using default 5", max_deep)
+                max_deep = 5
+            elif max_deep > MAX_DEEP_ANALYSIS_CAP:
+                logger.warning(
+                    "MAX_DEEP_ANALYSIS=%d exceeds cap, clamping to %d",
+                    max_deep,
+                    MAX_DEEP_ANALYSIS_CAP,
+                )
+                max_deep = MAX_DEEP_ANALYSIS_CAP
 
         return cls(
             ai_provider=os.environ.get("AI_PROVIDER", "gemini").lower(),
@@ -93,4 +109,12 @@ class AgentConfig:
             for addr in (a.strip() for a in self.email_to.split(",") if a.strip()):
                 if "@" not in addr or "." not in addr.split("@")[-1]:
                     errors.append(f"EMAIL_TO address {addr!r} is not a valid email address")
+
+        # Validate scan settings (from_env clamps, but configs can be built directly)
+        if self.max_deep_analysis < 1:
+            errors.append(f"max_deep_analysis={self.max_deep_analysis} must be at least 1")
+        elif self.max_deep_analysis > MAX_DEEP_ANALYSIS_CAP:
+            errors.append(
+                f"max_deep_analysis={self.max_deep_analysis} exceeds cap {MAX_DEEP_ANALYSIS_CAP}"
+            )
         return errors

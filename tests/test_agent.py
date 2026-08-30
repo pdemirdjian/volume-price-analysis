@@ -19,7 +19,7 @@ from volume_price_analysis.agent.ai_client import (
     find_ungrounded_tickers,
     generate_briefing,
 )
-from volume_price_analysis.agent.config import AgentConfig
+from volume_price_analysis.agent.config import MAX_DEEP_ANALYSIS_CAP, AgentConfig
 from volume_price_analysis.agent.email_sender import (
     _linkify_tickers,
     _parse_recipients,
@@ -128,6 +128,17 @@ class TestAgentConfig:
         assert config.email_smtp_port == 587
         assert config.max_deep_analysis == 5
 
+    def test_from_env_rejects_nonpositive_max_deep(self, monkeypatch):
+        monkeypatch.setenv("MAX_DEEP_ANALYSIS", "0")
+        assert AgentConfig.from_env().max_deep_analysis == 5
+
+        monkeypatch.setenv("MAX_DEEP_ANALYSIS", "-3")
+        assert AgentConfig.from_env().max_deep_analysis == 5
+
+    def test_from_env_clamps_oversized_max_deep(self, monkeypatch):
+        monkeypatch.setenv("MAX_DEEP_ANALYSIS", "1000")
+        assert AgentConfig.from_env().max_deep_analysis == MAX_DEEP_ANALYSIS_CAP
+
     def test_validate_missing_api_key(self):
         config = AgentConfig(
             ai_provider="gemini",
@@ -167,6 +178,22 @@ class TestAgentConfig:
         )
         errors = config.validate()
         assert len(errors) == 0
+
+    def test_validate_rejects_out_of_range_max_deep(self):
+        base = {
+            "ai_provider": "gemini",
+            "ai_provider_api_key": "test-key",
+            "email_from": "a@b.com",
+            "email_password": "pass",
+            "email_to": "c@d.com",
+        }
+        errors = AgentConfig(**base, max_deep_analysis=0).validate()
+        assert any("max_deep_analysis" in e for e in errors)
+
+        errors = AgentConfig(**base, max_deep_analysis=MAX_DEEP_ANALYSIS_CAP + 1).validate()
+        assert any("max_deep_analysis" in e for e in errors)
+
+        assert AgentConfig(**base, max_deep_analysis=MAX_DEEP_ANALYSIS_CAP).validate() == []
 
     def test_validate_all_present_anthropic(self):
         config = AgentConfig(
@@ -2799,6 +2826,26 @@ class TestFetchEarningsWarnings:
         ):
             result = _fetch_earnings_warnings(["AAPL", "NVDA", "MSFT"], NOW_UTC)
             assert result == {"NVDA": "EARNINGS in 5 day(s) (2026-07-03)"}
+
+    def test_thread_pool_is_bounded(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from volume_price_analysis.agent.morning_agent import _EARNINGS_MAX_WORKERS
+
+        symbols = [f"SYM{i}" for i in range(_EARNINGS_MAX_WORKERS * 5)]
+        with (
+            patch(
+                "volume_price_analysis.agent.morning_agent._check_earnings",
+                return_value=None,
+            ),
+            patch(
+                "volume_price_analysis.agent.morning_agent.ThreadPoolExecutor",
+                wraps=ThreadPoolExecutor,
+            ) as mock_pool,
+        ):
+            _fetch_earnings_warnings(symbols, NOW_UTC)
+
+        mock_pool.assert_called_once_with(max_workers=_EARNINGS_MAX_WORKERS)
 
 
 # ---------------------------------------------------------------------------

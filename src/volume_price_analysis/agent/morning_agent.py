@@ -193,6 +193,9 @@ async def run_morning_briefing(
 
 _EARNINGS_WARN_DAYS = 14
 
+# Cap concurrent earnings lookups regardless of how many symbols were analysed
+_EARNINGS_MAX_WORKERS = 8
+
 
 def _check_earnings(symbol: str, now: datetime) -> str | None:
     """Return a warning string if the symbol has earnings within 14 days, else None."""
@@ -230,7 +233,7 @@ def _fetch_earnings_warnings(symbols: list[str], now: datetime) -> dict[str, str
     """Fetch earnings dates for all symbols concurrently. Returns symbol -> warning string."""
     if not symbols:
         return {}
-    with ThreadPoolExecutor(max_workers=len(symbols)) as pool:
+    with ThreadPoolExecutor(max_workers=min(len(symbols), _EARNINGS_MAX_WORKERS)) as pool:
         futures = {sym: pool.submit(_check_earnings, sym, now) for sym in symbols}
         result: dict[str, str] = {}
         for sym, fut in futures.items():

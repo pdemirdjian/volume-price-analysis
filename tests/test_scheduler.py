@@ -12,6 +12,7 @@ import pytest
 from volume_price_analysis.agent.scheduler import (
     _next_run,
     _run_loop,
+    _wait_for_next_run,
     run_scheduler,
 )
 
@@ -123,6 +124,59 @@ class TestNextRunEdgeCases:
 # ---------------------------------------------------------------------------
 
 
+class TestWaitForNextRun:
+    """Test the chunked sleep helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_time_already_passed(self):
+        stop_event = asyncio.Event()
+        next_dt = datetime.now(ET) - timedelta(seconds=1)
+        assert await _wait_for_next_run(next_dt, time(8, 30), ET, stop_event) is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_stop_event_set(self):
+        stop_event = asyncio.Event()
+        stop_event.set()
+        next_dt = datetime.now(ET) + timedelta(hours=1)
+        assert await _wait_for_next_run(next_dt, time(8, 30), ET, stop_event) is False
+
+    @pytest.mark.asyncio
+    async def test_sleeps_in_chunks_and_rederives_each_wake(self):
+        """With a small chunk size, the schedule is re-derived on each wake."""
+        stop_event = asyncio.Event()
+        next_dt = datetime.now(ET) + timedelta(seconds=0.3)
+        with (
+            patch("volume_price_analysis.agent.scheduler._MAX_SLEEP_CHUNK_SECONDS", 0.05),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=next_dt,
+            ) as mock_next_run,
+        ):
+            result = await asyncio.wait_for(
+                _wait_for_next_run(next_dt, time(8, 30), ET, stop_event), timeout=5
+            )
+        assert result is True
+        assert mock_next_run.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_adopts_rederived_schedule(self):
+        """A corrected (earlier) re-derived time is adopted instead of the stale one."""
+        stop_event = asyncio.Event()
+        next_dt = datetime.now(ET) + timedelta(hours=5)
+        corrected = datetime.now(ET) - timedelta(seconds=1)
+        with (
+            patch("volume_price_analysis.agent.scheduler._MAX_SLEEP_CHUNK_SECONDS", 0.01),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=corrected,
+            ),
+        ):
+            result = await asyncio.wait_for(
+                _wait_for_next_run(next_dt, time(8, 30), ET, stop_event), timeout=5
+            )
+        assert result is True
+
+
 class TestRunLoop:
     """Test the scheduling loop behavior."""
 
@@ -200,6 +254,76 @@ class TestRunLoop:
         # Briefing was called at least once and the loop didn't crash
         assert call_count >= 1
         mock_error_email.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_reloads_config_before_each_run(self):
+        """The config is re-loaded from env before each briefing run."""
+        stop_event = asyncio.Event()
+        startup_config = MagicMock(name="startup")
+        startup_config.validate.return_value = []
+        reloaded_config = MagicMock(name="reloaded")
+        reloaded_config.validate.return_value = []
+
+        used_configs = []
+
+        async def _fake_briefing(config, *args, **kwargs):
+            used_configs.append(config)
+            stop_event.set()
+            return True
+
+        with (
+            patch(
+                "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+                side_effect=[startup_config, reloaded_config],
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                side_effect=_fake_briefing,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=datetime.now(ET) - timedelta(seconds=1),
+            ),
+        ):
+            await _run_loop(time(8, 30), ET, stop_event)
+
+        assert used_configs == [reloaded_config]
+
+    @pytest.mark.asyncio
+    async def test_invalid_reload_keeps_previous_config(self, caplog):
+        """An invalid re-loaded config is rejected; the previous one keeps working."""
+        stop_event = asyncio.Event()
+        startup_config = MagicMock(name="startup")
+        startup_config.validate.return_value = []
+        bad_config = MagicMock(name="bad")
+        bad_config.validate.return_value = ["EMAIL_FROM is required"]
+
+        used_configs = []
+
+        async def _fake_briefing(config, *args, **kwargs):
+            used_configs.append(config)
+            stop_event.set()
+            return True
+
+        with (
+            caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.scheduler"),
+            patch(
+                "volume_price_analysis.agent.scheduler.AgentConfig.from_env",
+                side_effect=[startup_config, bad_config],
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                side_effect=_fake_briefing,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=datetime.now(ET) - timedelta(seconds=1),
+            ),
+        ):
+            await _run_loop(time(8, 30), ET, stop_event)
+
+        assert used_configs == [startup_config]
+        assert "keeping previous config" in caplog.text
 
 
 class TestRunScheduler:
