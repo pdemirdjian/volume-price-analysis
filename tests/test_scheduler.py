@@ -128,53 +128,74 @@ class TestWaitForNextRun:
     """Test the chunked sleep helper."""
 
     @pytest.mark.asyncio
-    async def test_returns_true_when_time_already_passed(self):
+    async def test_fires_when_time_already_passed(self):
         stop_event = asyncio.Event()
         next_dt = datetime.now(ET) - timedelta(seconds=1)
-        assert await _wait_for_next_run(next_dt, time(8, 30), ET, stop_event) is True
+        assert await _wait_for_next_run(next_dt, time(8, 30), ET, stop_event) == next_dt
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_stop_event_set(self):
+    async def test_returns_none_when_stop_event_set(self):
         stop_event = asyncio.Event()
         stop_event.set()
         next_dt = datetime.now(ET) + timedelta(hours=1)
-        assert await _wait_for_next_run(next_dt, time(8, 30), ET, stop_event) is False
+        assert await _wait_for_next_run(next_dt, time(8, 30), ET, stop_event) is None
 
     @pytest.mark.asyncio
-    async def test_sleeps_in_chunks_and_rederives_each_wake(self):
-        """With a small chunk size, the schedule is re-derived on each wake."""
+    async def test_stop_wins_over_elapsed_deadline(self):
+        """A stop request beats an already-elapsed deadline — no briefing on shutdown."""
         stop_event = asyncio.Event()
-        next_dt = datetime.now(ET) + timedelta(seconds=0.3)
-        with (
-            patch("volume_price_analysis.agent.scheduler._MAX_SLEEP_CHUNK_SECONDS", 0.05),
-            patch(
-                "volume_price_analysis.agent.scheduler._next_run",
-                return_value=next_dt,
-            ) as mock_next_run,
-        ):
-            result = await asyncio.wait_for(
-                _wait_for_next_run(next_dt, time(8, 30), ET, stop_event), timeout=5
-            )
-        assert result is True
-        assert mock_next_run.call_count >= 1
+        stop_event.set()
+        next_dt = datetime.now(ET) - timedelta(seconds=1)
+        assert await _wait_for_next_run(next_dt, time(8, 30), ET, stop_event) is None
 
     @pytest.mark.asyncio
-    async def test_adopts_rederived_schedule(self):
-        """A corrected (earlier) re-derived time is adopted instead of the stale one."""
+    async def test_rederives_each_wake_and_adopts_corrected_schedule(self):
+        """The helper wakes in chunks and adopts a corrected (earlier) schedule.
+
+        The stale deadline is an hour out, so finishing within the test timeout
+        is only possible by waking from a chunk and adopting the re-derived
+        earlier time — which also keeps the test immune to slow CI machines.
+        """
         stop_event = asyncio.Event()
-        next_dt = datetime.now(ET) + timedelta(hours=5)
+        next_dt = datetime.now(ET) + timedelta(hours=1)
         corrected = datetime.now(ET) - timedelta(seconds=1)
         with (
             patch("volume_price_analysis.agent.scheduler._MAX_SLEEP_CHUNK_SECONDS", 0.01),
             patch(
                 "volume_price_analysis.agent.scheduler._next_run",
                 return_value=corrected,
-            ),
+            ) as mock_next_run,
         ):
             result = await asyncio.wait_for(
                 _wait_for_next_run(next_dt, time(8, 30), ET, stop_event), timeout=5
             )
-        assert result is True
+        assert result == corrected
+        assert mock_next_run.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_rederives_no_earlier_than_last_fired(self):
+        """Re-derivation is floored at the last fired schedule.
+
+        Simulates a backward clock jump: last_fired sits ahead of the current
+        wall clock, and _next_run must be asked for the schedule after
+        last_fired — not after now — so the same briefing can't fire twice.
+        """
+        stop_event = asyncio.Event()
+        next_dt = datetime.now(ET) + timedelta(hours=1)
+        last_fired = datetime.now(ET) + timedelta(minutes=30)
+        corrected = datetime.now(ET) - timedelta(seconds=1)
+        with (
+            patch("volume_price_analysis.agent.scheduler._MAX_SLEEP_CHUNK_SECONDS", 0.01),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=corrected,
+            ) as mock_next_run,
+        ):
+            await asyncio.wait_for(
+                _wait_for_next_run(next_dt, time(8, 30), ET, stop_event, last_fired=last_fired),
+                timeout=5,
+            )
+        assert mock_next_run.call_args.kwargs["now"] == last_fired
 
 
 class TestRunLoop:

@@ -90,29 +90,38 @@ async def _wait_for_next_run(
     tz: ZoneInfo,
     stop_event: asyncio.Event,
     skip_holidays: bool = False,
-) -> bool:
+    last_fired: datetime | None = None,
+) -> datetime | None:
     """Sleep until *next_dt* in bounded chunks, re-deriving the schedule each wake.
 
-    Returns True when the scheduled time has arrived, False if *stop_event*
-    was set first.
+    Returns the schedule datetime that fired, or None if *stop_event* was set
+    first. *last_fired* is the most recent schedule that already ran; it floors
+    re-derivation so a backward clock jump can never re-fire it.
     """
     while True:
+        if stop_event.is_set():
+            return None
         now = datetime.now(tz)
+        if now >= next_dt:
+            return next_dt
         delay = (next_dt - now).total_seconds()
-        if delay <= 0:
-            return True
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=min(delay, _MAX_SLEEP_CHUNK_SECONDS))
-            return False  # stop_event was set
+            return None  # stop_event was set
         except TimeoutError:
+            if stop_event.is_set():
+                return None
             now = datetime.now(tz)
             # Check against the original schedule first: if the clock jumped
             # past the target while we slept, fire now rather than re-deriving
             # (which would push the run to the next day).
             if now >= next_dt:
-                return True
-            rederived = _next_run(target, tz, now=now, skip_holidays=skip_holidays)
+                return next_dt
+            # Re-derive from no earlier than the last fired schedule, so a
+            # backward clock jump cannot repeat a briefing that already ran.
+            basis = now if last_fired is None else max(now, last_fired)
+            rederived = _next_run(target, tz, now=basis, skip_holidays=skip_holidays)
             if rederived != next_dt:
                 logger.info(
                     "Schedule shifted (clock or DST change); next briefing now %s",
@@ -135,8 +144,12 @@ async def _run_loop(
             logger.error("Config error: %s", error)
         raise SystemExit(1)
 
+    last_fired: datetime | None = None
     while not stop_event.is_set():
-        next_dt = _next_run(target, tz, skip_holidays=skip_holidays)
+        # Compute from no earlier than the last fired schedule (see
+        # _wait_for_next_run) so a backward clock jump can't repeat a run.
+        basis = datetime.now(tz) if last_fired is None else max(datetime.now(tz), last_fired)
+        next_dt = _next_run(target, tz, now=basis, skip_holidays=skip_holidays)
 
         # Log next run (with holiday info if applicable)
         holiday_name = _nyse_holidays.get(next_dt.date())
@@ -162,10 +175,12 @@ async def _run_loop(
             )
 
         # Sleep until next run or stop signal
-        if not await _wait_for_next_run(
-            next_dt, target, tz, stop_event, skip_holidays=skip_holidays
-        ):
+        fired = await _wait_for_next_run(
+            next_dt, target, tz, stop_event, skip_holidays=skip_holidays, last_fired=last_fired
+        )
+        if fired is None:
             break
+        last_fired = fired
 
         # Re-load config so rotated credentials/keys are picked up without a
         # container restart; keep the last valid config if the new one is bad.
