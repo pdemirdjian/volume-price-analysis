@@ -118,6 +118,24 @@ class TestNextRunEdgeCases:
         assert result.tzinfo is not None
         assert result > datetime.now(ET) - timedelta(seconds=1)
 
+    def test_spring_forward_transition(self):
+        """Across the spring-forward weekend the target stays 08:30 wall clock."""
+        # DST starts Sunday 2026-03-08; Friday is EST, Monday is EDT
+        now = datetime(2026, 3, 6, 9, 0, tzinfo=ET)  # Friday 09:00 EST
+        result = _next_run(time(8, 30), ET, now=now)
+        assert result == datetime(2026, 3, 9, 8, 30, tzinfo=ET)  # Monday
+        assert now.utcoffset() == timedelta(hours=-5)
+        assert result.utcoffset() == timedelta(hours=-4)
+
+    def test_fall_back_transition(self):
+        """Across the fall-back weekend the target stays 08:30 wall clock."""
+        # DST ends Sunday 2026-11-01; Friday is EDT, Monday is EST
+        now = datetime(2026, 10, 30, 9, 0, tzinfo=ET)  # Friday 09:00 EDT
+        result = _next_run(time(8, 30), ET, now=now)
+        assert result == datetime(2026, 11, 2, 8, 30, tzinfo=ET)  # Monday
+        assert now.utcoffset() == timedelta(hours=-4)
+        assert result.utcoffset() == timedelta(hours=-5)
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — async loop behavior
@@ -213,6 +231,34 @@ class TestRunLoop:
             mock_config.return_value = config
 
             await _run_loop(time(8, 30), ET, stop_event)
+
+    @pytest.mark.asyncio
+    async def test_stop_landing_as_schedule_fires_skips_briefing(self):
+        """A stop signal arriving just as the schedule fires prevents the briefing."""
+        stop_event = asyncio.Event()
+
+        async def _fire_and_stop(next_dt, *args, **kwargs):
+            stop_event.set()  # signal lands in the window after the fire
+            return next_dt
+
+        with (
+            patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config,
+            patch(
+                "volume_price_analysis.agent.scheduler._wait_for_next_run",
+                side_effect=_fire_and_stop,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                new_callable=AsyncMock,
+            ) as mock_briefing,
+        ):
+            config = MagicMock()
+            config.validate.return_value = []
+            mock_config.return_value = config
+
+            await _run_loop(time(8, 30), ET, stop_event)
+
+        mock_briefing.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_config_validation_failure_exits_nonzero(self, caplog):

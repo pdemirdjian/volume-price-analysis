@@ -144,11 +144,14 @@ async def _run_loop(
             logger.error("Config error: %s", error)
         raise SystemExit(1)
 
+    # In-memory only: a restart forgets the last fired schedule, so a restart
+    # whose clock is still before today's target may re-run today's briefing.
     last_fired: datetime | None = None
     while not stop_event.is_set():
         # Compute from no earlier than the last fired schedule (see
         # _wait_for_next_run) so a backward clock jump can't repeat a run.
-        basis = datetime.now(tz) if last_fired is None else max(datetime.now(tz), last_fired)
+        now = datetime.now(tz)
+        basis = now if last_fired is None else max(now, last_fired)
         next_dt = _next_run(target, tz, now=basis, skip_holidays=skip_holidays)
 
         # Log next run (with holiday info if applicable)
@@ -181,6 +184,11 @@ async def _run_loop(
         if fired is None:
             break
         last_fired = fired
+
+        # A stop signal can land just as the schedule fires; honor it rather
+        # than starting a briefing during shutdown.
+        if stop_event.is_set():
+            break
 
         # Re-load config so rotated credentials/keys are picked up without a
         # container restart; keep the last valid config if the new one is bad.
