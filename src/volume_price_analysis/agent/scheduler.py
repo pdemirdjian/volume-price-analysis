@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
+# Never sleep longer than this in one stretch: asyncio timeouts run on the
+# monotonic clock, which drifts from wall time across DST transitions, NTP
+# steps, and container suspend/resume. Waking regularly and re-checking wall
+# time bounds any such error to one chunk.
+_MAX_SLEEP_CHUNK_SECONDS = 15 * 60
+
 # NYSE holidays instance (reused across calls)
 _nyse_holidays = holidays.financial_holidays("NYSE")
 
@@ -78,6 +84,52 @@ def _next_run(
     return candidate
 
 
+async def _wait_for_next_run(
+    next_dt: datetime,
+    target: time,
+    tz: ZoneInfo,
+    stop_event: asyncio.Event,
+    skip_holidays: bool = False,
+    last_fired: datetime | None = None,
+) -> datetime | None:
+    """Sleep until *next_dt* in bounded chunks, re-deriving the schedule each wake.
+
+    Returns the schedule datetime that fired, or None if *stop_event* was set
+    first. *last_fired* is the most recent schedule that already ran; it floors
+    re-derivation so a backward clock jump can never re-fire it.
+    """
+    while True:
+        if stop_event.is_set():
+            return None
+        now = datetime.now(tz)
+        if now >= next_dt:
+            return next_dt
+        delay = (next_dt - now).total_seconds()
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=min(delay, _MAX_SLEEP_CHUNK_SECONDS))
+            return None  # stop_event was set
+        except TimeoutError:
+            if stop_event.is_set():
+                return None
+            now = datetime.now(tz)
+            # Check against the original schedule first: if the clock jumped
+            # past the target while we slept, fire now rather than re-deriving
+            # (which would push the run to the next day).
+            if now >= next_dt:
+                return next_dt
+            # Re-derive from no earlier than the last fired schedule, so a
+            # backward clock jump cannot repeat a briefing that already ran.
+            basis = now if last_fired is None else max(now, last_fired)
+            rederived = _next_run(target, tz, now=basis, skip_holidays=skip_holidays)
+            if rederived != next_dt:
+                logger.info(
+                    "Schedule shifted (clock or DST change); next briefing now %s",
+                    rederived.strftime("%Y-%m-%d %H:%M"),
+                )
+                next_dt = rederived
+
+
 async def _run_loop(
     target: time,
     tz: ZoneInfo,
@@ -92,10 +144,15 @@ async def _run_loop(
             logger.error("Config error: %s", error)
         raise SystemExit(1)
 
+    # In-memory only: a restart forgets the last fired schedule, so a restart
+    # whose clock is still before today's target may re-run today's briefing.
+    last_fired: datetime | None = None
     while not stop_event.is_set():
-        next_dt = _next_run(target, tz, skip_holidays=skip_holidays)
+        # Compute from no earlier than the last fired schedule (see
+        # _wait_for_next_run) so a backward clock jump can't repeat a run.
         now = datetime.now(tz)
-        delay = max(0, (next_dt - now).total_seconds())
+        basis = now if last_fired is None else max(now, last_fired)
+        next_dt = _next_run(target, tz, now=basis, skip_holidays=skip_holidays)
 
         # Log next run (with holiday info if applicable)
         holiday_name = _nyse_holidays.get(next_dt.date())
@@ -121,12 +178,27 @@ async def _run_loop(
             )
 
         # Sleep until next run or stop signal
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=delay)
-            # If we get here, stop_event was set
+        fired = await _wait_for_next_run(
+            next_dt, target, tz, stop_event, skip_holidays=skip_holidays, last_fired=last_fired
+        )
+        if fired is None:
             break
-        except TimeoutError:
-            pass  # Timer expired — time to run
+        last_fired = fired
+
+        # A stop signal can land just as the schedule fires; honor it rather
+        # than starting a briefing during shutdown.
+        if stop_event.is_set():
+            break
+
+        # Re-load config so rotated credentials/keys are picked up without a
+        # container restart; keep the last valid config if the new one is bad.
+        fresh_config = AgentConfig.from_env()
+        fresh_errors = fresh_config.validate()
+        if fresh_errors:
+            for error in fresh_errors:
+                logger.error("Config error on reload: %s — keeping previous config", error)
+        else:
+            config = fresh_config
 
         # Execute briefing
         try:
