@@ -13,6 +13,7 @@ from volume_price_analysis.agent.scheduler import (
     _next_run,
     _run_loop,
     _wait_for_next_run,
+    main,
     run_scheduler,
 )
 
@@ -94,6 +95,15 @@ class TestNextRunHolidays:
         # but not an NYSE holiday in the `holidays` package)
         assert result.date() >= datetime(2026, 11, 27).date()
         assert result.weekday() < 5  # Must be a weekday
+
+    def test_skips_holiday_that_lands_on_weekend(self):
+        """A Friday NYSE holiday advances past the weekend to Monday."""
+        # Good Friday 2025-04-18 is a Friday NYSE holiday.
+        # Thursday after target → Friday is a holiday → Saturday → Monday.
+        now = datetime(2025, 4, 17, 9, 0, tzinfo=ET)
+        result = _next_run(time(8, 30), ET, now=now, skip_holidays=True)
+        assert result.date() == datetime(2025, 4, 21, tzinfo=ET).date()
+        assert result.weekday() == 0  # Monday
 
     def test_non_holiday_weekday_unaffected_by_skip(self):
         """A regular weekday is unaffected by skip_holidays."""
@@ -392,6 +402,127 @@ class TestRunLoop:
         assert used_configs == [startup_config]
         assert "keeping previous config" in caplog.text
 
+    @pytest.mark.asyncio
+    async def test_holiday_log_when_skip_holidays_true(self, caplog):
+        """_run_loop logs a defensive skip message if the next run falls on a holiday."""
+        stop_event = asyncio.Event()
+        holiday_dt = datetime(2025, 4, 18, 8, 30, tzinfo=ET)  # Good Friday
+
+        async def _fake_briefing(*args, **kwargs):
+            stop_event.set()
+            return True
+
+        with (
+            caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
+            patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config,
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=holiday_dt,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                side_effect=_fake_briefing,
+            ),
+        ):
+            config = MagicMock()
+            config.validate.return_value = []
+            mock_config.return_value = config
+            await _run_loop(time(8, 30), ET, stop_event, skip_holidays=True)
+
+        assert "skipping" in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_holiday_log_when_skip_holidays_false(self, caplog):
+        """_run_loop logs that it still runs when the next date is a holiday."""
+        stop_event = asyncio.Event()
+        holiday_dt = datetime(2025, 4, 18, 8, 30, tzinfo=ET)  # Good Friday
+
+        async def _fake_briefing(*args, **kwargs):
+            stop_event.set()
+            return True
+
+        with (
+            caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
+            patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config,
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=holiday_dt,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                side_effect=_fake_briefing,
+            ),
+        ):
+            config = MagicMock()
+            config.validate.return_value = []
+            mock_config.return_value = config
+            await _run_loop(time(8, 30), ET, stop_event, skip_holidays=False)
+
+        assert "still running" in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_successful_briefing_logs_completion(self, caplog):
+        """_run_loop logs success when run_morning_briefing returns a truthy result."""
+        stop_event = asyncio.Event()
+
+        async def _fake_briefing(*args, **kwargs):
+            stop_event.set()
+            return True
+
+        with (
+            caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
+            patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config,
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                side_effect=_fake_briefing,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=datetime.now(ET) - timedelta(seconds=1),
+            ),
+        ):
+            config = MagicMock()
+            config.validate.return_value = []
+            mock_config.return_value = config
+            await _run_loop(time(8, 30), ET, stop_event)
+
+        assert "completed successfully" in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_error_email_failure_is_logged(self, caplog):
+        """_run_loop logs when send_error_email itself raises after a briefing failure."""
+        stop_event = asyncio.Event()
+
+        async def _fake_briefing(*args, **kwargs):
+            stop_event.set()
+            raise RuntimeError("Briefing exploded")
+
+        with (
+            caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.scheduler"),
+            patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config,
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                side_effect=_fake_briefing,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler.send_error_email",
+                side_effect=Exception("SMTP down"),
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=datetime.now(ET) - timedelta(seconds=1),
+            ),
+        ):
+            config = MagicMock()
+            config.validate.return_value = []
+            config.email_from = "a@b.com"
+            config.email_password = "pass"
+            config.email_to = "c@d.com"
+            mock_config.return_value = config
+            await _run_loop(time(8, 30), ET, stop_event)
+
+        assert "error email" in caplog.text.lower()
+
 
 class TestRunScheduler:
     """Test top-level scheduler with signal handling."""
@@ -426,10 +557,11 @@ class TestRunScheduler:
         assert "Scheduler stopped" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_unix_uses_add_signal_handler(self):
+    async def test_unix_uses_add_signal_handler(self, caplog):
         """On Unix, loop.add_signal_handler is called for SIGTERM and SIGINT."""
         mock_loop = MagicMock()
         with (
+            caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
             patch("volume_price_analysis.agent.scheduler.sys") as mock_sys,
             patch(
                 "volume_price_analysis.agent.scheduler.asyncio.get_running_loop",
@@ -443,16 +575,27 @@ class TestRunScheduler:
             mock_sys.platform = "linux"
             await run_scheduler(time(8, 30), ET)
 
-        assert mock_loop.add_signal_handler.call_count == 2
-        registered_signals = {call.args[0] for call in mock_loop.add_signal_handler.call_args_list}
-        assert registered_signals == {signal.SIGTERM, signal.SIGINT}
+            assert mock_loop.add_signal_handler.call_count == 2
+            registered_signals = {
+                call.args[0] for call in mock_loop.add_signal_handler.call_args_list
+            }
+            assert registered_signals == {signal.SIGTERM, signal.SIGINT}
+
+            handler = mock_loop.add_signal_handler.call_args_list[0].args[1]
+            handler()
+            assert "Received shutdown signal" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_windows_uses_signal_signal(self):
-        """On Windows, signal.signal is called with SIGINT."""
+    async def test_windows_uses_signal_signal(self, caplog):
+        """On Windows, signal.signal registers SIGINT and uses call_soon_threadsafe."""
+        loop = asyncio.get_running_loop()
         with (
+            caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
             patch("volume_price_analysis.agent.scheduler.sys") as mock_sys,
             patch("volume_price_analysis.agent.scheduler.signal.signal") as mock_signal,
+            patch.object(
+                loop, "call_soon_threadsafe", wraps=loop.call_soon_threadsafe
+            ) as mock_soon,
             patch(
                 "volume_price_analysis.agent.scheduler._run_loop",
                 new_callable=AsyncMock,
@@ -461,5 +604,78 @@ class TestRunScheduler:
             mock_sys.platform = "win32"
             await run_scheduler(time(8, 30), ET)
 
-        mock_signal.assert_called_once()
-        assert mock_signal.call_args.args[0] == signal.SIGINT
+            mock_signal.assert_called_once()
+            assert mock_signal.call_args.args[0] == signal.SIGINT
+
+            handler = mock_signal.call_args.args[1]
+            handler(signal.SIGINT, None)
+            mock_soon.assert_called()
+            assert "Received shutdown signal" in caplog.text
+
+
+class TestSchedulerMain:
+    """Test the scheduler CLI entry point (main)."""
+
+    def test_default_time(self):
+        """main() schedules 08:30 ET when no --time is given."""
+        with (
+            patch("sys.argv", ["morning-scheduler"]),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_scheduler",
+            ) as mock_sched,
+            patch("volume_price_analysis.agent.scheduler.asyncio.run"),
+        ):
+            main()
+        mock_sched.assert_called_once_with(time(8, 30), ET, skip_holidays=False)
+
+    def test_custom_time(self):
+        """main() parses --time into a datetime.time and passes it to run_scheduler."""
+        with (
+            patch("sys.argv", ["morning-scheduler", "--time", "10:45"]),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_scheduler",
+            ) as mock_sched,
+            patch("volume_price_analysis.agent.scheduler.asyncio.run"),
+        ):
+            main()
+        mock_sched.assert_called_once_with(time(10, 45), ET, skip_holidays=False)
+
+    def test_skip_holidays_flag(self):
+        """main() forwards --skip-holidays to run_scheduler."""
+        with (
+            patch("sys.argv", ["morning-scheduler", "--skip-holidays"]),
+            patch(
+                "volume_price_analysis.agent.scheduler.run_scheduler",
+            ) as mock_sched,
+            patch("volume_price_analysis.agent.scheduler.asyncio.run"),
+        ):
+            main()
+        mock_sched.assert_called_once_with(time(8, 30), ET, skip_holidays=True)
+
+    def test_invalid_time_format_exits(self, caplog):
+        """main() exits when --time is not parseable."""
+        with (
+            caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.scheduler"),
+            patch("sys.argv", ["morning-scheduler", "--time", "not-a-time"]),
+        ):
+            with pytest.raises(SystemExit, match="1"):
+                main()
+        assert "Invalid --time" in caplog.text
+
+    def test_invalid_time_bad_hour(self):
+        """main() exits when --time has an hour outside 0-23."""
+        with patch("sys.argv", ["morning-scheduler", "--time", "25:00"]):
+            with pytest.raises(SystemExit, match="1"):
+                main()
+
+    def test_invalid_time_bad_minute(self):
+        """main() exits when --time has a minute outside 0-59."""
+        with patch("sys.argv", ["morning-scheduler", "--time", "08:99"]):
+            with pytest.raises(SystemExit, match="1"):
+                main()
+
+    def test_invalid_time_missing_colon(self):
+        """main() exits when --time is missing the HH:MM colon separator."""
+        with patch("sys.argv", ["morning-scheduler", "--time", "0830"]):
+            with pytest.raises(SystemExit, match="1"):
+                main()
