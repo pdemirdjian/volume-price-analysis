@@ -644,13 +644,24 @@ def calculate_price_roc(
     # Calculate ROC
     roc = ((data["Close"] - data["Close"].shift(period)) / data["Close"].shift(period)) * 100
 
-    current_roc = roc.iloc[-1]
+    # With fewer than period+1 bars the shift leaves every value NaN (and no
+    # value at all when empty); report a neutral 0.0 rather than leaking NaN
+    # into the JSON response.
+    current_roc = roc.iloc[-1] if len(roc) else float("nan")
+    if pd.isna(current_roc):
+        current_roc = 0.0
 
     # Volume confirmation
     if volume_confirmation:
-        avg_volume = data["Volume"].rolling(window=period).mean()
         recent_avg_volume = data["Volume"].iloc[-period:].mean()
-        volume_confirmed = recent_avg_volume > avg_volume.iloc[-period - 1]
+        # The baseline is the rolling average ending just before the recent
+        # window, which only becomes defined once 2*period bars exist; with
+        # less history there is nothing to confirm against.
+        if len(data) >= 2 * period:
+            avg_volume = data["Volume"].rolling(window=period).mean()
+            volume_confirmed = bool(recent_avg_volume > avg_volume.iloc[-period - 1])
+        else:
+            volume_confirmed = False
     else:
         volume_confirmed = None
 
