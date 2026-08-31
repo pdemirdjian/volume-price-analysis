@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.9.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.8.0...v2.9.0) (2026-08-31)
+
+
+### Features
+
+* market-regime gate for morning briefing picks (PDE-66) ([#431](https://github.com/pdemirdjian/volume-price-analysis/issues/431)) ([d3876de](https://github.com/pdemirdjian/volume-price-analysis/commit/d3876dec33a23416292ac681978818db3a875610))
+
+
+### Bug Fixes
+
+* consolidate divergent Bollinger squeeze implementations ([#435](https://github.com/pdemirdjian/volume-price-analysis/issues/435)) ([3925f88](https://github.com/pdemirdjian/volume-price-analysis/commit/3925f8800e65bee39a1a2d34ae238f1e031d92de))
+* **deps:** update dependency anthropic to v1 ([#433](https://github.com/pdemirdjian/volume-price-analysis/issues/433)) ([27e21bb](https://github.com/pdemirdjian/volume-price-analysis/commit/27e21bbeb3a6e7d888cf7e1d1aef0013843fa1d8))
+* pandas Series repr leaking into comprehensive_analysis JSON (PDE-13) ([#429](https://github.com/pdemirdjian/volume-price-analysis/issues/429)) ([e36e1d8](https://github.com/pdemirdjian/volume-price-analysis/commit/e36e1d80573ac8d4b20e95a8a93f8bb6d4bd483f))
+* short-history IndexError in enhanced summary and price ROC (PDE-14) ([#432](https://github.com/pdemirdjian/volume-price-analysis/issues/432)) ([68d16f8](https://github.com/pdemirdjian/volume-price-analysis/commit/68d16f84593f6472b27a607b5f84c5fc8157251e))
+* short-history NaN crash in relative volume indicators (PDE-12) ([#427](https://github.com/pdemirdjian/volume-price-analysis/issues/427)) ([c1487fd](https://github.com/pdemirdjian/volume-price-analysis/commit/c1487fd248b1cdaab857f84eb64ec2f557560bb6))
+
 ## [2.8.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.7.4...v2.8.0) (2026-08-30)
 
 
