@@ -929,7 +929,14 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                         "condition": cmf_condition,
                         "interpretation": "Positive = buying pressure, Negative = selling pressure",
                     },
-                    "relative_volume": rvol,
+                    # Project scalar fields only: rvol also carries "rvol_series",
+                    # a pd.Series that would serialize as a truncated repr string.
+                    "relative_volume": {
+                        "current_rvol": rvol["current_rvol"],
+                        "average_volume": rvol["average_volume"],
+                        "current_volume": rvol["current_volume"],
+                        "significance": rvol["significance"],
+                    },
                     "volume_breakout": breakout,
                 },
                 "price_indicators": {
@@ -943,7 +950,14 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                         "price_vs_vwma": f"{((latest_close / latest_vwma - 1) * 100):.2f}%",
                         "position": "above" if latest_close > latest_vwma else "below",
                     },
-                    "price_roc": roc,
+                    # Same projection: roc carries "roc_series" (pd.Series).
+                    "price_roc": {
+                        "current_roc": roc["current_roc"],
+                        "direction": roc["direction"],
+                        "strength": roc["strength"],
+                        "volume_confirmed": roc["volume_confirmed"],
+                        "signal": roc["signal"],
+                    },
                 },
                 "volatility_indicators": {
                     "historical_volatility_20d": {

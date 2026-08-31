@@ -552,6 +552,52 @@ class TestCallToolComprehensive:
 
     @pytest.mark.asyncio
     @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_comprehensive_analysis_no_series_repr_leak(self, mock_fetch):
+        """relative_volume and price_roc must be scalar dicts, not stringified Series (PDE-13)."""
+        # 100 bars: past ~60 rows pandas truncates Series reprs with "...",
+        # which is exactly what leaked into the JSON before the fix.
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=100, freq="D"),
+                "Open": [100 + i * 0.5 for i in range(100)],
+                "High": [102 + i * 0.5 for i in range(100)],
+                "Low": [98 + i * 0.5 for i in range(100)],
+                "Close": [101 + i * 0.5 for i in range(100)],
+                "Volume": [1000000 + i * 20000 for i in range(100)],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "6mo"}
+        )
+        data = json.loads(result.content[0].text)
+
+        rvol = data["volume_indicators"]["relative_volume"]
+        assert set(rvol) == {"current_rvol", "average_volume", "current_volume", "significance"}
+        assert isinstance(rvol["current_rvol"], float)
+        assert isinstance(rvol["average_volume"], int)
+
+        roc = data["price_indicators"]["price_roc"]
+        assert set(roc) == {"current_roc", "direction", "strength", "volume_confirmed", "signal"}
+        assert isinstance(roc["current_roc"], float)
+
+        # No pandas repr anywhere in the response
+        def assert_no_series_repr(obj):
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    assert_no_series_repr(v)
+            elif isinstance(obj, list):
+                for v in obj:
+                    assert_no_series_repr(v)
+            elif isinstance(obj, str):
+                assert "dtype:" not in obj
+                assert "Length:" not in obj
+
+        assert_no_series_repr(data)
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
     async def test_comprehensive_analysis_includes_headline(self, mock_fetch):
         """Additive top-line headline is present without disturbing existing keys (O4)."""
         mock_data = pd.DataFrame(
