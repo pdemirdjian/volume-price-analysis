@@ -404,6 +404,46 @@ def calculate_bollinger_bands(
     }
 
 
+# Minimum data points required for meaningful Bollinger Band squeeze detection
+MIN_SQUEEZE_DETECTION_PERIODS = 5
+
+
+def detect_bollinger_squeeze(
+    bandwidth: pd.Series, window: int = 20, threshold: float = 0.7
+) -> bool:
+    """
+    Detect a Bollinger Band squeeze (volatility contraction).
+
+    A squeeze is flagged when the latest bandwidth is below `threshold` times
+    the average bandwidth over the trailing `window` periods (the latest value
+    is part of that average, slightly dampening its own baseline). NaN values
+    are ignored; with fewer than `window` valid periods the average falls back
+    to the full available history, and with fewer than
+    MIN_SQUEEZE_DETECTION_PERIODS valid periods no squeeze is reported.
+
+    Args:
+        bandwidth: 'bandwidth' series from calculate_bollinger_bands
+        window: Trailing periods for the average bandwidth baseline
+        threshold: Fraction of the baseline below which a squeeze is flagged
+
+    Returns:
+        True if a squeeze is detected
+    """
+    if bandwidth.empty:
+        return False
+    latest = bandwidth.iloc[-1]
+    if pd.isna(latest):
+        return False
+    valid = bandwidth.dropna()
+    if len(valid) >= window:
+        baseline = valid.iloc[-window:].mean()
+    elif len(valid) >= MIN_SQUEEZE_DETECTION_PERIODS:
+        baseline = valid.mean()
+    else:
+        return False
+    return bool(latest < baseline * threshold)
+
+
 # ============================================================================
 # ADVANCED VOLUME INDICATORS
 # ============================================================================

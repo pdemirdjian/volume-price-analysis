@@ -31,6 +31,7 @@ from .indicators import (
     calculate_vwap,
     calculate_vwma,
     composite_adx_period,
+    detect_bollinger_squeeze,
     detect_volume_breakout,
 )
 
@@ -38,9 +39,6 @@ logger = logging.getLogger(__name__)
 
 # Concurrency limit for parallel scanning
 MAX_CONCURRENT_SCANS = 10
-
-# Minimum data points required for meaningful Bollinger Band squeeze detection
-MIN_SQUEEZE_DETECTION_PERIODS = 5
 
 # Minimum bars of history required to analyze a symbol in a scan.
 MIN_SCAN_HISTORY = 30
@@ -642,18 +640,7 @@ def run_options_analysis(
     bb_bw = bbands["bandwidth"].iloc[-1]
     atr_val = atr.iloc[-1]
 
-    if not pd.isna(bb_bw):
-        bw_series = bbands["bandwidth"].dropna()
-        if len(bw_series) >= volume_window:
-            bb_mean = bw_series.iloc[-volume_window:].mean()
-            is_squeeze = bb_bw < bb_mean * 0.7
-        elif len(bw_series) >= MIN_SQUEEZE_DETECTION_PERIODS:
-            bb_mean = bw_series.mean()
-            is_squeeze = bb_bw < bb_mean * 0.7
-        else:
-            is_squeeze = False
-    else:
-        is_squeeze = False
+    is_squeeze = detect_bollinger_squeeze(bbands["bandwidth"], window=volume_window)
 
     if not pd.isna(bb_pct_b):
         if bb_pct_b > 0.8:
