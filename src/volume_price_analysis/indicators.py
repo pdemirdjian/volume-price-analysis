@@ -407,9 +407,13 @@ def calculate_bollinger_bands(
 # Minimum data points required for meaningful Bollinger Band squeeze detection
 MIN_SQUEEZE_DETECTION_PERIODS = 5
 
+# Canonical trailing window for the squeeze baseline; every analysis path uses
+# this default so squeeze verdicts agree across tools.
+DEFAULT_SQUEEZE_WINDOW = 20
+
 
 def detect_bollinger_squeeze(
-    bandwidth: pd.Series, window: int = 20, threshold: float = 0.7
+    bandwidth: pd.Series, window: int = DEFAULT_SQUEEZE_WINDOW, threshold: float = 0.7
 ) -> bool:
     """
     Detect a Bollinger Band squeeze (volatility contraction).

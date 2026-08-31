@@ -12,6 +12,7 @@ from pytickersymbols import PyTickerSymbols
 
 from .data_fetcher import fetch_stock_data
 from .indicators import (
+    DEFAULT_SQUEEZE_WINDOW,
     analyze_volume_trends,
     calculate_accumulation_distribution,
     calculate_adx,
@@ -693,6 +694,7 @@ def run_options_analysis(
             "rsi_period": rsi_period,
             "adx_period": adx_period,
             "hv_window": hv_window,
+            "squeeze_window": DEFAULT_SQUEEZE_WINDOW,
             "optimization": f"Adaptive for {holding_period}-day options",
         },
         "composite_signal": {
