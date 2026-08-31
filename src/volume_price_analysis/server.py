@@ -1090,9 +1090,10 @@ def generate_enhanced_summary(
         summary.append("⚠️  Price trading below VWAP - Bearish institutional sentiment")
 
     # Volume Flow Analysis
-    if obv.iloc[-1] > obv.iloc[-5] and ad_line.iloc[-1] > ad_line.iloc[-5]:
+    lookback = min(5, len(data))
+    if obv.iloc[-1] > obv.iloc[-lookback] and ad_line.iloc[-1] > ad_line.iloc[-lookback]:
         summary.append("✓ Strong accumulation - Both OBV and A/D Line rising")
-    elif obv.iloc[-1] < obv.iloc[-5] and ad_line.iloc[-1] < ad_line.iloc[-5]:
+    elif obv.iloc[-1] < obv.iloc[-lookback] and ad_line.iloc[-1] < ad_line.iloc[-lookback]:
         summary.append("⚠️  Strong distribution - Both OBV and A/D Line falling")
     else:
         summary.append("⚠️  Mixed volume signals - OBV and A/D Line diverging")

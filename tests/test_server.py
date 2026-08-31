@@ -582,6 +582,31 @@ class TestCallToolComprehensive:
         # Existing narrative summary must remain a list (contract preserved).
         assert isinstance(data["summary"], list)
 
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_comprehensive_analysis_short_history(self, mock_fetch):
+        """Fewer than 5 bars must not IndexError in the summary (PDE-14)."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=3, freq="D"),
+                "Open": [100.0, 101.0, 102.0],
+                "High": [102.0, 103.0, 104.0],
+                "Low": [98.0, 99.0, 100.0],
+                "Close": [101.0, 102.0, 103.0],
+                "Volume": [1000000, 1100000, 1200000],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "5d"}
+        )
+        data = json.loads(result.content[0].text)
+
+        assert "error" not in data
+        assert data["symbol"] == "SPY"
+        assert isinstance(data["summary"], list)
+
 
 class TestCallToolOptions:
     """Tests for options_analysis tool."""
@@ -1313,6 +1338,16 @@ class TestGenerateEnhancedSummary:
             rvol,
             breakout,
         )
+
+    def test_short_history_no_indexerror(self):
+        """Fewer than 5 bars must not raise IndexError on the iloc[-5] lookback (PDE-14)."""
+        args = list(self._base_args())
+        args[0] = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
+        args[1] = self._make_series([100000, 200000, 300000])  # OBV, 3 bars
+        args[2] = self._make_series([50000, 100000, 150000])  # A/D, 3 bars
+
+        summary = generate_enhanced_summary(*args)
+        assert any("accumulation" in s.lower() for s in summary)
 
     def test_below_vwap_sentiment(self):
         """Test bearish sentiment when price below VWAP (line 993)."""

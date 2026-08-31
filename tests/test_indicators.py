@@ -1202,6 +1202,41 @@ class TestPriceROC:
         assert "bullish" in result["signal"]
         assert result["strength"] in result["signal"]
 
+    def test_roc_short_history_no_indexerror(self):
+        """Fewer than period+1 bars must not IndexError or leak NaN (PDE-14)."""
+        data = pd.DataFrame(
+            {
+                "Close": [100.0, 101.0, 102.0],
+                "Volume": [1_000_000, 1_100_000, 1_200_000],
+            }
+        )
+        result = calculate_price_roc(data, period=12)
+
+        assert result["current_roc"] == 0.0
+        assert result["strength"] == "Neutral"
+        assert result["volume_confirmed"] is False
+
+    def test_roc_volume_baseline_warmup_unconfirmed(self):
+        """With period+1..2*period-1 bars the rolling baseline is still NaN, so
+        volume stays unconfirmed instead of comparing against NaN (PDE-14)."""
+        data = pd.DataFrame(
+            {
+                "Close": [100.0 + i for i in range(15)],
+                "Volume": [1_000_000] * 10 + [5_000_000] * 5,
+            }
+        )
+        result = calculate_price_roc(data, period=12)
+
+        assert result["volume_confirmed"] is False
+
+    def test_roc_empty_data(self):
+        """Empty DataFrame returns a neutral result instead of raising (PDE-14)."""
+        data = pd.DataFrame({"Close": [], "Volume": []})
+        result = calculate_price_roc(data, period=12)
+
+        assert result["current_roc"] == 0.0
+        assert result["strength"] == "Neutral"
+
 
 class TestEnhancedVolumeProfile:
     """Tests for Enhanced Volume Profile calculation."""
