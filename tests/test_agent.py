@@ -304,6 +304,24 @@ class TestFallbackBriefing:
         assert "150.00" in briefing
         assert "5.5" in briefing
 
+    def test_flags_regime_conflict_picks(self):
+        scan_results = {
+            "summary": {"total_candidates": 1, "high_conviction": 1},
+            "high_conviction_setups": [
+                {"symbol": "AAPL", "regime_conflict": "bullish setup against a bearish tape"}
+            ],
+        }
+        deep = [
+            {
+                "symbol": "AAPL",
+                "latest_price": 150.0,
+                "composite_signal": {"score": 5.5, "recommendation": "strong_bullish"},
+            },
+        ]
+        briefing = _fallback_briefing(scan_results, deep)
+        aapl_line = next(line for line in briefing.splitlines() if "AAPL" in line)
+        assert "counter-regime" in aapl_line
+
 
 def _full_deep_analysis():
     """A representative run_options_analysis-shaped dict for projection tests."""
@@ -443,6 +461,18 @@ class TestProjectScanResults:
 
     def test_omits_absent_keys(self):
         assert _project_scan_results({"summary": {}}) == {"summary": {}}
+
+    def test_keeps_regime_fields(self):
+        scan = {
+            "summary": {"total_candidates": 1},
+            "market_regime": {"regime": "bearish", "spy_close": 550.0},
+            "high_conviction_setups": [
+                {"symbol": "AAPL", "regime_conflict": "bullish setup against a bearish tape"}
+            ],
+        }
+        projected = _project_scan_results(scan)
+        assert projected["market_regime"]["regime"] == "bearish"
+        assert projected["high_conviction_setups"][0]["regime_conflict"]
 
 
 class TestDropSupersededScanFields:
@@ -1155,10 +1185,19 @@ class TestRunMorningBriefing:
             email_to="c@d.com",
         )
 
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
+            return_value=MagicMock(),
+        )
+
         await run_morning_briefing(config, dry_run=False, no_ai=True)
 
         mock_generate.assert_not_called()
         mock_raw_email.assert_called_once()
+        # The regime verdict reaches the raw email as a preamble (here unknown:
+        # the mocked SPY fetch returns no usable frame).
+        preamble = mock_raw_email.call_args.kwargs["preamble"]
+        assert preamble.startswith("**Market Regime: UNKNOWN**")
 
     @pytest.mark.asyncio
     async def test_ai_failure_uses_fallback(self, mocker):
@@ -1207,6 +1246,75 @@ class TestRunMorningBriefing:
         mock_send.assert_called_once()
         body = mock_send.call_args.kwargs.get("body_markdown", "")
         assert "Fallback" in body
+
+    @pytest.mark.asyncio
+    async def test_regime_verdict_flags_picks_and_heads_email(self, mocker):
+        """PDE-66: a bearish tape flags bullish picks as counter-regime (keeping
+        their high-conviction billing) and the regime verdict heads the email body."""
+        import pandas as pd
+
+        bull = {"symbol": "AAPL", "composite_score": 4.5}
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value={
+                "summary": {
+                    "total_candidates": 1,
+                    "bullish_setups": 1,
+                    "bearish_setups": 0,
+                    "high_conviction": 1,
+                    "errors": 0,
+                },
+                "high_conviction_setups": [bull],
+                "top_bullish": [bull],
+                "top_bearish": [],
+            },
+        )
+
+        # Fixed fixture window: 29 sessions at 600 then a close at 550 puts
+        # SPY below its 20-day SMA -> bearish regime.
+        spy_data = pd.DataFrame(
+            {
+                "Date": pd.bdate_range("2026-07-01", periods=30),
+                "Close": [600.0] * 29 + [550.0],
+            }
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
+            side_effect=lambda symbol, *a, **kw: spy_data if symbol == "SPY" else MagicMock(),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_options_analysis",
+            return_value={"symbol": "AAPL", "composite_signal": {"score": 4.5}},
+        )
+        mock_generate = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="# Briefing",
+        )
+        mock_send = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.send_briefing_email",
+        )
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+            max_deep_analysis=1,
+        )
+
+        await run_morning_briefing(config, dry_run=False, no_ai=False)
+
+        annotated_scan = mock_generate.call_args.kwargs["scan_results"]
+        assert annotated_scan["market_regime"]["regime"] == "bearish"
+        # Annotation only: the pick keeps its high-conviction billing and count.
+        assert [c["symbol"] for c in annotated_scan["high_conviction_setups"]] == ["AAPL"]
+        assert annotated_scan["high_conviction_setups"][0]["regime_conflict"]
+        assert annotated_scan["summary"]["high_conviction"] == 1
+
+        body = mock_send.call_args.kwargs["body_markdown"]
+        assert body.startswith("**Market Regime: BEARISH**")
+        assert "flagged" in body
 
 
 class TestSendBriefingEmailSmtpFailure:

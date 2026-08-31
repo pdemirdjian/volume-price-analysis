@@ -16,12 +16,19 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import fetch_stock_data
 from .ai_client import generate_briefing
 from .config import AgentConfig
 from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
+from .regime import (
+    REGIME_SMA_PERIOD,
+    annotate_regime_conflicts,
+    compute_market_regime,
+    format_regime_header,
+)
 
 # Configure logging to stdout (Docker best practice)
 logging.basicConfig(
@@ -74,6 +81,24 @@ async def run_morning_briefing(
         scan_results["summary"]["bearish_setups"],
         scan_results["summary"]["high_conviction"],
     )
+
+    # Step 1b: Market-regime check (PDE-66) — context only: counter-regime
+    # picks are flagged but keep their high-conviction billing and priority.
+    # The briefing must never die on this path, so any failure degrades to an
+    # unknown verdict with the scan results left unannotated.
+    logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
+    try:
+        regime = _fetch_market_regime()
+        scan_results = annotate_regime_conflicts(scan_results, regime)
+        conflict_count = sum(
+            1 for c in scan_results.get("high_conviction_setups", []) if c.get("regime_conflict")
+        )
+        regime_header = format_regime_header(regime, conflict_count)
+    except Exception:
+        logger.exception("Regime annotation failed; continuing without it")
+        regime = {"regime": "unknown", "reason": "regime check failed"}
+        regime_header = format_regime_header(regime)
+    logger.info("Regime verdict: %s", regime.get("regime", "unknown"))
 
     # Step 2: Deep analysis on top N candidates
     top_symbols = _get_top_symbols(scan_results, config.max_deep_analysis)
@@ -137,6 +162,11 @@ async def run_morning_briefing(
             degraded = True
             logger.warning("Using fallback briefing — AI provider was unavailable")
 
+    # The regime verdict heads every rendered briefing (AI or fallback); the
+    # no-AI raw email carries it inside the scan_results JSON instead.
+    if briefing is not None:
+        briefing = regime_header + "\n\n" + briefing
+
     # Step 4: Deliver
     elapsed_total = time.monotonic() - start_time
     symbols_scanned = scan_results.get("scan_parameters", {}).get("symbols_scanned")
@@ -157,6 +187,7 @@ async def run_morning_briefing(
         if briefing:
             print(briefing + stats_line)
         else:
+            print(regime_header)
             print(json.dumps(scan_results, indent=2, default=str))
             for a in deep_analyses:
                 print(json.dumps(a, indent=2, default=str))
@@ -171,6 +202,7 @@ async def run_morning_briefing(
             smtp_host=config.email_smtp_host,
             smtp_port=config.email_smtp_port,
             date_str=date_str,
+            preamble=regime_header,
         )
     else:
         logger.info("Step 4: Sending briefing email")
@@ -243,6 +275,19 @@ def _fetch_earnings_warnings(symbols: list[str], now: datetime) -> dict[str, str
         return result
 
 
+def _fetch_market_regime() -> dict:
+    """Fetch SPY history and compute the market regime; failures degrade to unknown."""
+    try:
+        spy_data = fetch_stock_data("SPY", None, None, "3mo")
+        # Exclude any in-progress session so a manual intraday run stays strictly
+        # causal — the check must always read the prior session's close.
+        today_eastern = datetime.now(ZoneInfo("America/New_York")).date()
+        return compute_market_regime(spy_data, today=today_eastern)
+    except Exception:
+        logger.exception("Market regime check failed")
+        return compute_market_regime(None)
+
+
 def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
     """Extract top candidate symbols from scan results for deep analysis."""
     symbols = []
@@ -294,6 +339,11 @@ def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
     lines.append(f"**Bearish setups:** {summary.get('bearish_setups', 0)}")
     lines.append(f"**High conviction:** {summary.get('high_conviction', 0)}\n")
 
+    conflict_symbols = {
+        c.get("symbol")
+        for c in scan_results.get("high_conviction_setups", [])
+        if isinstance(c, dict) and c.get("regime_conflict")
+    }
     if deep_analyses:
         lines.append("## Top Candidates\n")
         for a in deep_analyses:
@@ -301,7 +351,10 @@ def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
             score = a.get("composite_signal", {}).get("score", 0)
             rec = a.get("composite_signal", {}).get("recommendation", "?")
             price = a.get("latest_price", 0)
-            lines.append(f"- **{sym}** @ ${price:.2f} | Score: {score:.1f} | {rec}")
+            line = f"- **{sym}** @ ${price:.2f} | Score: {score:.1f} | {rec}"
+            if sym in conflict_symbols:
+                line += " | ⚠️ counter-regime setup"
+            lines.append(line)
 
     return "\n".join(lines)
 

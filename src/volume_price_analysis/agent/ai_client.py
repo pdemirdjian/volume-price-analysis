@@ -40,6 +40,14 @@ inferences from HV, not measured IV. Note the percentile ranks the symbol
 against its OWN recent history: a low HV percentile means volatility is low
 for that symbol, not that the expected move is small in absolute terms.
 
+MARKET REGIME: The scan data may include a "market_regime" verdict (SPY's
+prior-session close vs its 20-day SMA), and individual picks may carry a
+"regime_conflict" note meaning their direction fights that regime. State the
+regime verdict in the Executive Summary. Keep flagged picks ranked exactly as
+scanned, but note the conflict explicitly wherever such a pick is presented
+and repeat it under Risk Warnings. Treat the regime as context for the
+reader, not a proven edge filter — never drop or reorder picks because of it.
+
 CONSISTENCY: Cite exactly ONE value per metric per symbol. If a symbol appears
 in both the scan results and the deep analysis, use the deep-analysis values
 for prices, targets, and levels — never quote a second, conflicting number for
@@ -346,6 +354,7 @@ def generate_briefing(
 _SCAN_PROJECTION_KEYS = (
     "scan_parameters",
     "summary",
+    "market_regime",
     "high_conviction_setups",
     "top_bullish",
     "top_bearish",

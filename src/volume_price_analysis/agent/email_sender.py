@@ -193,11 +193,17 @@ def send_raw_data_email(
     smtp_host: str = "smtp.gmail.com",
     smtp_port: int = 587,
     date_str: str = "",
+    preamble: str = "",
 ) -> None:
-    """Send raw scan/analysis data as email (for --no-ai mode)."""
+    """Send raw scan/analysis data as email (for --no-ai mode).
+
+    ``preamble`` is an optional markdown block (e.g. the market-regime verdict)
+    placed above the raw JSON dumps.
+    """
     subject = f"Morning Market Data (Raw) - {date_str}"
 
-    body = "# Morning Market Scan Results\n\n"
+    body = f"{preamble}\n\n" if preamble else ""
+    body += "# Morning Market Scan Results\n\n"
     body += f"```json\n{json.dumps(scan_results, indent=2, default=str)}\n```\n\n"
 
     if deep_analyses:
