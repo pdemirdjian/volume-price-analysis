@@ -41,12 +41,12 @@ against its OWN recent history: a low HV percentile means volatility is low
 for that symbol, not that the expected move is small in absolute terms.
 
 MARKET REGIME: The scan data may include a "market_regime" verdict (SPY's
-prior-session close vs its 20-day SMA) and a "regime_demoted" list of setups
-removed from the high-conviction list because their direction fights that
-regime. State the regime verdict in the Executive Summary. Present demoted
-setups only under Risk Warnings or as clearly-labelled secondary watchlist
-ideas — never as Top Picks — and say explicitly that they fight the prevailing
-tape. Treat the regime as context for the reader, not a proven edge filter.
+prior-session close vs its 20-day SMA), and individual picks may carry a
+"regime_conflict" note meaning their direction fights that regime. State the
+regime verdict in the Executive Summary. Keep flagged picks ranked exactly as
+scanned, but note the conflict explicitly wherever such a pick is presented
+and repeat it under Risk Warnings. Treat the regime as context for the
+reader, not a proven edge filter — never drop or reorder picks because of it.
 
 CONSISTENCY: Cite exactly ONE value per metric per symbol. If a symbol appears
 in both the scan results and the deep analysis, use the deep-analysis values
@@ -356,7 +356,6 @@ _SCAN_PROJECTION_KEYS = (
     "summary",
     "market_regime",
     "high_conviction_setups",
-    "regime_demoted",
     "top_bullish",
     "top_bearish",
 )
@@ -495,7 +494,7 @@ def _drop_superseded_scan_fields(projected_scan: dict, deep_analyses: list[dict]
         return projected_scan
 
     result = dict(projected_scan)
-    for key in ("high_conviction_setups", "regime_demoted", "top_bullish", "top_bearish"):
+    for key in ("high_conviction_setups", "top_bullish", "top_bearish"):
         candidates = result.get(key)
         if not isinstance(candidates, list):
             continue

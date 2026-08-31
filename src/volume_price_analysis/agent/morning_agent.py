@@ -25,7 +25,7 @@ from .config import AgentConfig
 from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
 from .regime import (
     REGIME_SMA_PERIOD,
-    apply_regime_gate,
+    annotate_regime_conflicts,
     compute_market_regime,
     format_regime_header,
 )
@@ -82,12 +82,22 @@ async def run_morning_briefing(
         scan_results["summary"]["high_conviction"],
     )
 
-    # Step 1b: Market-regime check (PDE-66) — counter-regime picks lose their
-    # high-conviction billing but stay visible as flagged context.
+    # Step 1b: Market-regime check (PDE-66) — context only: counter-regime
+    # picks are flagged but keep their high-conviction billing and priority.
+    # The briefing must never die on this path, so any failure degrades to an
+    # unknown verdict with the scan results left unannotated.
     logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
-    regime = _fetch_market_regime()
-    scan_results = apply_regime_gate(scan_results, regime)
-    regime_header = format_regime_header(regime, len(scan_results.get("regime_demoted", [])))
+    try:
+        regime = _fetch_market_regime()
+        scan_results = annotate_regime_conflicts(scan_results, regime)
+        conflict_count = sum(
+            1 for c in scan_results.get("high_conviction_setups", []) if c.get("regime_conflict")
+        )
+        regime_header = format_regime_header(regime, conflict_count)
+    except Exception:
+        logger.exception("Regime annotation failed; continuing without it")
+        regime = {"regime": "unknown", "reason": "regime check failed"}
+        regime_header = format_regime_header(regime)
     logger.info("Regime verdict: %s", regime.get("regime", "unknown"))
 
     # Step 2: Deep analysis on top N candidates
@@ -329,8 +339,10 @@ def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
     lines.append(f"**Bearish setups:** {summary.get('bearish_setups', 0)}")
     lines.append(f"**High conviction:** {summary.get('high_conviction', 0)}\n")
 
-    demoted_symbols = {
-        c.get("symbol") for c in scan_results.get("regime_demoted", []) if isinstance(c, dict)
+    conflict_symbols = {
+        c.get("symbol")
+        for c in scan_results.get("high_conviction_setups", [])
+        if isinstance(c, dict) and c.get("regime_conflict")
     }
     if deep_analyses:
         lines.append("## Top Candidates\n")
@@ -340,8 +352,8 @@ def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
             rec = a.get("composite_signal", {}).get("recommendation", "?")
             price = a.get("latest_price", 0)
             line = f"- **{sym}** @ ${price:.2f} | Score: {score:.1f} | {rec}"
-            if sym in demoted_symbols:
-                line += " | ⚠️ counter-regime (demoted from high-conviction)"
+            if sym in conflict_symbols:
+                line += " | ⚠️ counter-regime setup"
             lines.append(line)
 
     return "\n".join(lines)

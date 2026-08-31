@@ -1,4 +1,4 @@
-"""Tests for the market-regime gate applied to morning briefings (PDE-66)."""
+"""Tests for the market-regime annotation applied to morning briefings (PDE-66)."""
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ import pytest
 
 from volume_price_analysis.agent.regime import (
     REGIME_SMA_PERIOD,
-    apply_regime_gate,
+    annotate_regime_conflicts,
     compute_market_regime,
     format_regime_header,
 )
@@ -111,8 +111,8 @@ class TestComputeMarketRegime:
         assert compute_market_regime(data, today=today)["regime"] == "unknown"
 
 
-class TestApplyRegimeGate:
-    """apply_regime_gate: counter-regime picks leave high-conviction, flagged."""
+class TestAnnotateRegimeConflicts:
+    """annotate_regime_conflicts: counter-regime picks are flagged, never demoted."""
 
     def make_scan(self):
         bull = make_candidate("AAPL", 4.5)
@@ -130,69 +130,82 @@ class TestApplyRegimeGate:
             "top_bearish": [bear],
         }
 
-    def test_bearish_regime_demotes_bullish_picks(self):
+    def test_bearish_regime_flags_bullish_picks(self):
         regime = {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0}
-        gated = apply_regime_gate(self.make_scan(), regime)
+        annotated = annotate_regime_conflicts(self.make_scan(), regime)
 
-        kept = [c["symbol"] for c in gated["high_conviction_setups"]]
-        assert kept == ["XOM"]
-        demoted = gated["regime_demoted"]
-        assert [c["symbol"] for c in demoted] == ["AAPL"]
-        assert all(c["regime_conflict"] for c in demoted)
-        assert gated["summary"]["high_conviction"] == 1
+        # Membership and order unchanged; only the counter-regime pick is flagged.
+        assert [c["symbol"] for c in annotated["high_conviction_setups"]] == ["AAPL", "XOM"]
+        aapl, xom = annotated["high_conviction_setups"]
+        assert "bullish setup against a bearish tape" in aapl["regime_conflict"]
+        assert "regime_conflict" not in xom
+        # Annotation only: the summary count is untouched.
+        assert annotated["summary"]["high_conviction"] == 2
 
-    def test_bullish_regime_demotes_bearish_picks(self):
+    def test_bullish_regime_flags_bearish_picks(self):
         regime = {"regime": "bullish", "spy_close": 650.0, "sma20": 600.0}
-        gated = apply_regime_gate(self.make_scan(), regime)
+        annotated = annotate_regime_conflicts(self.make_scan(), regime)
 
-        assert [c["symbol"] for c in gated["high_conviction_setups"]] == ["AAPL"]
-        assert [c["symbol"] for c in gated["regime_demoted"]] == ["XOM"]
+        aapl, xom = annotated["high_conviction_setups"]
+        assert "regime_conflict" not in aapl
+        assert "bearish setup against a bullish tape" in xom["regime_conflict"]
 
-    def test_unknown_regime_gates_nothing(self):
+    def test_unknown_regime_annotates_nothing(self):
         regime = {"regime": "unknown", "reason": "SPY data unavailable"}
         scan = self.make_scan()
-        gated = apply_regime_gate(scan, regime)
+        annotated = annotate_regime_conflicts(scan, regime)
 
-        assert gated["high_conviction_setups"] == scan["high_conviction_setups"]
-        assert gated["regime_demoted"] == []
-        assert gated["summary"]["high_conviction"] == 2
+        assert annotated["high_conviction_setups"] == scan["high_conviction_setups"]
+        assert all("regime_conflict" not in c for c in annotated["high_conviction_setups"])
+        assert annotated["summary"]["high_conviction"] == 2
 
     def test_regime_verdict_attached_to_results(self):
         regime = {"regime": "bullish", "spy_close": 650.0, "sma20": 600.0}
-        gated = apply_regime_gate(self.make_scan(), regime)
-        assert gated["market_regime"] is regime
+        annotated = annotate_regime_conflicts(self.make_scan(), regime)
+        assert annotated["market_regime"] is regime
 
     def test_input_not_mutated(self):
         scan = self.make_scan()
-        original_hc = list(scan["high_conviction_setups"])
+        original_hc = [dict(c) for c in scan["high_conviction_setups"]]
         original_summary = dict(scan["summary"])
 
-        apply_regime_gate(scan, {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0})
+        annotate_regime_conflicts(scan, {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0})
 
         assert scan["high_conviction_setups"] == original_hc
         assert scan["summary"] == original_summary
         assert "regime_conflict" not in scan["high_conviction_setups"][0]
         assert "market_regime" not in scan
 
-    def test_candidates_without_score_are_kept(self):
+    def test_candidates_without_score_are_kept_unflagged(self):
         scan = self.make_scan()
         scan["high_conviction_setups"].append({"symbol": "MYSTERY"})
-        gated = apply_regime_gate(scan, {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0})
-        assert "MYSTERY" in [c["symbol"] for c in gated["high_conviction_setups"]]
+        annotated = annotate_regime_conflicts(
+            scan, {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0}
+        )
+        mystery = next(c for c in annotated["high_conviction_setups"] if c["symbol"] == "MYSTERY")
+        assert "regime_conflict" not in mystery
 
     def test_handles_sparse_scan_results(self):
-        gated = apply_regime_gate({}, {"regime": "bullish", "spy_close": 650.0, "sma20": 600.0})
-        assert gated["high_conviction_setups"] == []
-        assert gated["regime_demoted"] == []
+        annotated = annotate_regime_conflicts(
+            {}, {"regime": "bullish", "spy_close": 650.0, "sma20": 600.0}
+        )
+        assert annotated["high_conviction_setups"] == []
+        assert annotated["market_regime"]["regime"] == "bullish"
 
-    def test_summary_count_respects_uncapped_total(self):
-        # run_scan reports the uncapped high-conviction count in summary but
-        # caps the visible list at 5; the gate must subtract demotions from
-        # the reported count, not recount the capped list.
+    def test_flag_reaches_top_list_duplicates(self):
+        # run_scan shares candidate dicts between high_conviction_setups and the
+        # top lists; the flag must be visible wherever the pick appears, without
+        # mutating the originals.
         scan = self.make_scan()
-        scan["summary"]["high_conviction"] = 8
-        gated = apply_regime_gate(scan, {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0})
-        assert gated["summary"]["high_conviction"] == 7  # 8 reported - 1 demoted
+        annotated = annotate_regime_conflicts(
+            scan, {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0}
+        )
+        (aapl_top,) = annotated["top_bullish"]
+        assert "bullish setup against a bearish tape" in aapl_top["regime_conflict"]
+        # XOM is regime-aligned: its top_bearish entry stays unflagged.
+        assert "regime_conflict" not in annotated["top_bearish"][0]
+        # Originals untouched.
+        assert "regime_conflict" not in scan["top_bullish"][0]
 
 
 class TestFormatRegimeHeader:
@@ -230,7 +243,7 @@ class TestFormatRegimeHeader:
         assert "UNKNOWN" in header
         assert "SPY data unavailable" in header
 
-    def test_demoted_count_is_mentioned(self):
+    def test_conflict_count_is_mentioned(self):
         header = format_regime_header(
             {
                 "regime": "bearish",
@@ -239,12 +252,12 @@ class TestFormatRegimeHeader:
                 "close_vs_sma_pct": -8.33,
                 "as_of": "2026-08-28",
             },
-            demoted_count=2,
+            conflict_count=2,
         )
         assert "2" in header
-        assert "demoted" in header.lower()
+        assert "flagged" in header.lower()
 
-    def test_no_demotion_note_when_zero(self):
+    def test_no_conflict_note_when_zero(self):
         header = format_regime_header(
             {
                 "regime": "bullish",
@@ -253,6 +266,6 @@ class TestFormatRegimeHeader:
                 "close_vs_sma_pct": 8.33,
                 "as_of": "2026-08-28",
             },
-            demoted_count=0,
+            conflict_count=0,
         )
-        assert "demoted" not in header.lower()
+        assert "flagged" not in header.lower()

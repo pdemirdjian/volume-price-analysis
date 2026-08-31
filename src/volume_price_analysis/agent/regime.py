@@ -1,10 +1,12 @@
 """Market-regime check for the morning briefing (PDE-66).
 
-Computes SPY's prior-session close against its 20-day SMA and demotes
+Computes SPY's prior-session close against its 20-day SMA and flags
 high-conviction picks whose direction fights the prevailing tape. The
 briefing audit (PDE-66) showed regime-fighting picks driving negative
-expectancy; the follow-up re-grade showed the gate itself adds no edge,
-so demoted picks are kept visible as flagged context rather than dropped.
+expectancy, but the follow-up full-history re-grade showed a gate adds no
+edge — so the verdict is presented as context only: picks keep their
+high-conviction billing, summary counts, and deep-analysis priority, and
+counter-regime picks merely carry a ``regime_conflict`` note.
 
 Strictly causal: bars dated on or after the caller-supplied "today" are
 excluded, so even an intraday run compares only the prior session's close;
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 REGIME_SMA_PERIOD = 20
 
-_GATED_DIRECTIONS = ("bullish", "bearish")
+_REGIME_DIRECTIONS = ("bullish", "bearish")
 
 
 def compute_market_regime(spy_data: pd.DataFrame | None, today: date | None = None) -> dict:
@@ -71,75 +73,70 @@ def compute_market_regime(spy_data: pd.DataFrame | None, today: date | None = No
     }
 
 
-def apply_regime_gate(scan_results: dict, regime: dict) -> dict:
-    """Demote high-conviction picks whose direction fights the regime.
+def annotate_regime_conflicts(scan_results: dict, regime: dict) -> dict:
+    """Attach the regime verdict and flag counter-regime high-conviction picks.
 
-    Returns a copy of ``scan_results`` (input never mutated) where
-    counter-regime candidates are moved from ``high_conviction_setups`` into
-    ``regime_demoted`` (each copied with a ``regime_conflict`` note), the
-    ``summary`` count is updated, and the regime verdict is attached under
-    ``market_regime``. An unknown regime gates nothing. Demoted candidates
-    still appear in their ``top_bullish``/``top_bearish`` lists, so they stay
-    scan candidates — but they do lose high-conviction billing everywhere it
-    matters, including priority for deep-analysis slots.
+    Returns a copy of ``scan_results`` (input never mutated) with the regime
+    verdict attached under ``market_regime`` and a ``regime_conflict`` note
+    added to each high-conviction candidate whose direction fights the tape.
+    A flagged symbol's entries in ``top_bullish``/``top_bearish`` carry the
+    same note, so the flag is visible wherever the pick appears (the scan
+    shares candidate dicts between those lists, so copies are annotated —
+    never the originals). Annotation only: picks keep their list membership,
+    summary counts, and deep-analysis priority. An unknown regime annotates
+    nothing.
     """
-    high_conviction = scan_results.get("high_conviction_setups") or []
     result = dict(scan_results)
     result["market_regime"] = regime
+    high_conviction = scan_results.get("high_conviction_setups") or []
+    result["high_conviction_setups"] = high_conviction
 
     verdict = regime.get("regime")
-    if verdict not in _GATED_DIRECTIONS:
-        result.setdefault("high_conviction_setups", [])
-        result["regime_demoted"] = []
+    if verdict not in _REGIME_DIRECTIONS or not high_conviction:
         return result
 
-    kept: list[dict] = []
-    demoted: list[dict] = []
+    annotated: list[dict] = []
+    conflict_notes: dict[str, str] = {}
     for candidate in high_conviction:
         score = candidate.get("composite_score")
         if score is None:
-            kept.append(candidate)
+            annotated.append(candidate)
             continue
         direction = "bullish" if score >= 0 else "bearish"
         if direction == verdict:
-            kept.append(candidate)
+            annotated.append(candidate)
         else:
-            demoted.append(
-                {
-                    **candidate,
-                    "regime_conflict": f"{direction} setup against a {verdict} tape",
-                }
-            )
+            note = f"{direction} setup against a {verdict} tape"
+            annotated.append({**candidate, "regime_conflict": note})
+            conflict_notes[candidate.get("symbol", "?")] = note
 
-    if demoted:
+    if conflict_notes:
         logger.info(
-            "Regime gate (%s tape): demoted %d of %d high-conviction pick(s): %s",
+            "Regime check (%s tape): flagged %d of %d high-conviction pick(s): %s",
             verdict,
-            len(demoted),
+            len(conflict_notes),
             len(high_conviction),
-            ", ".join(c.get("symbol", "?") for c in demoted),
+            ", ".join(conflict_notes),
         )
 
-    result["high_conviction_setups"] = kept
-    result["regime_demoted"] = demoted
-    summary = scan_results.get("summary")
-    if isinstance(summary, dict):
-        # summary.high_conviction is the *uncapped* count from run_scan while
-        # high_conviction_setups is capped at 5, so subtract demotions from
-        # the reported count rather than recounting the capped list.
-        reported = summary.get("high_conviction")
-        if isinstance(reported, int):
-            new_count = max(reported - len(demoted), len(kept))
-        else:
-            new_count = len(kept)
-        result["summary"] = {**summary, "high_conviction": new_count}
+    result["high_conviction_setups"] = annotated
+    for key in ("top_bullish", "top_bearish"):
+        candidates = scan_results.get(key)
+        if not isinstance(candidates, list):
+            continue
+        result[key] = [
+            {**c, "regime_conflict": conflict_notes[c["symbol"]]}
+            if isinstance(c, dict) and c.get("symbol") in conflict_notes
+            else c
+            for c in candidates
+        ]
     return result
 
 
-def format_regime_header(regime: dict, demoted_count: int = 0) -> str:
+def format_regime_header(regime: dict, conflict_count: int = 0) -> str:
     """Render the regime verdict as a markdown line for the top of the email."""
     verdict = regime.get("regime", "unknown")
-    if verdict not in _GATED_DIRECTIONS:
+    if verdict not in _REGIME_DIRECTIONS:
         reason = regime.get("reason", "no reason recorded")
         return f"**Market Regime: UNKNOWN** — regime check unavailable ({reason})."
 
@@ -152,10 +149,7 @@ def format_regime_header(regime: dict, demoted_count: int = 0) -> str:
         f"{regime.get('spy_close', 0.0):.2f}, {pct:.1f}% {relation} its "
         f"{REGIME_SMA_PERIOD}-day SMA ({regime.get('sma20', 0.0):.2f}){as_of_part}."
     )
-    if demoted_count:
-        picks = "pick" if demoted_count == 1 else "picks"
-        header += (
-            f" {demoted_count} counter-regime {picks} demoted from "
-            f"high-conviction (see Risk Warnings)."
-        )
+    if conflict_count:
+        picks = "pick" if conflict_count == 1 else "picks"
+        header += f" {conflict_count} high-conviction {picks} flagged as counter-regime."
     return header

@@ -304,10 +304,12 @@ class TestFallbackBriefing:
         assert "150.00" in briefing
         assert "5.5" in briefing
 
-    def test_flags_regime_demoted_picks(self):
+    def test_flags_regime_conflict_picks(self):
         scan_results = {
-            "summary": {"total_candidates": 1, "high_conviction": 0},
-            "regime_demoted": [{"symbol": "AAPL", "regime_conflict": "bullish vs bearish tape"}],
+            "summary": {"total_candidates": 1, "high_conviction": 1},
+            "high_conviction_setups": [
+                {"symbol": "AAPL", "regime_conflict": "bullish setup against a bearish tape"}
+            ],
         }
         deep = [
             {
@@ -464,11 +466,13 @@ class TestProjectScanResults:
         scan = {
             "summary": {"total_candidates": 1},
             "market_regime": {"regime": "bearish", "spy_close": 550.0},
-            "regime_demoted": [{"symbol": "AAPL", "regime_conflict": "bullish vs bearish tape"}],
+            "high_conviction_setups": [
+                {"symbol": "AAPL", "regime_conflict": "bullish setup against a bearish tape"}
+            ],
         }
         projected = _project_scan_results(scan)
         assert projected["market_regime"]["regime"] == "bearish"
-        assert projected["regime_demoted"][0]["symbol"] == "AAPL"
+        assert projected["high_conviction_setups"][0]["regime_conflict"]
 
 
 class TestDropSupersededScanFields:
@@ -1244,9 +1248,9 @@ class TestRunMorningBriefing:
         assert "Fallback" in body
 
     @pytest.mark.asyncio
-    async def test_regime_gate_demotes_picks_and_heads_email(self, mocker):
-        """PDE-66: a bearish tape strips bullish picks of their high-conviction
-        billing and the regime verdict heads the email body."""
+    async def test_regime_verdict_flags_picks_and_heads_email(self, mocker):
+        """PDE-66: a bearish tape flags bullish picks as counter-regime (keeping
+        their high-conviction billing) and the regime verdict heads the email body."""
         import pandas as pd
 
         bull = {"symbol": "AAPL", "composite_score": 4.5}
@@ -1301,15 +1305,16 @@ class TestRunMorningBriefing:
 
         await run_morning_briefing(config, dry_run=False, no_ai=False)
 
-        gated_scan = mock_generate.call_args.kwargs["scan_results"]
-        assert gated_scan["market_regime"]["regime"] == "bearish"
-        assert gated_scan["high_conviction_setups"] == []
-        assert [c["symbol"] for c in gated_scan["regime_demoted"]] == ["AAPL"]
-        assert gated_scan["summary"]["high_conviction"] == 0
+        annotated_scan = mock_generate.call_args.kwargs["scan_results"]
+        assert annotated_scan["market_regime"]["regime"] == "bearish"
+        # Annotation only: the pick keeps its high-conviction billing and count.
+        assert [c["symbol"] for c in annotated_scan["high_conviction_setups"]] == ["AAPL"]
+        assert annotated_scan["high_conviction_setups"][0]["regime_conflict"]
+        assert annotated_scan["summary"]["high_conviction"] == 1
 
         body = mock_send.call_args.kwargs["body_markdown"]
         assert body.startswith("**Market Regime: BEARISH**")
-        assert "demoted" in body
+        assert "flagged" in body
 
 
 class TestSendBriefingEmailSmtpFailure:
