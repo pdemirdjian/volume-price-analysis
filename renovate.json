@@ -134,6 +134,18 @@
       "minimumReleaseAge": "3 days"
     }
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track tool versions annotated with an inline renovate comment in workflow files (e.g. the Trivy binary version passed to trivy-action)",
+      "fileMatch": [
+        "^\\.github/workflows/.+\\.ya?ml$"
+      ],
+      "matchStrings": [
+        "version: (?<currentValue>v[0-9.]+) # renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[\\w./-]+)"
+      ]
+    }
+  ],
   "vulnerabilityAlerts": {
     "labels": [
       "security"
