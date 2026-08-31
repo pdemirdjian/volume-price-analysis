@@ -640,7 +640,10 @@ def run_options_analysis(
     bb_bw = bbands["bandwidth"].iloc[-1]
     atr_val = atr.iloc[-1]
 
-    is_squeeze = detect_bollinger_squeeze(bbands["bandwidth"], window=volume_window)
+    # The squeeze verdict uses the canonical 20-period bands rather than the
+    # holding-period-adaptive `bbands`, so every analysis path reports the same
+    # verdict for the same data.
+    is_squeeze = detect_bollinger_squeeze(calculate_bollinger_bands(data)["bandwidth"])
 
     if not pd.isna(bb_pct_b):
         if bb_pct_b > 0.8:
