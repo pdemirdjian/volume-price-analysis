@@ -766,6 +766,38 @@ class TestRelativeVolume:
         assert isinstance(rvol["average_volume"], int)
         assert isinstance(rvol["current_volume"], int)
 
+    def test_short_history_does_not_raise(self):
+        """Test that fewer bars than the period returns real values (PDE-12)."""
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        data = pd.DataFrame({"Volume": [1000000] * 4 + [3000000]}, index=dates)
+        rvol = calculate_relative_volume(data, period=20)
+        assert rvol["current_rvol"] == pytest.approx(3000000 / 1400000)
+        assert rvol["average_volume"] == 1400000
+        assert rvol["current_volume"] == 3000000
+
+    def test_single_row_does_not_raise(self):
+        """Test a single-bar frame: the bar is its own average, RVOL 1.0."""
+        data = pd.DataFrame({"Volume": [1000000]}, index=pd.date_range("2024-01-01", periods=1))
+        rvol = calculate_relative_volume(data, period=20)
+        assert rvol["current_rvol"] == pytest.approx(1.0)
+        assert rvol["average_volume"] == 1000000
+
+    def test_empty_frame_returns_neutral_result(self):
+        """Test that an empty frame returns zeros instead of raising."""
+        data = pd.DataFrame({"Volume": pd.Series(dtype=float)})
+        rvol = calculate_relative_volume(data, period=20)
+        assert rvol["current_rvol"] == 0.0
+        assert rvol["average_volume"] == 0
+        assert rvol["current_volume"] == 0
+
+    def test_zero_volume_no_inf(self):
+        """Test that all-zero volume yields 0.0 RVOL, not inf/NaN."""
+        dates = pd.date_range("2024-01-01", periods=25, freq="D")
+        data = pd.DataFrame({"Volume": [0] * 25}, index=dates)
+        rvol = calculate_relative_volume(data, period=20)
+        assert rvol["current_rvol"] == 0.0
+        assert rvol["average_volume"] == 0
+
 
 class TestDetectVolumeBreakout:
     """Tests for volume breakout detection."""
@@ -857,6 +889,53 @@ class TestDetectVolumeBreakout:
         result = detect_volume_breakout(data, threshold_multiplier=2.0, period=20)
         # At least some of the last 5 bars should count as breakouts
         assert result["recent_breakouts"] >= 1
+
+    def test_short_history_does_not_raise(self):
+        """Test that fewer bars than the period returns real values (PDE-12)."""
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        data = pd.DataFrame(
+            {
+                "Close": [100.0, 101.0, 102.0, 103.0, 104.0],
+                "Volume": [1000000] * 4 + [5000000],
+            },
+            index=dates,
+        )
+        result = detect_volume_breakout(data, threshold_multiplier=2.0, period=20)
+        # avg over the 5 available bars is 1.8M; 5M > 2 * 1.8M
+        assert result["is_breakout"] is True
+        assert result["direction"] == "bullish"
+        assert result["threshold_volume"] == 3600000
+        assert result["multiplier_above_avg"] == pytest.approx(5000000 / 1800000)
+
+    def test_short_history_no_spike_no_breakout(self):
+        """Test constant volume with short history reports no breakout."""
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        data = pd.DataFrame(
+            {
+                "Close": [100.0 + i for i in range(5)],
+                "Volume": [1000000] * 5,
+            },
+            index=dates,
+        )
+        result = detect_volume_breakout(data, threshold_multiplier=2.0, period=20)
+        assert result["is_breakout"] is False
+        assert result["threshold_volume"] == 2000000
+
+    def test_nan_volume_returns_neutral_result(self):
+        """Test that NaN volume data returns a neutral result, not NaN fields."""
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        data = pd.DataFrame(
+            {
+                "Close": [100.0 + i for i in range(5)],
+                "Volume": [float("nan")] * 5,
+            },
+            index=dates,
+        )
+        result = detect_volume_breakout(data, threshold_multiplier=2.0, period=20)
+        assert result["is_breakout"] is False
+        assert result["current_volume"] == 0
+        assert result["threshold_volume"] == 0
+        assert result["multiplier_above_avg"] == 0.0
 
 
 class TestVWMA:
