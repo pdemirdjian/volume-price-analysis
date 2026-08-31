@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis.indicators import (
+    _bandwidth_squeeze,
     _wilder_smooth,
     analyze_volume_trends,
     calculate_accumulation_distribution,
@@ -28,6 +29,7 @@ from volume_price_analysis.indicators import (
     calculate_vwap,
     calculate_vwma,
     composite_adx_period,
+    detect_bollinger_squeeze,
     detect_rsi_divergence,
     detect_volume_breakout,
     find_pivots,
@@ -543,6 +545,76 @@ class TestBollingerBands:
         bb = calculate_bollinger_bands(sample_stock_data, period=period, num_std=2.0)
         assert pd.isna(bb["middle"].iloc[0])
         assert not pd.isna(bb["middle"].iloc[period - 1])
+
+
+class TestBandwidthSqueeze:
+    """Tests for the bandwidth-series squeeze verdict."""
+
+    def test_squeeze_detected_when_bandwidth_contracts(self):
+        """Latest bandwidth far below the trailing average flags a squeeze."""
+        bandwidth = pd.Series([0.10] * 20 + [0.02])
+        assert _bandwidth_squeeze(bandwidth) is True
+
+    def test_no_squeeze_when_bandwidth_stable(self):
+        """Bandwidth at the trailing average is not a squeeze."""
+        bandwidth = pd.Series([0.10] * 21)
+        assert _bandwidth_squeeze(bandwidth) is False
+
+    def test_just_above_threshold_is_not_a_squeeze(self):
+        """Bandwidth just above threshold * baseline is not a squeeze."""
+        bandwidth = pd.Series([0.10] * 20 + [0.072])  # baseline 0.0986, cutoff 0.069
+        assert _bandwidth_squeeze(bandwidth) is False
+
+    def test_nan_latest_returns_false(self):
+        """A NaN latest bandwidth never flags a squeeze."""
+        bandwidth = pd.Series([0.10] * 20 + [np.nan])
+        assert _bandwidth_squeeze(bandwidth) is False
+
+    def test_leading_nans_are_ignored(self):
+        """Leading NaNs (rolling warmup) don't poison the baseline."""
+        bandwidth = pd.Series([np.nan] * 19 + [0.10] * 20 + [0.02])
+        assert _bandwidth_squeeze(bandwidth) is True
+
+    def test_short_history_uses_full_mean(self):
+        """With fewer valid points than the window, the full history is the baseline."""
+        bandwidth = pd.Series([0.10] * 9 + [0.02])
+        assert _bandwidth_squeeze(bandwidth) is True
+
+    def test_below_minimum_periods_returns_false(self):
+        """Fewer than MIN_SQUEEZE_DETECTION_PERIODS valid points never flags a squeeze."""
+        bandwidth = pd.Series([0.10, 0.10, 0.10, 0.02])
+        assert _bandwidth_squeeze(bandwidth) is False
+
+    def test_exactly_minimum_periods_uses_full_mean(self):
+        """Exactly MIN_SQUEEZE_DETECTION_PERIODS valid points enables the fallback."""
+        bandwidth = pd.Series([0.10, 0.10, 0.10, 0.10, 0.02])
+        assert _bandwidth_squeeze(bandwidth) is True
+
+    def test_single_row_returns_false(self):
+        """A single data point never flags a squeeze."""
+        assert _bandwidth_squeeze(pd.Series([0.02])) is False
+
+    def test_empty_series_returns_false(self):
+        """An empty bandwidth series never flags a squeeze."""
+        assert _bandwidth_squeeze(pd.Series([], dtype=float)) is False
+
+
+class TestDetectBollingerSqueeze:
+    """Tests for the canonical price-data squeeze detector."""
+
+    def test_volatile_then_flat_prices_is_squeeze(self):
+        """Volatility contraction in raw price data flags a squeeze."""
+        closes = [100.0, 110.0] * 15 + [105.0] * 20  # choppy regime, then flat
+        assert detect_bollinger_squeeze(pd.DataFrame({"Close": closes})) is True
+
+    def test_steady_trend_no_squeeze(self):
+        """A steady trend with constant volatility is not a squeeze."""
+        closes = [100.0 + 0.5 * i for i in range(50)]
+        assert detect_bollinger_squeeze(pd.DataFrame({"Close": closes})) is False
+
+    def test_short_price_history_no_squeeze(self):
+        """Too little data for any valid bandwidth never flags a squeeze."""
+        assert detect_bollinger_squeeze(pd.DataFrame({"Close": [100.0] * 10})) is False
 
 
 class TestAccumulationDistribution:

@@ -5,6 +5,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+# Bollinger squeeze canonical configuration. Deliberately not parameterized:
+# every analysis path must report the same squeeze verdict for the same data.
+SQUEEZE_WINDOW = 20  # band period and trailing-baseline window
+SQUEEZE_THRESHOLD = 0.7  # squeeze = latest bandwidth below this fraction of the baseline
+MIN_SQUEEZE_DETECTION_PERIODS = 5  # fewer valid bandwidth points than this -> never a squeeze
+
 
 def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
     """Apply Wilder's smoothing: SMA seed over first `period` non-NaN values, then recursive.
@@ -402,6 +408,44 @@ def calculate_bollinger_bands(
         "bandwidth": bandwidth,
         "percent_b": (data["Close"] - lower_band) / (upper_band - lower_band),  # %B indicator
     }
+
+
+def _bandwidth_squeeze(bandwidth: pd.Series) -> bool:
+    """Squeeze verdict for a bandwidth series; see detect_bollinger_squeeze."""
+    if bandwidth.empty:
+        return False
+    latest = bandwidth.iloc[-1]
+    if pd.isna(latest):
+        return False
+    valid = bandwidth.dropna()
+    if len(valid) >= SQUEEZE_WINDOW:
+        baseline = valid.iloc[-SQUEEZE_WINDOW:].mean()
+    elif len(valid) >= MIN_SQUEEZE_DETECTION_PERIODS:
+        baseline = valid.mean()
+    else:
+        return False
+    return bool(latest < baseline * SQUEEZE_THRESHOLD)
+
+
+def detect_bollinger_squeeze(data: pd.DataFrame) -> bool:
+    """
+    Detect a Bollinger Band squeeze (volatility contraction).
+
+    A squeeze is flagged when the latest bandwidth of the canonical
+    SQUEEZE_WINDOW-period Bollinger Bands is below SQUEEZE_THRESHOLD times the
+    average bandwidth over the trailing SQUEEZE_WINDOW periods (the latest
+    value is part of that average, slightly dampening its own baseline). NaN
+    values are ignored; with fewer than SQUEEZE_WINDOW valid periods the
+    average falls back to the full available history, and with fewer than
+    MIN_SQUEEZE_DETECTION_PERIODS valid periods no squeeze is reported.
+
+    Args:
+        data: DataFrame with 'Close' column
+
+    Returns:
+        True if a squeeze is detected
+    """
+    return _bandwidth_squeeze(calculate_bollinger_bands(data, SQUEEZE_WINDOW)["bandwidth"])
 
 
 # ============================================================================

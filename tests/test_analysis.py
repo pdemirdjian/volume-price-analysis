@@ -11,7 +11,12 @@ from volume_price_analysis.analysis import (
     run_options_analysis,
     run_scan,
 )
-from volume_price_analysis.indicators import calculate_adx, calculate_composite_score
+from volume_price_analysis.indicators import (
+    SQUEEZE_WINDOW,
+    calculate_adx,
+    calculate_composite_score,
+    detect_bollinger_squeeze,
+)
 
 
 class TestUniverses:
@@ -100,6 +105,23 @@ class TestRunOptionsAnalysis:
         # Headline must agree with the detailed composite_signal it summarises.
         assert headline["recommendation"] == result["composite_signal"]["recommendation"]
         assert headline["composite_score"] == round(result["composite_signal"]["score"], 2)
+
+    def test_squeeze_verdict_consistent_across_holding_periods(self, sample_stock_data):
+        """The squeeze verdict is holding-period-independent (canonical 20-period bands)."""
+        results = {
+            hp: run_options_analysis("TEST", sample_stock_data, holding_period=hp)
+            for hp in (10, 21, 30)
+        }
+        verdicts = {
+            hp: r["volatility_analysis"]["bollinger_bands"]["squeeze_detected"]
+            for hp, r in results.items()
+        }
+        canonical = detect_bollinger_squeeze(sample_stock_data)
+        assert set(verdicts.values()) == {canonical}
+        # The parameters block documents the canonical window the verdict used,
+        # independent of the adaptive volume_window.
+        for r in results.values():
+            assert r["parameters"]["squeeze_window"] == SQUEEZE_WINDOW
 
     def test_adaptive_periods_short(self, sample_stock_data):
         result = run_options_analysis("TEST", sample_stock_data, holding_period=14)
