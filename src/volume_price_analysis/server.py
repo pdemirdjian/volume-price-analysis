@@ -889,7 +889,7 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             bb_bw = bbands["bandwidth"].iloc[-1]
             atr_val = atr.iloc[-1]
 
-            is_squeeze = detect_bollinger_squeeze(bbands["bandwidth"])
+            is_squeeze = detect_bollinger_squeeze(data)
 
             if not pd.isna(atr_val):
                 atr_interp = f"Expected daily range: ±${atr_val:.2f}"
@@ -988,7 +988,6 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                     latest_vwap,
                     hv,
                     atr,
-                    bbands,
                     profile,
                     rvol,
                     breakout,
@@ -1073,7 +1072,6 @@ def generate_enhanced_summary(
     latest_vwap,
     hv,
     atr,
-    bbands,
     profile,
     rvol,
     breakout,
@@ -1114,7 +1112,7 @@ def generate_enhanced_summary(
             summary.append(f"✓ Low volatility ({hv_pct}) - Potential breakout setup")
 
     # Bollinger Band Squeeze
-    if detect_bollinger_squeeze(bbands["bandwidth"]):
+    if detect_bollinger_squeeze(data):
         summary.append("✓ Bollinger Band squeeze detected - Breakout likely imminent")
 
     # Volume Profile Position

@@ -1310,13 +1310,6 @@ class TestGenerateEnhancedSummary:
         latest_vwap = 108.7
         hv = self._make_series([0.20] * 30)
         atr = self._make_series([2.0] * 30)
-        bbands = {
-            "upper": self._make_series([120.0] * 30),
-            "middle": self._make_series([115.0] * 30),
-            "lower": self._make_series([110.0] * 30),
-            "bandwidth": self._make_series([5.0] * 30),
-            "percent_b": self._make_series([0.5] * 30),
-        }
         profile = {"interpretation": "Price within value area - balanced market"}
         rvol = {"current_rvol": 1.0}
         breakout = {"is_breakout": False, "direction": "none"}
@@ -1333,7 +1326,6 @@ class TestGenerateEnhancedSummary:
             latest_vwap,
             hv,
             atr,
-            bbands,
             profile,
             rvol,
             breakout,
@@ -1403,17 +1395,10 @@ class TestGenerateEnhancedSummary:
         assert any("low volatility" in s.lower() or "breakout" in s.lower() for s in summary)
 
     def test_bollinger_squeeze(self):
-        """Test Bollinger Band squeeze detection (line 1023)."""
+        """Test Bollinger Band squeeze detection."""
         args = list(self._base_args())
-        # Last bandwidth much lower than average of last 20 => squeeze
-        bw_values = [10.0] * 20 + [2.0] * 10  # last 10 values narrow
-        args[12] = {
-            "upper": self._make_series([120.0] * 30),
-            "middle": self._make_series([115.0] * 30),
-            "lower": self._make_series([110.0] * 30),
-            "bandwidth": self._make_series(bw_values),
-            "percent_b": self._make_series([0.5] * 30),
-        }
+        # Choppy regime then a flat stretch: latest bandwidth far below baseline
+        args[0] = pd.DataFrame({"Close": [100.0, 110.0] * 15 + [105.0] * 20})
 
         summary = generate_enhanced_summary(*args)
         assert any("squeeze" in s.lower() for s in summary)
@@ -1421,7 +1406,7 @@ class TestGenerateEnhancedSummary:
     def test_extremely_high_volume(self):
         """Test extremely high volume message (lines 1030-1031)."""
         args = list(self._base_args())
-        args[14] = {"current_rvol": 3.0}  # > 2.0
+        args[13] = {"current_rvol": 3.0}  # > 2.0
 
         summary = generate_enhanced_summary(*args)
         assert any("extremely high volume" in s.lower() or "3.0x" in s for s in summary)
@@ -1429,7 +1414,7 @@ class TestGenerateEnhancedSummary:
     def test_very_low_volume(self):
         """Test very low volume message (line 1035)."""
         args = list(self._base_args())
-        args[14] = {"current_rvol": 0.3}  # < 0.5
+        args[13] = {"current_rvol": 0.3}  # < 0.5
 
         summary = generate_enhanced_summary(*args)
         assert any("low volume" in s.lower() for s in summary)
@@ -1437,7 +1422,7 @@ class TestGenerateEnhancedSummary:
     def test_volume_breakout_detected(self):
         """Test volume breakout message (lines 1039-1040)."""
         args = list(self._base_args())
-        args[15] = {"is_breakout": True, "direction": "bullish"}
+        args[14] = {"is_breakout": True, "direction": "bullish"}
 
         summary = generate_enhanced_summary(*args)
         assert any("breakout" in s.lower() for s in summary)
@@ -1451,15 +1436,9 @@ class TestGenerateEnhancedSummary:
         assert any("divergence" in s.lower() for s in summary)
 
     def test_nan_bandwidth_no_squeeze(self):
-        """Test that NaN bandwidth does not trigger squeeze (line 808 in comprehensive)."""
+        """Test that all-NaN bandwidth (too little data) does not trigger squeeze."""
         args = list(self._base_args())
-        args[12] = {
-            "upper": self._make_series([float("nan")] * 30),
-            "middle": self._make_series([float("nan")] * 30),
-            "lower": self._make_series([float("nan")] * 30),
-            "bandwidth": self._make_series([float("nan")] * 30),
-            "percent_b": self._make_series([float("nan")] * 30),
-        }
+        args[0] = pd.DataFrame({"Close": [100.0] * 10})  # < band period: bandwidth all NaN
 
         summary = generate_enhanced_summary(*args)
         # Squeeze should NOT appear

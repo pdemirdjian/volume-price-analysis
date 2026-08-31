@@ -12,7 +12,7 @@ from pytickersymbols import PyTickerSymbols
 
 from .data_fetcher import fetch_stock_data
 from .indicators import (
-    DEFAULT_SQUEEZE_WINDOW,
+    SQUEEZE_WINDOW,
     analyze_volume_trends,
     calculate_accumulation_distribution,
     calculate_adx,
@@ -641,10 +641,10 @@ def run_options_analysis(
     bb_bw = bbands["bandwidth"].iloc[-1]
     atr_val = atr.iloc[-1]
 
-    # The squeeze verdict uses the canonical 20-period bands rather than the
-    # holding-period-adaptive `bbands`, so every analysis path reports the same
-    # verdict for the same data.
-    is_squeeze = detect_bollinger_squeeze(calculate_bollinger_bands(data)["bandwidth"])
+    # The squeeze verdict deliberately ignores the holding-period-adaptive
+    # `bbands` (which still drive the displayed band levels); see
+    # detect_bollinger_squeeze.
+    is_squeeze = detect_bollinger_squeeze(data)
 
     if not pd.isna(bb_pct_b):
         if bb_pct_b > 0.8:
@@ -694,7 +694,7 @@ def run_options_analysis(
             "rsi_period": rsi_period,
             "adx_period": adx_period,
             "hv_window": hv_window,
-            "squeeze_window": DEFAULT_SQUEEZE_WINDOW,
+            "squeeze_window": SQUEEZE_WINDOW,
             "optimization": f"Adaptive for {holding_period}-day options",
         },
         "composite_signal": {
