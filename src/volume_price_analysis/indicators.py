@@ -482,10 +482,31 @@ def calculate_relative_volume(data: pd.DataFrame, period: int = 20) -> dict[str,
     Returns:
         Dictionary with RVOL data and analysis
     """
-    avg_volume = data["Volume"].rolling(window=period).mean()
+    if data.empty:
+        return {
+            "rvol_series": pd.Series(dtype=float),
+            "current_rvol": 0.0,
+            "average_volume": 0,
+            "current_volume": 0,
+            "significance": "Very Low - Minimal activity",
+        }
+
+    # When history is shorter than the period, a plain rolling mean is all-NaN
+    # and int(NaN) raises; average over whatever history exists (min_periods=1)
+    # instead. For full history this matches the original rolling mean at the
+    # final bar; earlier bars now carry partial-window values instead of NaN.
+    avg_volume = data["Volume"].rolling(window=period, min_periods=1).mean()
     rvol = data["Volume"] / avg_volume
 
-    current_rvol = rvol.iloc[-1]
+    current_volume = data["Volume"].iloc[-1]
+    current_avg = avg_volume.iloc[-1]
+
+    # NaN volume data or an all-zero window leaves the ratio undefined; report
+    # a neutral 0.0 rather than leaking NaN/inf into the JSON response.
+    if pd.isna(current_volume) or pd.isna(current_avg) or current_avg == 0:
+        current_rvol = 0.0
+    else:
+        current_rvol = float(current_volume / current_avg)
 
     # Determine significance
     if current_rvol > 2.0:
@@ -501,9 +522,9 @@ def calculate_relative_volume(data: pd.DataFrame, period: int = 20) -> dict[str,
 
     return {
         "rvol_series": rvol,
-        "current_rvol": float(current_rvol),
-        "average_volume": int(avg_volume.iloc[-1]),
-        "current_volume": int(data["Volume"].iloc[-1]),
+        "current_rvol": current_rvol,
+        "average_volume": 0 if pd.isna(current_avg) else int(current_avg),
+        "current_volume": 0 if pd.isna(current_volume) else int(current_volume),
         "significance": significance,
     }
 
@@ -526,9 +547,10 @@ def detect_volume_breakout(
         Dictionary with breakout detection results
     """
     if len(data) < 2:
+        last_volume = data["Volume"].iloc[-1] if len(data) else float("nan")
         return {
             "is_breakout": False,
-            "current_volume": int(data["Volume"].iloc[-1]) if len(data) else 0,
+            "current_volume": 0 if pd.isna(last_volume) else int(last_volume),
             "threshold_volume": 0,
             "multiplier_above_avg": 0.0,
             "direction": "none",
@@ -536,9 +558,29 @@ def detect_volume_breakout(
             "signal": "No breakout",
         }
 
-    avg_volume = data["Volume"].rolling(window=period).mean()
+    # When history is shorter than the period, a plain rolling mean is all-NaN
+    # and int(NaN) raises; average over whatever history exists (min_periods=1)
+    # instead. For full history this matches the original rolling mean at the
+    # final bar; earlier bars now carry partial-window values instead of NaN,
+    # so `recent_breakouts` can also count spikes in the first `period` bars.
+    avg_volume = data["Volume"].rolling(window=period, min_periods=1).mean()
     current_volume = data["Volume"].iloc[-1]
-    threshold = avg_volume.iloc[-1] * threshold_multiplier
+    current_avg = avg_volume.iloc[-1]
+
+    # NaN volume data leaves the threshold undefined; report a neutral
+    # no-breakout result rather than leaking NaN into the JSON response.
+    if pd.isna(current_volume) or pd.isna(current_avg):
+        return {
+            "is_breakout": False,
+            "current_volume": 0,
+            "threshold_volume": 0,
+            "multiplier_above_avg": 0.0,
+            "direction": "none",
+            "recent_breakouts": 0,
+            "signal": "No breakout",
+        }
+
+    threshold = current_avg * threshold_multiplier
 
     is_breakout = current_volume > threshold
 
@@ -554,7 +596,7 @@ def detect_volume_breakout(
         "is_breakout": bool(is_breakout),
         "current_volume": int(current_volume),
         "threshold_volume": int(threshold),
-        "multiplier_above_avg": float(current_volume / avg_volume.iloc[-1]),
+        "multiplier_above_avg": float(current_volume / current_avg) if current_avg else 0.0,
         "direction": direction if is_breakout else "none",
         "recent_breakouts": int(recent_breakout_count),
         "signal": f"Volume breakout ({direction})" if is_breakout else "No breakout",
