@@ -34,3 +34,17 @@ Use skills `indicator-validator` and `scan-reviewer` when modifying indicators o
 - Never hardcode API keys or credentials — use env vars, store in `.env` (gitignored)
 - PR titles must follow conventional commits (`feat:`, `fix:`, `chore:`, etc.)
 - Don't break MCP tool signatures — clients depend on them
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in Linear, team **PDE** (IDs like `PDE-12`), accessed via the Linear MCP tools. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: the five canonical labels used as-is. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
