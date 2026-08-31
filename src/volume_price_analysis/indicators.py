@@ -493,7 +493,8 @@ def calculate_relative_volume(data: pd.DataFrame, period: int = 20) -> dict[str,
 
     # When history is shorter than the period, a plain rolling mean is all-NaN
     # and int(NaN) raises; average over whatever history exists (min_periods=1)
-    # instead. Identical to the original rolling mean once `period` bars exist.
+    # instead. For full history this matches the original rolling mean at the
+    # final bar; earlier bars now carry partial-window values instead of NaN.
     avg_volume = data["Volume"].rolling(window=period, min_periods=1).mean()
     rvol = data["Volume"] / avg_volume
 
@@ -546,9 +547,10 @@ def detect_volume_breakout(
         Dictionary with breakout detection results
     """
     if len(data) < 2:
+        last_volume = data["Volume"].iloc[-1] if len(data) else float("nan")
         return {
             "is_breakout": False,
-            "current_volume": int(data["Volume"].iloc[-1]) if len(data) else 0,
+            "current_volume": 0 if pd.isna(last_volume) else int(last_volume),
             "threshold_volume": 0,
             "multiplier_above_avg": 0.0,
             "direction": "none",
@@ -558,7 +560,9 @@ def detect_volume_breakout(
 
     # When history is shorter than the period, a plain rolling mean is all-NaN
     # and int(NaN) raises; average over whatever history exists (min_periods=1)
-    # instead. Identical to the original rolling mean once `period` bars exist.
+    # instead. For full history this matches the original rolling mean at the
+    # final bar; earlier bars now carry partial-window values instead of NaN,
+    # so `recent_breakouts` can also count spikes in the first `period` bars.
     avg_volume = data["Volume"].rolling(window=period, min_periods=1).mean()
     current_volume = data["Volume"].iloc[-1]
     current_avg = avg_volume.iloc[-1]

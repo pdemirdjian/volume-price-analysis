@@ -798,6 +798,15 @@ class TestRelativeVolume:
         assert rvol["current_rvol"] == 0.0
         assert rvol["average_volume"] == 0
 
+    def test_nan_volume_returns_neutral_result(self):
+        """Test that NaN volume data returns zeros, not NaN fields."""
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        data = pd.DataFrame({"Volume": [float("nan")] * 5}, index=dates)
+        rvol = calculate_relative_volume(data, period=20)
+        assert rvol["current_rvol"] == 0.0
+        assert rvol["average_volume"] == 0
+        assert rvol["current_volume"] == 0
+
 
 class TestDetectVolumeBreakout:
     """Tests for volume breakout detection."""
@@ -936,6 +945,36 @@ class TestDetectVolumeBreakout:
         assert result["current_volume"] == 0
         assert result["threshold_volume"] == 0
         assert result["multiplier_above_avg"] == 0.0
+
+    def test_single_row_nan_volume_does_not_raise(self):
+        """Test a single NaN-volume bar takes the short guard without int(NaN)."""
+        data = pd.DataFrame(
+            {"Close": [100.0], "Volume": [float("nan")]},
+            index=pd.date_range("2024-01-01", periods=1),
+        )
+        result = detect_volume_breakout(data, threshold_multiplier=2.0, period=20)
+        assert result["is_breakout"] is False
+        assert result["current_volume"] == 0
+
+    def test_empty_frame_returns_neutral_result(self):
+        """Test that an empty frame returns zeros instead of raising."""
+        data = pd.DataFrame({"Close": pd.Series(dtype=float), "Volume": pd.Series(dtype=float)})
+        result = detect_volume_breakout(data, threshold_multiplier=2.0, period=20)
+        assert result["is_breakout"] is False
+        assert result["current_volume"] == 0
+        assert result["threshold_volume"] == 0
+
+    def test_zero_volume_no_inf(self):
+        """Test that all-zero volume yields 0.0 multiplier, not inf/NaN."""
+        dates = pd.date_range("2024-01-01", periods=25, freq="D")
+        data = pd.DataFrame(
+            {"Close": [100.0] * 25, "Volume": [0] * 25},
+            index=dates,
+        )
+        result = detect_volume_breakout(data, threshold_multiplier=2.0, period=20)
+        assert result["is_breakout"] is False
+        assert result["multiplier_above_avg"] == 0.0
+        assert result["threshold_volume"] == 0
 
 
 class TestVWMA:
