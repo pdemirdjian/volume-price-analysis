@@ -304,6 +304,22 @@ class TestFallbackBriefing:
         assert "150.00" in briefing
         assert "5.5" in briefing
 
+    def test_flags_regime_demoted_picks(self):
+        scan_results = {
+            "summary": {"total_candidates": 1, "high_conviction": 0},
+            "regime_demoted": [{"symbol": "AAPL", "regime_conflict": "bullish vs bearish tape"}],
+        }
+        deep = [
+            {
+                "symbol": "AAPL",
+                "latest_price": 150.0,
+                "composite_signal": {"score": 5.5, "recommendation": "strong_bullish"},
+            },
+        ]
+        briefing = _fallback_briefing(scan_results, deep)
+        aapl_line = next(line for line in briefing.splitlines() if "AAPL" in line)
+        assert "counter-regime" in aapl_line
+
 
 def _full_deep_analysis():
     """A representative run_options_analysis-shaped dict for projection tests."""
@@ -1174,6 +1190,10 @@ class TestRunMorningBriefing:
 
         mock_generate.assert_not_called()
         mock_raw_email.assert_called_once()
+        # The regime verdict reaches the raw email as a preamble (here unknown:
+        # the mocked SPY fetch returns no usable frame).
+        preamble = mock_raw_email.call_args.kwargs["preamble"]
+        assert preamble.startswith("**Market Regime: UNKNOWN**")
 
     @pytest.mark.asyncio
     async def test_ai_failure_uses_fallback(self, mocker):

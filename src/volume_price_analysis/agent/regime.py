@@ -6,11 +6,13 @@ briefing audit (PDE-66) showed regime-fighting picks driving negative
 expectancy; the follow-up re-grade showed the gate itself adds no edge,
 so demoted picks are kept visible as flagged context rather than dropped.
 
-Strictly causal: the agent runs pre-market, so the last completed daily
-bar is the prior session's close; no intraday data enters the check.
+Strictly causal: bars dated on or after the caller-supplied "today" are
+excluded, so even an intraday run compares only the prior session's close;
+no in-progress bar enters the check.
 """
 
 import logging
+from datetime import date
 
 import pandas as pd
 
@@ -21,17 +23,24 @@ REGIME_SMA_PERIOD = 20
 _GATED_DIRECTIONS = ("bullish", "bearish")
 
 
-def compute_market_regime(spy_data: pd.DataFrame | None) -> dict:
+def compute_market_regime(spy_data: pd.DataFrame | None, today: date | None = None) -> dict:
     """Classify the market regime from SPY daily data.
 
     Compares the last close against the SMA of the final ``REGIME_SMA_PERIOD``
-    closes (NaNs dropped first). Returns a dict with ``regime`` set to
+    closes (NaNs dropped first). When ``today`` is given, bars dated on or
+    after it are excluded first, keeping the check strictly causal even when
+    the fetch happens mid-session. Returns a dict with ``regime`` set to
     ``"bullish"`` (close at or above the SMA), ``"bearish"`` (below), or
     ``"unknown"`` with a ``reason`` when the check cannot be computed —
     insufficient history never raises.
     """
     if spy_data is None or spy_data.empty or "Close" not in spy_data.columns:
         return {"regime": "unknown", "reason": "SPY data unavailable"}
+
+    if today is not None and "Date" in spy_data.columns:
+        spy_data = spy_data[pd.to_datetime(spy_data["Date"]).dt.date < today]
+        if spy_data.empty:
+            return {"regime": "unknown", "reason": "no SPY sessions before today"}
 
     closes = spy_data["Close"].dropna()
     if len(closes) < REGIME_SMA_PERIOD:
@@ -70,8 +79,9 @@ def apply_regime_gate(scan_results: dict, regime: dict) -> dict:
     ``regime_demoted`` (each copied with a ``regime_conflict`` note), the
     ``summary`` count is updated, and the regime verdict is attached under
     ``market_regime``. An unknown regime gates nothing. Demoted candidates
-    still appear in their ``top_bullish``/``top_bearish`` lists — the gate
-    changes presentation, not candidacy.
+    still appear in their ``top_bullish``/``top_bearish`` lists, so they stay
+    scan candidates — but they do lose high-conviction billing everywhere it
+    matters, including priority for deep-analysis slots.
     """
     high_conviction = scan_results.get("high_conviction_setups") or []
     result = dict(scan_results)
@@ -114,7 +124,15 @@ def apply_regime_gate(scan_results: dict, regime: dict) -> dict:
     result["regime_demoted"] = demoted
     summary = scan_results.get("summary")
     if isinstance(summary, dict):
-        result["summary"] = {**summary, "high_conviction": len(kept)}
+        # summary.high_conviction is the *uncapped* count from run_scan while
+        # high_conviction_setups is capped at 5, so subtract demotions from
+        # the reported count rather than recounting the capped list.
+        reported = summary.get("high_conviction")
+        if isinstance(reported, int):
+            new_count = max(reported - len(demoted), len(kept))
+        else:
+            new_count = len(kept)
+        result["summary"] = {**summary, "high_conviction": new_count}
     return result
 
 

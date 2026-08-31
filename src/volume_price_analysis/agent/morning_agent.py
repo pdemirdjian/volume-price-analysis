@@ -16,6 +16,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import fetch_stock_data
@@ -84,7 +85,7 @@ async def run_morning_briefing(
     # Step 1b: Market-regime check (PDE-66) — counter-regime picks lose their
     # high-conviction billing but stay visible as flagged context.
     logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
-    regime = _market_regime()
+    regime = _fetch_market_regime()
     scan_results = apply_regime_gate(scan_results, regime)
     regime_header = format_regime_header(regime, len(scan_results.get("regime_demoted", [])))
     logger.info("Regime verdict: %s", regime.get("regime", "unknown"))
@@ -176,6 +177,7 @@ async def run_morning_briefing(
         if briefing:
             print(briefing + stats_line)
         else:
+            print(regime_header)
             print(json.dumps(scan_results, indent=2, default=str))
             for a in deep_analyses:
                 print(json.dumps(a, indent=2, default=str))
@@ -190,6 +192,7 @@ async def run_morning_briefing(
             smtp_host=config.email_smtp_host,
             smtp_port=config.email_smtp_port,
             date_str=date_str,
+            preamble=regime_header,
         )
     else:
         logger.info("Step 4: Sending briefing email")
@@ -262,14 +265,17 @@ def _fetch_earnings_warnings(symbols: list[str], now: datetime) -> dict[str, str
         return result
 
 
-def _market_regime() -> dict:
+def _fetch_market_regime() -> dict:
     """Fetch SPY history and compute the market regime; failures degrade to unknown."""
     try:
         spy_data = fetch_stock_data("SPY", None, None, "3mo")
+        # Exclude any in-progress session so a manual intraday run stays strictly
+        # causal — the check must always read the prior session's close.
+        today_eastern = datetime.now(ZoneInfo("America/New_York")).date()
+        return compute_market_regime(spy_data, today=today_eastern)
     except Exception:
-        logger.exception("SPY fetch for regime check failed")
-        return {"regime": "unknown", "reason": "SPY data unavailable"}
-    return compute_market_regime(spy_data)
+        logger.exception("Market regime check failed")
+        return compute_market_regime(None)
 
 
 def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
@@ -323,6 +329,9 @@ def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
     lines.append(f"**Bearish setups:** {summary.get('bearish_setups', 0)}")
     lines.append(f"**High conviction:** {summary.get('high_conviction', 0)}\n")
 
+    demoted_symbols = {
+        c.get("symbol") for c in scan_results.get("regime_demoted", []) if isinstance(c, dict)
+    }
     if deep_analyses:
         lines.append("## Top Candidates\n")
         for a in deep_analyses:
@@ -330,7 +339,10 @@ def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
             score = a.get("composite_signal", {}).get("score", 0)
             rec = a.get("composite_signal", {}).get("recommendation", "?")
             price = a.get("latest_price", 0)
-            lines.append(f"- **{sym}** @ ${price:.2f} | Score: {score:.1f} | {rec}")
+            line = f"- **{sym}** @ ${price:.2f} | Score: {score:.1f} | {rec}"
+            if sym in demoted_symbols:
+                line += " | ⚠️ counter-regime (demoted from high-conviction)"
+            lines.append(line)
 
     return "\n".join(lines)
 

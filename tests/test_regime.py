@@ -90,6 +90,26 @@ class TestComputeMarketRegime:
         data = pd.DataFrame({"Date": pd.bdate_range("2026-07-01", periods=30)})
         assert compute_market_regime(data)["regime"] == "unknown"
 
+    def test_today_excludes_in_progress_session(self):
+        # 30 flat sessions then an intraday bar dated "today": the live bar
+        # must not enter the check — spec requires the prior session's close.
+        data = make_spy_data([600.0] * 30 + [550.0])
+        today = data["Date"].iloc[-1].date()
+        regime = compute_market_regime(data, today=today)
+        assert regime["spy_close"] == pytest.approx(600.0)
+        assert regime["regime"] == "bullish"
+        assert regime["as_of"] == data["Date"].iloc[-2].strftime("%Y-%m-%d")
+
+    def test_today_after_all_bars_changes_nothing(self):
+        data = make_spy_data([600.0] * 29 + [650.0])
+        today = (data["Date"].iloc[-1] + pd.Timedelta(days=1)).date()
+        assert compute_market_regime(data, today=today) == compute_market_regime(data)
+
+    def test_today_excluding_everything_is_unknown(self):
+        data = make_spy_data([600.0] * 30)
+        today = data["Date"].iloc[0].date()
+        assert compute_market_regime(data, today=today)["regime"] == "unknown"
+
 
 class TestApplyRegimeGate:
     """apply_regime_gate: counter-regime picks leave high-conviction, flagged."""
@@ -164,6 +184,15 @@ class TestApplyRegimeGate:
         gated = apply_regime_gate({}, {"regime": "bullish", "spy_close": 650.0, "sma20": 600.0})
         assert gated["high_conviction_setups"] == []
         assert gated["regime_demoted"] == []
+
+    def test_summary_count_respects_uncapped_total(self):
+        # run_scan reports the uncapped high-conviction count in summary but
+        # caps the visible list at 5; the gate must subtract demotions from
+        # the reported count, not recount the capped list.
+        scan = self.make_scan()
+        scan["summary"]["high_conviction"] = 8
+        gated = apply_regime_gate(scan, {"regime": "bearish", "spy_close": 550.0, "sma20": 600.0})
+        assert gated["summary"]["high_conviction"] == 7  # 8 reported - 1 demoted
 
 
 class TestFormatRegimeHeader:
