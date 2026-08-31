@@ -22,6 +22,12 @@ from ..data_fetcher import fetch_stock_data
 from .ai_client import generate_briefing
 from .config import AgentConfig
 from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
+from .regime import (
+    REGIME_SMA_PERIOD,
+    apply_regime_gate,
+    compute_market_regime,
+    format_regime_header,
+)
 
 # Configure logging to stdout (Docker best practice)
 logging.basicConfig(
@@ -74,6 +80,14 @@ async def run_morning_briefing(
         scan_results["summary"]["bearish_setups"],
         scan_results["summary"]["high_conviction"],
     )
+
+    # Step 1b: Market-regime check (PDE-66) — counter-regime picks lose their
+    # high-conviction billing but stay visible as flagged context.
+    logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
+    regime = _market_regime()
+    scan_results = apply_regime_gate(scan_results, regime)
+    regime_header = format_regime_header(regime, len(scan_results.get("regime_demoted", [])))
+    logger.info("Regime verdict: %s", regime.get("regime", "unknown"))
 
     # Step 2: Deep analysis on top N candidates
     top_symbols = _get_top_symbols(scan_results, config.max_deep_analysis)
@@ -136,6 +150,11 @@ async def run_morning_briefing(
             briefing = _fallback_briefing(scan_results, deep_analyses)
             degraded = True
             logger.warning("Using fallback briefing — AI provider was unavailable")
+
+    # The regime verdict heads every rendered briefing (AI or fallback); the
+    # no-AI raw email carries it inside the scan_results JSON instead.
+    if briefing is not None:
+        briefing = regime_header + "\n\n" + briefing
 
     # Step 4: Deliver
     elapsed_total = time.monotonic() - start_time
@@ -241,6 +260,16 @@ def _fetch_earnings_warnings(symbols: list[str], now: datetime) -> dict[str, str
             if warning is not None:
                 result[sym] = warning
         return result
+
+
+def _market_regime() -> dict:
+    """Fetch SPY history and compute the market regime; failures degrade to unknown."""
+    try:
+        spy_data = fetch_stock_data("SPY", None, None, "3mo")
+    except Exception:
+        logger.exception("SPY fetch for regime check failed")
+        return {"regime": "unknown", "reason": "SPY data unavailable"}
+    return compute_market_regime(spy_data)
 
 
 def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
