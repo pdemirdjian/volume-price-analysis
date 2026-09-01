@@ -84,7 +84,7 @@ disallow_untyped_defs = false
 ignore_missing_imports = true
 
 [project.scripts]
-volume-price-analysis = "volume_price_analysis.server:main"
+volume-price-analysis = "volume_price_analysis.server:cli"
 morning-briefing = "volume_price_analysis.agent.morning_agent:main"
 morning-scheduler = "volume_price_analysis.agent.scheduler:main"
 vpa-backtest = "volume_price_analysis.backtest:main"
