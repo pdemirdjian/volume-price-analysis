@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.0...v2.9.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* console script entry point never awaited async main ([#439](https://github.com/pdemirdjian/volume-price-analysis/issues/439)) ([7c6998c](https://github.com/pdemirdjian/volume-price-analysis/commit/7c6998ca532aa2bb9612ae22ff5964b55bf7ecee))
+
 ## [2.9.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.8.0...v2.9.0) (2026-08-31)
 
 
