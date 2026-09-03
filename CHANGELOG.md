@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.1...v2.9.2) (2026-09-03)
+
+
+### Documentation
+
+* clarify CodeQL runs via GitHub default setup, not ci.yml ([#442](https://github.com/pdemirdjian/volume-price-analysis/issues/442)) ([b3d708f](https://github.com/pdemirdjian/volume-price-analysis/commit/b3d708fe789db68c995736a232ea9b2d422adbbf))
+
 ## [2.9.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.0...v2.9.1) (2026-09-01)
 
 
