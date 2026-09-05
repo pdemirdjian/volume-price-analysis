@@ -23,6 +23,7 @@ from volume_price_analysis.backtest import (
     pool_observations,
     run_evidence,
 )
+from volume_price_analysis.data_fetcher import InMemoryDataSource
 
 
 def _synthetic_data(n: int, seed: int = 7) -> pd.DataFrame:
@@ -410,27 +411,26 @@ def test_forward_returns_zero_close_is_nan_not_inf():
 
 
 # --------------------------------------------------------------------------- #
-# run_evidence + main (orchestration; fetch is monkeypatched, no network)
+# run_evidence + main (orchestration; an in-memory DataSource stands in, no network)
 # --------------------------------------------------------------------------- #
 
 
-def _fake_fetch_factory(monkeypatch):
-    """Patch fetch_stock_data: known good symbols return data, others raise."""
-
-    def fake_fetch(symbol, start, end, period):
-        if symbol == "BAD":
-            raise ValueError("no data found for BAD")
-        if symbol == "SHORT":
-            return _synthetic_data(20)  # too little history -> empty observations
-        return _synthetic_data(200, seed=hash(symbol) % 1000)
-
-    monkeypatch.setattr(backtest, "fetch_stock_data", fake_fetch)
+def _test_source():
+    """A DataSource where GOOD/ALSO have history, SHORT has too little, BAD is unknown."""
+    return InMemoryDataSource(
+        frames={
+            "GOOD": _synthetic_data(200, seed=1),
+            "ALSO": _synthetic_data(200, seed=2),
+            "SHORT": _synthetic_data(20),  # too little history -> empty observations
+        }
+    )
 
 
-def test_run_evidence_isolates_per_symbol_failures(monkeypatch):
+def test_run_evidence_isolates_per_symbol_failures():
     """One bad symbol must not sink the run; good symbols still pool."""
-    _fake_fetch_factory(monkeypatch)
-    result = run_evidence(["GOOD", "BAD"], period="2y", horizon=10, min_history=50)
+    result = run_evidence(
+        ["GOOD", "BAD"], period="2y", horizon=10, min_history=50, data_source=_test_source()
+    )
     assert result["evaluation"]["n"] > 0
     assert any("BAD" in e for e in result["errors"])
     # pooled observations carry the contributing symbol
@@ -438,22 +438,28 @@ def test_run_evidence_isolates_per_symbol_failures(monkeypatch):
     assert "BAD" not in set(result["observations"]["symbol"])
 
 
-def test_run_evidence_records_insufficient_history(monkeypatch):
-    _fake_fetch_factory(monkeypatch)
-    result = run_evidence(["SHORT"], period="2y", horizon=10, min_history=50)
+def test_run_evidence_records_insufficient_history():
+    result = run_evidence(
+        ["SHORT"], period="2y", horizon=10, min_history=50, data_source=_test_source()
+    )
     assert result["evaluation"]["n"] == 0
     assert any("insufficient history" in e for e in result["errors"])
 
 
-def test_run_evidence_pools_multiple_symbols(monkeypatch):
-    _fake_fetch_factory(monkeypatch)
-    one = run_evidence(["GOOD"], period="2y", horizon=10, min_history=50)
-    two = run_evidence(["GOOD", "ALSO"], period="2y", horizon=10, min_history=50)
+def test_run_evidence_pools_multiple_symbols():
+    one = run_evidence(
+        ["GOOD"], period="2y", horizon=10, min_history=50, data_source=_test_source()
+    )
+    two = run_evidence(
+        ["GOOD", "ALSO"], period="2y", horizon=10, min_history=50, data_source=_test_source()
+    )
     assert two["evaluation"]["n"] > one["evaluation"]["n"]
 
 
 def test_main_prints_report_and_returns_zero(monkeypatch, capsys):
-    _fake_fetch_factory(monkeypatch)
+    # main() threads no data_source, so replace the default adapter it resolves.
+    source = _test_source()
+    monkeypatch.setattr(backtest, "get_default_data_source", lambda: source)
     rc = main(["GOOD", "BAD", "--period", "2y", "--horizon", "10", "--min-history", "50"])
     assert rc == 0
     out = capsys.readouterr().out

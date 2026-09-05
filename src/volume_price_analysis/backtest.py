@@ -34,7 +34,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .data_fetcher import fetch_stock_data
+from .data_fetcher import DataSource, get_default_data_source
 from .indicators import calculate_adx, calculate_composite_score, calculate_iv_percentile
 
 logger = logging.getLogger(__name__)
@@ -414,17 +414,22 @@ def run_evidence(
     holding_period: int = 14,
     min_history: int = 50,
     step: int = 1,
+    data_source: DataSource | None = None,
 ) -> dict[str, Any]:
     """Fetch data for symbols, compute pooled observations, and evaluate.
 
     Per-symbol fetch failures are isolated and skipped so one bad symbol does
     not sink the run.
+
+    Args:
+        data_source: Market-data seam; None uses the production adapter.
     """
+    source = data_source if data_source is not None else get_default_data_source()
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
     for sym in symbols:
         try:
-            data = fetch_stock_data(sym, None, None, period)
+            data = source.fetch(sym, period=period)
             obs = compute_observations(data, horizon, holding_period, min_history, step, symbol=sym)
             if obs.empty:
                 errors.append(f"{sym}: insufficient history")

@@ -6,17 +6,24 @@ import smtplib
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from volume_price_analysis.agent.ai_client import (
     _TRUNCATION_WARNING,
+    MAX_OUTPUT_TOKENS,
+    PROVIDERS,
     SYSTEM_PROMPT,
-    _build_user_message,
+    BriefingResult,
     _drop_superseded_scan_fields,
     _project_deep_analysis,
     _project_scan_results,
+    build_briefing_prompt,
     find_ungrounded_tickers,
+    generate_anthropic,
     generate_briefing,
+    generate_gemini,
+    resolve_model,
 )
 from volume_price_analysis.agent.config import MAX_DEEP_ANALYSIS_CAP, AgentConfig
 from volume_price_analysis.agent.email_sender import (
@@ -32,30 +39,57 @@ from volume_price_analysis.agent.email_sender import (
     send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
+    _EARNINGS_WARN_DAYS,
+    BriefingRunResult,
     _candidate_symbols,
     _check_earnings,
+    _config_errors,
     _fallback_briefing,
     _fetch_earnings_warnings,
     _get_top_symbols,
+    build_earnings_preamble,
+    build_stats_line,
     main,
     run_morning_briefing,
 )
+from volume_price_analysis.data_fetcher import InMemoryDataSource
+
+# A minimal frame standing in for fetched history. These tests mock
+# run_options_analysis, so only the fetch succeeding matters.
+_STUB_FRAME = pd.DataFrame(
+    {
+        "Date": pd.date_range("2026-01-01", periods=5),
+        "Open": [100.0] * 5,
+        "High": [101.0] * 5,
+        "Low": [99.0] * 5,
+        "Close": [100.0] * 5,
+        "Volume": [1_000_000] * 5,
+    }
+)
 
 
-@pytest.fixture(autouse=True)
-def _no_network_earnings_fetch(mocker):
-    """Keep unit tests off the network.
-
-    run_morning_briefing's earnings guard otherwise makes real yfinance calls
-    (and leaks its sqlite cache connection) for every analysed symbol. Tests
-    that exercise the earnings helpers directly are unaffected: they call the
-    functions through this module's imports, not the patched morning_agent
-    attribute.
-    """
-    mocker.patch(
-        "volume_price_analysis.agent.morning_agent._fetch_earnings_warnings",
-        return_value={},
+def _briefing_result(degraded=False, reason=None):
+    """Stand-in for run_morning_briefing's return value in main() tests."""
+    return BriefingRunResult(
+        degraded=degraded,
+        reason=reason,
+        regime={"regime": "bullish"},
+        symbols_analyzed=["AAPL"],
+        email_sent=True,
     )
+
+
+def agent_source(symbols=(), *, spy=None, earnings=None, errors=None):
+    """Build the DataSource run_morning_briefing should use.
+
+    Injecting one keeps the whole pipeline — scan, SPY regime fetch, per-symbol
+    fetches, earnings guard — off the network without patching import paths.
+    Symbols absent from ``frames`` fail exactly as they would in production.
+    """
+    frames = dict.fromkeys(symbols, _STUB_FRAME)
+    if spy is not None:
+        frames["SPY"] = spy
+    return InMemoryDataSource(frames=frames, earnings=earnings, errors=errors)
 
 
 class TestAgentConfig:
@@ -588,7 +622,7 @@ class TestProjectDeepAnalysis:
         assert projected["volume_signals"]["obv_trend"] is None
 
 
-class TestBuildUserMessageProjection:
+class TestBuildBriefingPrompt:
     """Test that _build_user_message emits the curated projection (O3)."""
 
     def test_curated_message_is_smaller_than_raw_dump(self, sample_stock_data):
@@ -603,7 +637,7 @@ class TestBuildUserMessageProjection:
             "top_bearish": [],
             "errors": [],
         }
-        curated = _build_user_message(scan, [analysis])
+        curated = build_briefing_prompt(scan, [analysis])
         raw_dump = f"{json.dumps(scan, default=str)}{json.dumps(analysis, default=str)}"
         # The whole point of O3: meaningfully less text than the raw JSON dump.
         assert len(curated) < len(raw_dump)
@@ -615,7 +649,7 @@ class TestBuildUserMessageProjection:
         from volume_price_analysis.analysis import run_options_analysis
 
         analysis = run_options_analysis("TEST", sample_stock_data)
-        curated = _build_user_message({"summary": {}}, [analysis])
+        curated = build_briefing_prompt({"summary": {}}, [analysis])
         # Internal scoring detail is dropped from the model-facing prompt.
         assert "score_breakdown" not in curated
         assert "plus_di" not in curated
@@ -640,43 +674,62 @@ class TestBuildUserMessageProjection:
                 "expected_move": {"upper_target": 46.37, "lower_target": 39.75},
             },
         }
-        curated = _build_user_message(scan, [deep])
+        curated = build_briefing_prompt(scan, [deep])
         assert "40.32" not in curated
         assert "39.75" in curated
 
 
-class TestGenerateBriefingAnthropic:
-    """Test Anthropic API integration (mocked)."""
+class _FakeProvider:
+    """Records the arguments generate_briefing hands a provider."""
 
-    def test_calls_anthropic_api(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="# Morning Briefing\nTest content")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 200
-        mock_client.messages.create.return_value = mock_message
+    def __init__(self, text="# Morning Briefing\nTest content"):
+        self.text = text
+        self.calls = []
 
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+    def __call__(self, user_content, model, api_key):
+        self.calls.append((user_content, model, api_key))
+        return self.text
+
+    @property
+    def user_content(self):
+        return self.calls[-1][0]
+
+
+class TestGenerateBriefing:
+    """generate_briefing orchestrates prompt + provider + grounding check."""
+
+    def test_returns_provider_text(self):
+        provider = _FakeProvider()
 
         result = generate_briefing(
             scan_results={"summary": {"total_candidates": 5}},
             deep_analyses=[],
-            provider="anthropic",
+            provider=provider,
+            model="test-model",
+            api_key="test-key",
+        )
+
+        assert isinstance(result, BriefingResult)
+        assert "Morning Briefing" in result.text
+        assert result.ungrounded_tickers == []
+
+    def test_passes_model_and_key_through(self):
+        provider = _FakeProvider()
+
+        generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider=provider,
+            model="some-model",
             api_key="sk-test",
         )
 
-        assert "Morning Briefing" in result
-        mock_client.messages.create.assert_called_once()
+        _, model, api_key = provider.calls[0]
+        assert model == "some-model"
+        assert api_key == "sk-test"
 
-    def test_includes_scan_data_in_prompt(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="briefing")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 200
-        mock_client.messages.create.return_value = mock_message
-
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+    def test_includes_scan_data_in_prompt(self):
+        provider = _FakeProvider(text="briefing")
 
         generate_briefing(
             scan_results={
@@ -684,174 +737,162 @@ class TestGenerateBriefingAnthropic:
                 "high_conviction_setups": [{"symbol": "NVDA", "composite_score": 6.2}],
             },
             deep_analyses=[{"symbol": "AAPL"}],
-            provider="anthropic",
-            api_key="sk-test",
+            provider=provider,
+            model="m",
+            api_key="k",
         )
 
-        call_args = mock_client.messages.create.call_args
-        user_msg = call_args.kwargs["messages"][0]["content"]
         # Curated high-signal data reaches the model: candidate + deep symbols.
-        assert "AAPL" in user_msg
-        assert "NVDA" in user_msg
-        assert "total_candidates" in user_msg
+        assert "AAPL" in provider.user_content
+        assert "NVDA" in provider.user_content
+        assert "total_candidates" in provider.user_content
 
-    def test_appends_warning_on_truncation(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="# Truncated briefing")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 16384
-        mock_message.stop_reason = "max_tokens"
-        mock_client.messages.create.return_value = mock_message
-
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="anthropic",
-            api_key="sk-test",
-        )
-
-        assert _TRUNCATION_WARNING in result
-
-    def test_no_warning_on_normal_completion(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="# Full briefing")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 500
-        mock_message.stop_reason = "end_turn"
-        mock_client.messages.create.return_value = mock_message
-
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="anthropic",
-            api_key="sk-test",
-        )
-
-        assert _TRUNCATION_WARNING not in result
-
-
-class TestGenerateBriefingGemini:
-    """Test Gemini API integration (mocked)."""
-
-    def test_calls_gemini_api(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Morning Briefing\nGemini content"
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={"summary": {"total_candidates": 5}},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert "Morning Briefing" in result
-        mock_client.models.generate_content.assert_called_once()
-
-    def test_uses_default_model(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "briefing"
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
+    def test_includes_earnings_preamble(self):
+        provider = _FakeProvider(text="briefing")
 
         generate_briefing(
             scan_results={},
             deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
+            provider=provider,
+            model="m",
+            api_key="k",
+            earnings_preamble="**EARNINGS EVENT RISK** — NVDA reports tomorrow.",
         )
 
-        call_args = mock_client.models.generate_content.call_args
-        assert call_args.kwargs["model"] == "gemini-2.5-pro"
+        assert "EARNINGS EVENT RISK" in provider.user_content
 
-    def test_appends_warning_on_truncation(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Truncated briefing"
-        mock_finish_reason = MagicMock()
-        mock_finish_reason.name = "MAX_TOKENS"
-        mock_candidate = MagicMock()
-        mock_candidate.finish_reason = mock_finish_reason
-        mock_response.candidates = [mock_candidate]
-        mock_client.models.generate_content.return_value = mock_response
+    def test_provider_error_propagates(self):
+        def boom(user_content, model, api_key):
+            raise RuntimeError("provider down")
 
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert _TRUNCATION_WARNING in result
-
-    def test_no_warning_on_normal_completion(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Full briefing"
-        mock_finish_reason = MagicMock()
-        mock_finish_reason.name = "STOP"
-        mock_candidate = MagicMock()
-        mock_candidate.finish_reason = mock_finish_reason
-        mock_response.candidates = [mock_candidate]
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert _TRUNCATION_WARNING not in result
-
-    def test_truncation_detection_with_string_finish_reason(self, mocker):
-        """Handles SDK versions where finish_reason is a plain string."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Truncated briefing"
-        mock_candidate = MagicMock(spec=[])  # no attributes by default
-        mock_candidate.finish_reason = "MAX_TOKENS"
-        mock_response.candidates = [mock_candidate]
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert _TRUNCATION_WARNING in result
-
-
-class TestGenerateBriefingInvalidProvider:
-    """Test error handling for invalid provider."""
-
-    def test_raises_on_invalid_provider(self):
-        with pytest.raises(ValueError, match="Unknown AI provider"):
+        with pytest.raises(RuntimeError, match="provider down"):
             generate_briefing(
                 scan_results={},
                 deep_analyses=[],
-                provider="openai",
-                api_key="key",
+                provider=boom,
+                model="m",
+                api_key="k",
             )
+
+
+class TestProviderRegistry:
+    """PROVIDERS maps AI_PROVIDER names onto the production adapters."""
+
+    def test_registry_contents(self):
+        assert PROVIDERS["anthropic"] is generate_anthropic
+        assert PROVIDERS["gemini"] is generate_gemini
+
+    def test_registry_covers_every_valid_config_provider(self):
+        # config.AgentConfig.validate() is the single validator of names.
+        assert set(PROVIDERS) == {"gemini", "anthropic"}
+
+    def test_resolve_model_defaults_per_provider(self):
+        assert resolve_model("gemini") == "gemini-2.5-pro"
+        assert resolve_model("anthropic") == "claude-sonnet-4-6"
+
+    def test_resolve_model_honours_explicit_override(self):
+        assert resolve_model("gemini", "gemini-flash") == "gemini-flash"
+
+
+class TestGenerateAnthropicAdapter:
+    """SDK-level tests for the Anthropic adapter itself."""
+
+    @staticmethod
+    def _mock_client(mocker, text="# Morning Briefing", stop_reason="end_turn"):
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = [MagicMock(text=text)]
+        mock_message.usage.input_tokens = 100
+        mock_message.usage.output_tokens = 200
+        mock_message.stop_reason = stop_reason
+        mock_client.messages.create.return_value = mock_message
+        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+        return mock_client
+
+    def test_calls_messages_api(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        result = generate_anthropic("user content", "claude-test", "sk-test")
+
+        assert "Morning Briefing" in result
+        assert _TRUNCATION_WARNING not in result
+        kwargs = mock_client.messages.create.call_args.kwargs
+        assert kwargs["model"] == "claude-test"
+        assert kwargs["system"] == SYSTEM_PROMPT
+        assert kwargs["max_tokens"] == MAX_OUTPUT_TOKENS
+        assert kwargs["messages"][0]["content"] == "user content"
+
+    def test_appends_warning_on_truncation(self, mocker):
+        self._mock_client(mocker, text="# Truncated", stop_reason="max_tokens")
+
+        result = generate_anthropic("user content", "claude-test", "sk-test")
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_max_tokens_override(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        generate_anthropic("user content", "claude-test", "sk-test", max_tokens=512)
+
+        assert mock_client.messages.create.call_args.kwargs["max_tokens"] == 512
+
+
+class TestGenerateGeminiAdapter:
+    """SDK-level tests for the Gemini adapter itself."""
+
+    @staticmethod
+    def _mock_client(mocker, text="# Morning Briefing", finish_reason=None):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = text
+        if finish_reason is None:
+            mock_response.candidates = []
+        else:
+            mock_candidate = MagicMock(spec=[])
+            mock_candidate.finish_reason = finish_reason
+            mock_response.candidates = [mock_candidate]
+        mock_client.models.generate_content.return_value = mock_response
+        mocker.patch("google.genai.Client", return_value=mock_client)
+        return mock_client
+
+    def test_calls_generate_content(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        result = generate_gemini("user content", "gemini-test", "test-key")
+
+        assert "Morning Briefing" in result
+        assert _TRUNCATION_WARNING not in result
+        kwargs = mock_client.models.generate_content.call_args.kwargs
+        assert kwargs["model"] == "gemini-test"
+        assert kwargs["contents"] == "user content"
+        assert kwargs["config"]["system_instruction"] == SYSTEM_PROMPT
+        assert kwargs["config"]["max_output_tokens"] == MAX_OUTPUT_TOKENS
+
+    def test_appends_warning_on_truncation(self, mocker):
+        """Enum-like finish_reason exposing a .name attribute."""
+        enum_like = MagicMock()
+        enum_like.name = "MAX_TOKENS"
+        self._mock_client(mocker, text="# Truncated", finish_reason=enum_like)
+
+        result = generate_gemini("user content", "gemini-test", "test-key")
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_truncation_detection_with_string_finish_reason(self, mocker):
+        """Handles SDK versions where finish_reason is a plain string."""
+        self._mock_client(mocker, text="# Truncated", finish_reason="MAX_TOKENS")
+
+        result = generate_gemini("user content", "gemini-test", "test-key")
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_max_tokens_override(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        generate_gemini("user content", "gemini-test", "test-key", max_tokens=512)
+
+        kwargs = mock_client.models.generate_content.call_args.kwargs
+        assert kwargs["config"]["max_output_tokens"] == 512
 
 
 class TestAgentConfigRepr:
@@ -1281,10 +1322,6 @@ class TestRunMorningBriefing:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={
                 "symbol": "AAPL",
@@ -1293,7 +1330,7 @@ class TestRunMorningBriefing:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Test Briefing\nLooks good!",
+            return_value=BriefingResult(text="# Test Briefing\nLooks good!"),
         )
 
         config = AgentConfig(
@@ -1305,7 +1342,7 @@ class TestRunMorningBriefing:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source(["AAPL"]))
 
         captured = capsys.readouterr()
         assert "Test Briefing" in captured.out
@@ -1343,12 +1380,7 @@ class TestRunMorningBriefing:
             email_to="c@d.com",
         )
 
-        mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-
-        await run_morning_briefing(config, dry_run=False, no_ai=True)
+        await run_morning_briefing(config, dry_run=False, no_ai=True, data_source=agent_source())
 
         mock_generate.assert_not_called()
         mock_raw_email.assert_called_once()
@@ -1375,10 +1407,6 @@ class TestRunMorningBriefing:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={"symbol": "AAPL", "composite_signal": {"score": 3.0}},
         )
@@ -1399,7 +1427,9 @@ class TestRunMorningBriefing:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=False, no_ai=False)
+        await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source(["AAPL"])
+        )
 
         mock_send.assert_called_once()
         body = mock_send.call_args.kwargs.get("body_markdown", "")
@@ -1437,16 +1467,12 @@ class TestRunMorningBriefing:
             }
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            side_effect=lambda symbol, *a, **kw: spy_data if symbol == "SPY" else MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={"symbol": "AAPL", "composite_signal": {"score": 4.5}},
         )
         mock_generate = mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing",
+            return_value=BriefingResult(text="# Briefing"),
         )
         mock_send = mocker.patch(
             "volume_price_analysis.agent.morning_agent.send_briefing_email",
@@ -1461,7 +1487,9 @@ class TestRunMorningBriefing:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=False, no_ai=False)
+        await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source(["AAPL"], spy=spy_data)
+        )
 
         annotated_scan = mock_generate.call_args.kwargs["scan_results"]
         assert annotated_scan["market_regime"]["regime"] == "bearish"
@@ -1473,6 +1501,53 @@ class TestRunMorningBriefing:
         body = mock_send.call_args.kwargs["body_markdown"]
         assert body.startswith("**Market Regime: BEARISH**")
         assert "flagged" in body
+
+    @pytest.mark.asyncio
+    async def test_earnings_from_source_warn_the_analysis_and_the_prompt(self, mocker):
+        """The earnings guard runs end-to-end against the injected data source."""
+        bull = {"symbol": "AAPL", "composite_score": 4.5}
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value={
+                "summary": {
+                    "total_candidates": 1,
+                    "bullish_setups": 1,
+                    "bearish_setups": 0,
+                    "high_conviction": 0,
+                    "errors": 0,
+                },
+                "high_conviction_setups": [],
+                "top_bullish": [bull],
+                "top_bearish": [],
+            },
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_options_analysis",
+            return_value={"symbol": "AAPL", "composite_signal": {"score": 4.5}},
+        )
+        mock_generate = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="# Briefing",
+        )
+        mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+            max_deep_analysis=1,
+        )
+        source = agent_source(["AAPL"], earnings={"AAPL": datetime.now(UTC) + timedelta(days=5)})
+
+        await run_morning_briefing(config, dry_run=False, no_ai=False, data_source=source)
+
+        preamble = mock_generate.call_args.kwargs["earnings_preamble"]
+        assert "EARNINGS EVENT RISK" in preamble
+        assert "AAPL" in preamble
+        deep = mock_generate.call_args.kwargs["deep_analyses"]
+        assert "EARNINGS" in deep[0]["earnings_warning"]
 
 
 # ---------------------------------------------------------------------------
@@ -1502,12 +1577,8 @@ class TestDeepAnalysisException:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            side_effect=Exception("Yahoo Finance unavailable"),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing with no deep data",
+            return_value=BriefingResult(text="# Briefing with no deep data"),
         )
 
         config = AgentConfig(
@@ -1520,7 +1591,13 @@ class TestDeepAnalysisException:
         )
 
         # Should NOT raise despite fetch_stock_data failing for every symbol
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(
+            config,
+            dry_run=True,
+            data_source=agent_source(
+                errors=dict.fromkeys(["AAPL", "TSLA"], ValueError("Yahoo Finance unavailable"))
+            ),
+        )
 
         captured = capsys.readouterr()
         assert "Briefing with no deep data" in captured.out
@@ -1544,16 +1621,12 @@ class TestDeepAnalysisException:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             side_effect=ValueError("Bad data"),
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing after analysis error",
+            return_value=BriefingResult(text="# Briefing after analysis error"),
         )
 
         config = AgentConfig(
@@ -1565,7 +1638,7 @@ class TestDeepAnalysisException:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source(["AAPL"]))
 
         captured = capsys.readouterr()
         assert "Briefing after analysis error" in captured.out
@@ -1594,10 +1667,6 @@ class TestDryRunNoAi:
             return_value=scan_data,
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={
                 "symbol": "MSFT",
@@ -1614,7 +1683,9 @@ class TestDryRunNoAi:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=True, no_ai=True)
+        await run_morning_briefing(
+            config, dry_run=True, no_ai=True, data_source=agent_source(["MSFT"])
+        )
 
         captured = capsys.readouterr()
         # scan_results JSON printed (line 127)
@@ -1651,7 +1722,7 @@ class TestDryRunNoAi:
             email_to="c@d.com",
         )
 
-        await run_morning_briefing(config, dry_run=True, no_ai=True)
+        await run_morning_briefing(config, dry_run=True, no_ai=True, data_source=agent_source())
 
         captured = capsys.readouterr()
         assert "total_candidates" in captured.out
@@ -1681,7 +1752,7 @@ class TestStatsLineFooter:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="Briefing body",
+            return_value=BriefingResult(text="Briefing body"),
         )
 
         config = AgentConfig(
@@ -1692,7 +1763,7 @@ class TestStatsLineFooter:
             email_to="c@d.com",
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source())
 
         captured = capsys.readouterr()
         assert "540 symbols scanned" in captured.out
@@ -1719,7 +1790,7 @@ class TestStatsLineFooter:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="Briefing body",
+            return_value=BriefingResult(text="Briefing body"),
         )
 
         config = AgentConfig(
@@ -1730,7 +1801,7 @@ class TestStatsLineFooter:
             email_to="c@d.com",
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source())
 
         captured = capsys.readouterr()
         assert "symbols scanned" not in captured.out
@@ -1755,6 +1826,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1797,6 +1869,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1839,6 +1912,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1863,6 +1937,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1951,7 +2026,7 @@ class TestMain:
         assert exc_info.value.code == 1
 
     def test_main_degraded_briefing_exits_code_2(self, mocker):
-        """When run_morning_briefing returns False (degraded), main() exits with code 2."""
+        """A degraded BriefingRunResult makes main() exit with code 2."""
         mocker.patch("sys.argv", ["morning-briefing"])
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
@@ -1965,7 +2040,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
-            return_value=False,
+            return_value=_briefing_result(degraded=True, reason="AI provider unavailable"),
         )
 
         with pytest.raises(SystemExit) as exc_info:
@@ -2024,10 +2099,10 @@ class TestEmailFormatValidation:
 
 
 class TestRunMorningBriefingDegradedReturn:
-    """Test that run_morning_briefing returns False when fallback is used."""
+    """run_morning_briefing reports degradation (and why) via BriefingRunResult."""
 
     @pytest.mark.asyncio
-    async def test_ai_failure_returns_false(self, mocker):
+    async def test_ai_failure_returns_degraded_result(self, mocker):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -2042,10 +2117,6 @@ class TestRunMorningBriefingDegradedReturn:
                 "top_bullish": [{"symbol": "AAPL"}],
                 "top_bearish": [],
             },
-        )
-        mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
@@ -2066,11 +2137,18 @@ class TestRunMorningBriefingDegradedReturn:
             max_deep_analysis=1,
         )
 
-        result = await run_morning_briefing(config, dry_run=False, no_ai=False)
-        assert result is False
+        result = await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source(["AAPL"])
+        )
+        assert result.degraded is True
+        assert result.reason is not None
+        assert "gemini" in result.reason
+        assert result.symbols_analyzed == ["AAPL"]
+        assert result.email_sent is True
+        assert "regime" in result.regime
 
     @pytest.mark.asyncio
-    async def test_successful_briefing_returns_true(self, mocker):
+    async def test_successful_briefing_returns_healthy_result(self, mocker):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -2088,7 +2166,7 @@ class TestRunMorningBriefingDegradedReturn:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing",
+            return_value=BriefingResult(text="# Briefing"),
         )
         mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
 
@@ -2100,8 +2178,13 @@ class TestRunMorningBriefingDegradedReturn:
             email_to="c@d.com",
         )
 
-        result = await run_morning_briefing(config, dry_run=False, no_ai=False)
-        assert result is True
+        result = await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source()
+        )
+        assert result.degraded is False
+        assert result.reason is None
+        assert result.symbols_analyzed == []
+        assert result.email_sent is True
 
 
 class TestSystemPromptVolatilityLabeling:
@@ -2232,7 +2315,7 @@ class TestFindUngroundedTickers:
 
 
 class TestGenerateBriefingGrounding:
-    """HOM-45: generate_briefing logs a warning when the briefing names unknown tickers."""
+    """HOM-45: generate_briefing reports tickers the briefing invented."""
 
     @staticmethod
     def _scan():
@@ -2244,46 +2327,40 @@ class TestGenerateBriefingGrounding:
             "errors": [],
         }
 
-    def test_logs_warning_on_hallucinated_ticker(self, mocker, caplog):
+    def test_reports_and_logs_hallucinated_ticker(self, caplog):
         import logging
 
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "AAPL is bullish. Also buy ZZZZ calls."
-        mock_response.candidates = []
-        mock_client.models.generate_content.return_value = mock_response
-        mocker.patch("google.genai.Client", return_value=mock_client)
+        provider = _FakeProvider(text="AAPL is bullish. Also buy ZZZZ calls.")
 
         with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
             result = generate_briefing(
                 scan_results=self._scan(),
                 deep_analyses=[],
-                provider="gemini",
-                api_key="test-key",
+                provider=provider,
+                model="m",
+                api_key="k",
             )
 
-        assert "ZZZZ" in result
+        assert "ZZZZ" in result.text
+        assert result.ungrounded_tickers == ["ZZZZ"]
         assert "ZZZZ" in caplog.text
         assert "hallucination" in caplog.text.lower()
 
-    def test_no_warning_when_grounded(self, mocker, caplog):
+    def test_no_warning_when_grounded(self, caplog):
         import logging
 
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "AAPL is bullish today; watch the VWAP."
-        mock_response.candidates = []
-        mock_client.models.generate_content.return_value = mock_response
-        mocker.patch("google.genai.Client", return_value=mock_client)
+        provider = _FakeProvider(text="AAPL is bullish today; watch the VWAP.")
 
         with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
-            generate_briefing(
+            result = generate_briefing(
                 scan_results=self._scan(),
                 deep_analyses=[],
-                provider="gemini",
-                api_key="test-key",
+                provider=provider,
+                model="m",
+                api_key="k",
             )
 
+        assert result.ungrounded_tickers == []
         assert "hallucination" not in caplog.text.lower()
 
 
@@ -2295,86 +2372,69 @@ NOW_UTC = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
 
 class TestCheckEarnings:
-    """Unit tests for _check_earnings edge cases."""
+    """Unit tests for _check_earnings against an injected data source.
 
-    def _mock_info(self, earnings_date):
-        return {"earningsDate": earnings_date}
+    Parsing Yahoo's raw ``.info`` payload now lives in YFinanceDataSource, so
+    those cases are covered in test_data_fetcher.py; here the source hands back
+    a datetime (or nothing) and only the 14-day window logic is under test.
+    """
+
+    def _source(self, earnings_dt):
+        return InMemoryDataSource(earnings={"AAPL": earnings_dt})
 
     def test_no_earnings_date_returns_none(self):
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {}
-            assert _check_earnings("AAPL", NOW_UTC) is None
+        assert _check_earnings("AAPL", NOW_UTC, self._source(None)) is None
+
+    def test_unknown_symbol_returns_none(self):
+        assert _check_earnings("AAPL", NOW_UTC, InMemoryDataSource()) is None
 
     def test_earnings_within_14_days_returns_warning(self):
-        upcoming = NOW_UTC + timedelta(days=7)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": upcoming}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
-            assert "EARNINGS" in result
-            assert "7 day" in result
+        result = _check_earnings("AAPL", NOW_UTC, self._source(NOW_UTC + timedelta(days=7)))
+        assert result is not None
+        assert "EARNINGS" in result
+        assert "7 day" in result
 
     def test_earnings_in_past_returns_none(self):
         past = NOW_UTC - timedelta(days=3)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": past}
-            assert _check_earnings("AAPL", NOW_UTC) is None
+        assert _check_earnings("AAPL", NOW_UTC, self._source(past)) is None
 
     def test_earnings_more_than_14_days_out_returns_none(self):
         far_future = NOW_UTC + timedelta(days=30)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": far_future}
-            assert _check_earnings("AAPL", NOW_UTC) is None
+        assert _check_earnings("AAPL", NOW_UTC, self._source(far_future)) is None
 
-    def test_earnings_as_epoch_int(self):
-        upcoming = NOW_UTC + timedelta(days=5)
-        epoch_ts = int(upcoming.timestamp())
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": epoch_ts}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
-            assert "EARNINGS" in result
-
-    def test_earnings_as_list_uses_first_element(self):
-        upcoming = NOW_UTC + timedelta(days=3)
-        also_upcoming = upcoming + timedelta(days=7)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": [upcoming, also_upcoming]}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
-            assert "3 day" in result
-
-    def test_yfinance_exception_returns_none(self):
-        with patch(
-            "yfinance.Ticker",
-            side_effect=Exception("Network error"),
-        ):
-            assert _check_earnings("AAPL", NOW_UTC) is None
+    def test_boundary_exactly_14_days_out_warns(self):
+        """The window is inclusive at both ends."""
+        edge = NOW_UTC + timedelta(days=_EARNINGS_WARN_DAYS)
+        assert _check_earnings("AAPL", NOW_UTC, self._source(edge)) is not None
 
     def test_naive_datetime_treated_as_utc(self):
         naive_upcoming = datetime(2026, 7, 3, 12, 0)  # naive, 5 days out
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": naive_upcoming}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
+        result = _check_earnings("AAPL", NOW_UTC, self._source(naive_upcoming))
+        assert result is not None
+
+    def test_data_source_failure_returns_none(self):
+        """A provider blowing up must not sink the briefing."""
+
+        class FailingSource(InMemoryDataSource):
+            def earnings_date(self, symbol):
+                raise RuntimeError("provider down")
+
+        assert _check_earnings("AAPL", NOW_UTC, FailingSource()) is None
 
 
 class TestFetchEarningsWarnings:
     """Tests for the concurrent batch fetch helper."""
 
     def test_empty_symbols_returns_empty_dict(self):
-        assert _fetch_earnings_warnings([], NOW_UTC) == {}
+        assert _fetch_earnings_warnings([], NOW_UTC, InMemoryDataSource()) == {}
 
     def test_returns_only_symbols_with_warnings(self):
-        def side_effect(symbol, now):
-            return "EARNINGS in 5 day(s) (2026-07-03)" if symbol == "NVDA" else None
+        source = InMemoryDataSource(earnings={"NVDA": NOW_UTC + timedelta(days=5)})
 
-        with patch(
-            "volume_price_analysis.agent.morning_agent._check_earnings",
-            side_effect=side_effect,
-        ):
-            result = _fetch_earnings_warnings(["AAPL", "NVDA", "MSFT"], NOW_UTC)
-            assert result == {"NVDA": "EARNINGS in 5 day(s) (2026-07-03)"}
+        result = _fetch_earnings_warnings(["AAPL", "NVDA", "MSFT"], NOW_UTC, source)
+
+        assert set(result) == {"NVDA"}
+        assert "EARNINGS in 5 day(s)" in result["NVDA"]
 
     def test_thread_pool_is_bounded(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -2382,17 +2442,11 @@ class TestFetchEarningsWarnings:
         from volume_price_analysis.agent.morning_agent import _EARNINGS_MAX_WORKERS
 
         symbols = [f"SYM{i}" for i in range(_EARNINGS_MAX_WORKERS * 5)]
-        with (
-            patch(
-                "volume_price_analysis.agent.morning_agent._check_earnings",
-                return_value=None,
-            ),
-            patch(
-                "volume_price_analysis.agent.morning_agent.ThreadPoolExecutor",
-                wraps=ThreadPoolExecutor,
-            ) as mock_pool,
-        ):
-            _fetch_earnings_warnings(symbols, NOW_UTC)
+        with patch(
+            "volume_price_analysis.agent.morning_agent.ThreadPoolExecutor",
+            wraps=ThreadPoolExecutor,
+        ) as mock_pool:
+            _fetch_earnings_warnings(symbols, NOW_UTC, InMemoryDataSource())
 
         mock_pool.assert_called_once_with(max_workers=_EARNINGS_MAX_WORKERS)
 
@@ -2466,3 +2520,85 @@ class TestLinkifyTickers:
 
     def test_empty_string(self):
         assert _linkify_tickers("", {"AAPL"}) == ""
+
+
+class TestBuildEarningsPreamble:
+    """build_earnings_preamble renders the AI prompt's earnings-risk block."""
+
+    def test_empty_warnings_render_nothing(self):
+        assert build_earnings_preamble({}) == ""
+
+    def test_warnings_are_sorted_and_labelled(self):
+        preamble = build_earnings_preamble(
+            {"MSFT": "EARNINGS in 3 day(s)", "AAPL": "EARNINGS in 7 day(s)"}
+        )
+        assert "EARNINGS EVENT RISK" in preamble
+        assert "within 14 days" in preamble
+        assert preamble.index("AAPL") < preamble.index("MSFT")
+        assert "  - AAPL: EARNINGS in 7 day(s)" in preamble
+        assert preamble.startswith("\n\n")
+        assert preamble.endswith("\n")
+
+
+class TestBuildStatsLine:
+    """build_stats_line renders the footer appended to delivered briefings."""
+
+    def test_includes_scan_count_when_known(self):
+        line = build_stats_line(
+            elapsed_s=12.34, symbols_scanned=500, total_candidates=7, deep_count=3
+        )
+        assert line.startswith("\n\n---\n")
+        assert "500 symbols scanned |" in line
+        assert "7 candidates found" in line
+        assert "3 deep analyses" in line
+        assert "Generated in 12.3s" in line
+
+    def test_omits_scan_count_when_missing(self):
+        line = build_stats_line(
+            elapsed_s=1.0, symbols_scanned=None, total_candidates=0, deep_count=0
+        )
+        assert "symbols scanned" not in line
+        assert "0 candidates found" in line
+
+    def test_omits_scan_count_when_zero(self):
+        line = build_stats_line(elapsed_s=1.0, symbols_scanned=0, total_candidates=1, deep_count=1)
+        assert "symbols scanned" not in line
+
+
+class TestConfigErrors:
+    """_config_errors keeps only the errors that can actually block a run mode."""
+
+    @staticmethod
+    def _config(**overrides):
+        base = {
+            "ai_provider": "gemini",
+            "ai_provider_api_key": "",
+            "email_from": "",
+            "email_password": "",
+            "email_to": "",
+        }
+        base.update(overrides)
+        return AgentConfig(**base)
+
+    def test_dry_run_no_ai_ignores_everything(self):
+        assert _config_errors(self._config(), dry_run=True, no_ai=True) == []
+
+    def test_dry_run_with_ai_keeps_only_ai_errors(self):
+        errors = _config_errors(self._config(), dry_run=True, no_ai=False)
+        assert errors == ["AI_PROVIDER_API_KEY is required"]
+
+    def test_no_ai_keeps_only_email_errors(self):
+        errors = _config_errors(self._config(), dry_run=False, no_ai=True)
+        assert all("API_KEY" not in e and "AI_PROVIDER" not in e for e in errors)
+        assert "EMAIL_FROM is required" in errors
+
+    def test_full_run_keeps_all_errors(self):
+        errors = _config_errors(self._config(), dry_run=False, no_ai=False)
+        assert "AI_PROVIDER_API_KEY is required" in errors
+        assert "EMAIL_FROM is required" in errors
+
+    def test_valid_config_has_no_errors(self):
+        config = self._config(
+            ai_provider_api_key="k", email_from="a@b.com", email_password="p", email_to="c@d.com"
+        )
+        assert _config_errors(config, dry_run=False, no_ai=False) == []

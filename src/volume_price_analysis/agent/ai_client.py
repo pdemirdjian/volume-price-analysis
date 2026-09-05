@@ -8,8 +8,33 @@ Supports multiple providers via the AI_PROVIDER environment variable:
 import json
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+# Maximum output tokens requested from any provider. Shared so both adapters
+# stay in lockstep; override per call with the ``max_tokens`` keyword.
+MAX_OUTPUT_TOKENS = 16384
+
+# A briefing provider turns (user_content, model, api_key) into briefing text.
+# The two production adapters below satisfy it; tests inject plain callables.
+BriefingProvider = Callable[[str, str, str], str]
+
+
+@dataclass(frozen=True)
+class BriefingResult:
+    """A generated briefing plus the grounding-check verdict for it.
+
+    ``ungrounded_tickers`` lists ticker-like tokens the model named that are
+    absent from the scan/analysis input (see :func:`find_ungrounded_tickers`).
+    It is advisory: the briefing is returned regardless, and callers decide
+    whether to act on it.
+    """
+
+    text: str
+    ungrounded_tickers: list[str] = field(default_factory=list)
+
 
 SYSTEM_PROMPT = """\
 You are a professional options trading analyst writing a morning briefing email.
@@ -298,44 +323,42 @@ def find_ungrounded_tickers(
     return sorted(ungrounded)
 
 
+def resolve_model(provider_name: str, model: str = "") -> str:
+    """Return ``model`` if set, else the default model for ``provider_name``."""
+    return model or DEFAULT_MODELS.get(provider_name, DEFAULT_MODELS["gemini"])
+
+
 def generate_briefing(
     scan_results: dict,
     deep_analyses: list[dict],
-    provider: str = "gemini",
-    model: str = "",
-    api_key: str = "",
+    provider: BriefingProvider,
+    model: str,
+    api_key: str,
     earnings_preamble: str = "",
-) -> str:
+) -> BriefingResult:
     """
     Generate a natural-language briefing from scan results and deep analyses.
 
     Args:
         scan_results: Output from run_scan().
         deep_analyses: List of outputs from run_options_analysis() for top candidates.
-        provider: AI provider ("gemini" or "anthropic").
-        model: Model name. If empty, uses the default for the provider.
-        api_key: API key for the selected provider.
+        provider: Callable taking (user_content, model, api_key) and returning briefing
+            text. Use ``PROVIDERS[name]`` to pick a production adapter.
+        model: Model name passed through to the provider.
+        api_key: API key passed through to the provider.
         earnings_preamble: Optional earnings-event-risk warning block prepended to user message.
 
     Returns:
-        Markdown-formatted briefing text.
+        A BriefingResult carrying the markdown briefing and any ungrounded tickers.
     """
-    if not model:
-        model = DEFAULT_MODELS.get(provider, DEFAULT_MODELS["gemini"])
+    user_content = build_briefing_prompt(scan_results, deep_analyses, earnings_preamble)
 
-    user_content = _build_user_message(scan_results, deep_analyses, earnings_preamble)
-
-    if provider == "anthropic":
-        briefing = _generate_anthropic(user_content, model, api_key)
-    elif provider == "gemini":
-        briefing = _generate_gemini(user_content, model, api_key)
-    else:
-        msg = f"Unknown AI provider: {provider!r}. Use 'gemini' or 'anthropic'."
-        raise ValueError(msg)
+    briefing = provider(user_content, model, api_key)
 
     # Anti-hallucination guardrail: every ticker named in the briefing should
     # exist in the scan/analysis data we passed to the model. Log (don't block)
-    # any that don't so grounding regressions are visible in the run logs.
+    # any that don't so grounding regressions are visible in the run logs, and
+    # surface them on the result so callers can act on them too.
     ungrounded = find_ungrounded_tickers(briefing, scan_results, deep_analyses)
     if ungrounded:
         logger.warning(
@@ -345,7 +368,7 @@ def generate_briefing(
             ", ".join(ungrounded),
         )
 
-    return briefing
+    return BriefingResult(text=briefing, ungrounded_tickers=ungrounded)
 
 
 # Curated scan-result keys passed to the model. The candidate setups are already
@@ -507,10 +530,17 @@ def _drop_superseded_scan_fields(projected_scan: dict, deep_analyses: list[dict]
     return result
 
 
-def _build_user_message(
+def build_briefing_prompt(
     scan_results: dict, deep_analyses: list[dict], earnings_preamble: str = ""
 ) -> str:
-    """Build the user message with structured data for the AI."""
+    """Build the user message sent to a briefing provider.
+
+    Runs the projection chain (curate scan results, drop scan fields superseded
+    by a deep analysis, project each deep analysis) and renders the result as
+    JSON blocks under markdown headings, optionally preceded by an
+    earnings-event-risk preamble. Pairs with :data:`SYSTEM_PROMPT`, which the
+    provider adapters supply as the system instruction.
+    """
     projected_scan = _project_scan_results(scan_results)
     projected_scan = _drop_superseded_scan_fields(projected_scan, deep_analyses)
     user_content = "Generate a morning options trading briefing from this data:\n\n"
@@ -530,7 +560,9 @@ def _build_user_message(
     return user_content
 
 
-def _generate_anthropic(user_content: str, model: str, api_key: str) -> str:
+def generate_anthropic(
+    user_content: str, model: str, api_key: str, *, max_tokens: int = MAX_OUTPUT_TOKENS
+) -> str:
     """Generate briefing using Anthropic Claude API."""
     import anthropic
 
@@ -540,7 +572,7 @@ def _generate_anthropic(user_content: str, model: str, api_key: str) -> str:
 
     message = client.messages.create(
         model=model,
-        max_tokens=16384,
+        max_tokens=max_tokens,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_content}],
     )
@@ -559,7 +591,9 @@ def _generate_anthropic(user_content: str, model: str, api_key: str) -> str:
     return briefing
 
 
-def _generate_gemini(user_content: str, model: str, api_key: str) -> str:
+def generate_gemini(
+    user_content: str, model: str, api_key: str, *, max_tokens: int = MAX_OUTPUT_TOKENS
+) -> str:
     """Generate briefing using Google Gemini API."""
     from google import genai
 
@@ -572,7 +606,7 @@ def _generate_gemini(user_content: str, model: str, api_key: str) -> str:
         contents=user_content,
         config={
             "system_instruction": SYSTEM_PROMPT,
-            "max_output_tokens": 16384,
+            "max_output_tokens": max_tokens,
         },
     )
 
@@ -587,3 +621,12 @@ def _generate_gemini(user_content: str, model: str, api_key: str) -> str:
         briefing += _TRUNCATION_WARNING
 
     return briefing
+
+
+# Production provider adapters keyed by AI_PROVIDER name. AgentConfig.validate()
+# is the single validator of provider names; a KeyError here means config was
+# bypassed.
+PROVIDERS: dict[str, BriefingProvider] = {
+    "anthropic": generate_anthropic,
+    "gemini": generate_gemini,
+}

@@ -204,10 +204,13 @@ async def _run_loop(
         try:
             logger.info("Running morning briefing...")
             result = await run_morning_briefing(config)
-            if result:
-                logger.info("Morning briefing completed successfully")
+            if result.degraded:
+                logger.warning(
+                    "Morning briefing completed in degraded mode: %s",
+                    result.reason or "unknown reason",
+                )
             else:
-                logger.warning("Morning briefing completed in degraded mode (AI fallback)")
+                logger.info("Morning briefing completed successfully")
         except Exception as e:
             logger.exception("Morning briefing failed")
             # Try to send error notification (mirrors morning_agent.py behavior)

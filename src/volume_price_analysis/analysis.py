@@ -5,12 +5,14 @@ used by both the MCP server and the morning agent without duplication.
 """
 
 import asyncio
+import functools
 import logging
+from typing import Any
 
 import pandas as pd
 from pytickersymbols import PyTickerSymbols
 
-from .data_fetcher import fetch_stock_data
+from .data_fetcher import DataSource, get_default_data_source
 from .indicators import (
     SQUEEZE_WINDOW,
     analyze_volume_trends,
@@ -136,12 +138,40 @@ _ETF_LIST: list[str] = [
     "UVXY",
 ]
 
-# Pre-built symbol universes for scanning
-UNIVERSES: dict[str, list[str]] = {
-    "sp500": _build_sp500_symbols(),
-    "etfs": _ETF_LIST,
-}
-UNIVERSES["full_market"] = sorted(set(UNIVERSES["sp500"] + UNIVERSES["etfs"]))
+
+@functools.lru_cache(maxsize=1)
+def _cached_universes() -> dict[str, list[str]]:
+    """Build the symbol universes once, on first use."""
+    sp500 = _build_sp500_symbols()
+    return {
+        "sp500": sp500,
+        "etfs": list(_ETF_LIST),
+        "full_market": sorted(set(sp500 + _ETF_LIST)),
+    }
+
+
+def get_universes() -> dict[str, list[str]]:
+    """Return the pre-built symbol universes for scanning.
+
+    Built lazily on first call (PyTickerSymbols parsing is not free) and cached
+    for the process lifetime, so importing this module stays cheap. Callers get a
+    shallow copy of the mapping; ``run_scan`` accepts a ``universes`` override so
+    tests never have to mutate module state.
+    """
+    return dict(_cached_universes())
+
+
+def __getattr__(name: str) -> Any:
+    """Provide the legacy module-level ``UNIVERSES`` name, built lazily.
+
+    The attribute is a read-only snapshot: each access returns a fresh copy, so
+    mutating ``analysis.UNIVERSES`` does not affect ``run_scan``. Callers that
+    want custom universes should pass ``universes=`` to ``run_scan`` instead.
+    """
+    if name == "UNIVERSES":
+        return get_universes()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Human-readable labels for composite-score recommendation values.
 _RECOMMENDATION_LABELS = {
@@ -242,6 +272,7 @@ def analyze_single_symbol(
     max_iv: float,
     direction: str,
     min_avg_volume: float = 0,
+    data_source: DataSource | None = None,
 ) -> dict | None:
     """
     Analyze a single symbol for scan_candidates.
@@ -249,8 +280,45 @@ def analyze_single_symbol(
     Returns a candidate dict if it passes filters, None if it was analyzed but
     did not qualify. Raises ``InsufficientDataError`` when there is too little
     history to analyze (a skip), and propagates other exceptions as errors.
+
+    Args:
+        data_source: Market-data seam; None uses the production adapter.
     """
-    sym_data = fetch_stock_data(symbol, None, None, period)
+    source = data_source if data_source is not None else get_default_data_source()
+    sym_data = source.fetch(symbol, period=period)
+    return score_symbol(
+        sym_data,
+        symbol,
+        holding_period,
+        min_score,
+        min_adx,
+        max_iv,
+        direction,
+        min_avg_volume,
+    )
+
+
+def score_symbol(
+    data: pd.DataFrame,
+    symbol: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+    min_avg_volume: float = 0,
+) -> dict | None:
+    """
+    Score already-fetched OHLCV data for a single symbol and apply scan filters.
+
+    Pure function: no I/O. Mirrors ``run_options_analysis``, which also takes a
+    DataFrame, so scan scoring can be tested with synthetic data and no mocking.
+
+    Returns a candidate dict if it passes filters, None if it was scored but did
+    not qualify. Raises ``InsufficientDataError`` when there is too little
+    history to analyze (a skip, not a failure).
+    """
+    sym_data = data
     if len(sym_data) < MIN_SCAN_HISTORY:
         raise InsufficientDataError(f"{symbol}: {len(sym_data)} bars < {MIN_SCAN_HISTORY} required")
 
@@ -322,6 +390,7 @@ async def _analyze_symbol_async(
     direction: str,
     semaphore: asyncio.Semaphore,
     min_avg_volume: float = 0,
+    data_source: DataSource | None = None,
 ) -> tuple[str, dict | None, str | None, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
@@ -341,6 +410,7 @@ async def _analyze_symbol_async(
                 max_iv,
                 direction,
                 min_avg_volume,
+                data_source,
             )
             return (symbol, result, None, False)
         except InsufficientDataError:
@@ -361,6 +431,9 @@ async def run_scan(
     max_results: int = 15,
     max_concurrent: int = MAX_CONCURRENT_SCANS,
     min_avg_daily_volume: float = 0,
+    universes: dict[str, list[str]] | None = None,
+    timeout_seconds: float = 600,
+    data_source: DataSource | None = None,
 ) -> dict:
     """
     Scan the market for options trading candidates.
@@ -377,10 +450,16 @@ async def run_scan(
         max_results: Maximum results per direction.
         max_concurrent: Maximum concurrent symbol analyses.
         min_avg_daily_volume: Minimum average daily share volume (0 = no filter).
+        universes: Universe name -> symbols mapping (defaults to ``get_universes()``).
+        timeout_seconds: Overall wall-clock budget for the scan.
+        data_source: Market-data seam; None uses the production adapter.
 
     Returns:
         Dictionary with scan results including candidates, summary, and errors.
     """
+    if universes is None:
+        universes = get_universes()
+
     direction = direction.lower()
     valid_directions = ("bullish", "bearish", "any")
     if direction not in valid_directions:
@@ -394,17 +473,24 @@ async def run_scan(
             raise ValueError(f"Too many symbols ({len(symbols)}). Maximum is 500.")
         scan_symbols = [s.upper() for s in symbols]
         universe_used = "custom"
-    elif universe.lower() in UNIVERSES:
-        scan_symbols = UNIVERSES[universe.lower()]
+    elif universe.lower() in universes:
+        scan_symbols = universes[universe.lower()]
         universe_used = universe.lower()
-    else:
+    elif "full_market" in universes:
         logger.warning(
             "Unknown universe %r; falling back to 'full_market'. Valid values: %s",
             universe,
-            ", ".join(sorted(UNIVERSES)),
+            ", ".join(sorted(universes)),
         )
-        scan_symbols = UNIVERSES["full_market"]
+        scan_symbols = universes["full_market"]
         universe_used = "full_market"
+    else:
+        # A caller-supplied `universes` override need not contain 'full_market',
+        # so there is nothing to fall back to -- fail loudly rather than KeyError.
+        raise ValueError(
+            f"Unknown universe '{universe}' and no 'full_market' fallback available. "
+            f"Valid values: {', '.join(sorted(universes))}"
+        )
 
     # Parallel scanning with concurrency limit
     logger.info(
@@ -425,15 +511,16 @@ async def run_scan(
             direction,
             semaphore,
             min_avg_daily_volume,
+            data_source,
         )
         for sym in scan_symbols
     ]
 
     try:
-        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=600)
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout_seconds)
     except TimeoutError:
-        logger.error("Scan timed out after 600 seconds")
-        raise ValueError("Scan timed out after 10 minutes") from None
+        logger.error("Scan timed out after %s seconds", timeout_seconds)
+        raise ValueError(f"Scan timed out after {timeout_seconds:g} seconds") from None
 
     # Process results. Each symbol falls into exactly one bucket:
     #   - error: a genuine fetch/calculation failure
@@ -514,6 +601,37 @@ async def run_scan(
     }
 
 
+def _adaptive_periods(holding_period: int) -> dict[str, int]:
+    """Indicator lookbacks scaled to the options holding period.
+
+    Breakpoints: <=14 days (fast), <=21 days (balanced), else standard.
+    """
+    if holding_period <= 14:
+        return {
+            "mfi_period": 7,
+            "volume_window": 10,
+            "rsi_period": 7,
+            "adx_period": 10,
+            "hv_window": 10,
+        }
+    if holding_period <= 21:
+        return {
+            "mfi_period": 10,
+            "volume_window": 14,
+            "rsi_period": 10,
+            "adx_period": 14,
+            "hv_window": 14,
+        }
+    # 22-30 days
+    return {
+        "mfi_period": 14,
+        "volume_window": 20,
+        "rsi_period": 14,
+        "adx_period": 14,
+        "hv_window": 20,
+    }
+
+
 def run_options_analysis(
     symbol: str,
     data: pd.DataFrame,
@@ -543,24 +661,12 @@ def run_options_analysis(
         days_to_expiration = holding_period
 
     # Adaptive indicator periods based on holding period
-    if holding_period <= 14:
-        mfi_period = 7
-        volume_window = 10
-        rsi_period = 7
-        adx_period = 10
-        hv_window = 10
-    elif holding_period <= 21:
-        mfi_period = 10
-        volume_window = 14
-        rsi_period = 10
-        adx_period = 14
-        hv_window = 14
-    else:  # 22-30 days
-        mfi_period = 14
-        volume_window = 20
-        rsi_period = 14
-        adx_period = 14
-        hv_window = 20
+    periods = _adaptive_periods(holding_period)
+    mfi_period = periods["mfi_period"]
+    volume_window = periods["volume_window"]
+    rsi_period = periods["rsi_period"]
+    adx_period = periods["adx_period"]
+    hv_window = periods["hv_window"]
 
     # Calculate all indicators with adaptive parameters
     obv = calculate_obv(data)

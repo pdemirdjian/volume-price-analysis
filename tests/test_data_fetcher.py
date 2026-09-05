@@ -1,5 +1,6 @@
 """Tests for stock data fetching functionality."""
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -8,7 +9,11 @@ import pytest
 from volume_price_analysis.data_fetcher import (
     DEFAULT_TIMEOUT,
     VALID_PERIODS,
+    DataSource,
+    InMemoryDataSource,
+    YFinanceDataSource,
     fetch_stock_data,
+    get_default_data_source,
     validate_symbol,
     validate_symbol_format,
 )
@@ -399,6 +404,126 @@ class TestInputValidation:
 
         result = fetch_stock_data("AAPL", start_date="2024-01-01", end_date="2024-01-31")
         assert len(result) == 1
+
+
+class TestDataSourceProtocol:
+    """Both adapters must satisfy the DataSource seam."""
+
+    def test_yfinance_adapter_is_a_data_source(self):
+        assert isinstance(YFinanceDataSource(), DataSource)
+
+    def test_in_memory_adapter_is_a_data_source(self):
+        assert isinstance(InMemoryDataSource(), DataSource)
+
+    def test_default_source_is_the_yfinance_adapter(self):
+        assert isinstance(get_default_data_source(), YFinanceDataSource)
+
+    def test_fetch_stock_data_delegates_to_the_default_source(self):
+        """The legacy function is a thin wrapper, not a second code path."""
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=2),
+                "Open": [1.0, 2.0],
+                "High": [1.0, 2.0],
+                "Low": [1.0, 2.0],
+                "Close": [1.0, 2.0],
+                "Volume": [10, 20],
+            }
+        )
+        stub = InMemoryDataSource(frames={"AAPL": frame})
+        with patch("volume_price_analysis.data_fetcher._DEFAULT_DATA_SOURCE", stub):
+            result = fetch_stock_data("AAPL", "2024-01-01", "2024-01-31", "3mo", 12)
+
+        assert list(result.columns) == ["Date", "Open", "High", "Low", "Close", "Volume"]
+        assert stub.fetch_calls == ["AAPL"]
+
+
+class TestInMemoryDataSource:
+    """The test adapter must mirror production's failure contract."""
+
+    def test_unknown_symbol_raises_value_error(self):
+        with pytest.raises(ValueError, match="No data found for symbol"):
+            InMemoryDataSource().fetch("AAPL")
+
+    def test_returns_a_copy_so_callers_cannot_mutate_the_fixture(self):
+        frame = pd.DataFrame({"Close": [1.0, 2.0]})
+        source = InMemoryDataSource(frames={"AAPL": frame})
+
+        returned = source.fetch("AAPL")
+        returned.loc[:, "Close"] = 0.0
+
+        assert list(frame["Close"]) == [1.0, 2.0]
+
+    def test_configured_error_is_raised(self):
+        source = InMemoryDataSource(errors={"AAPL": RuntimeError("boom")})
+        with pytest.raises(RuntimeError, match="boom"):
+            source.fetch("AAPL")
+
+    def test_earnings_date_defaults_to_none(self):
+        assert InMemoryDataSource().earnings_date("AAPL") is None
+
+    def test_earnings_date_returns_configured_value(self):
+        when = datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+        assert InMemoryDataSource(earnings={"AAPL": when}).earnings_date("AAPL") == when
+
+
+class TestYFinanceEarningsDate:
+    """Parsing Yahoo's raw .info payload lives behind the adapter."""
+
+    NOW = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+
+    def _source_with_info(self, info, mock_ticker):
+        mock_ticker.return_value.info = info
+        return YFinanceDataSource()
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_missing_earnings_date_returns_none(self, mock_ticker):
+        source = self._source_with_info({}, mock_ticker)
+        assert source.earnings_date("AAPL") is None
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_datetime_is_returned_unchanged(self, mock_ticker):
+        when = self.NOW + timedelta(days=7)
+        source = self._source_with_info({"earningsDate": when}, mock_ticker)
+        assert source.earnings_date("AAPL") == when
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_epoch_int_is_converted_to_utc(self, mock_ticker):
+        when = self.NOW + timedelta(days=5)
+        source = self._source_with_info({"earningsDate": int(when.timestamp())}, mock_ticker)
+        result = source.earnings_date("AAPL")
+        assert result is not None
+        assert result.tzinfo is not None
+        assert int(result.timestamp()) == int(when.timestamp())
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_list_uses_first_element(self, mock_ticker):
+        first = self.NOW + timedelta(days=3)
+        second = first + timedelta(days=7)
+        source = self._source_with_info({"earningsDate": [first, second]}, mock_ticker)
+        assert source.earnings_date("AAPL") == first
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_naive_datetime_is_stamped_utc(self, mock_ticker):
+        naive = datetime(2026, 7, 3, 12, 0)
+        source = self._source_with_info({"earningsDate": naive}, mock_ticker)
+        result = source.earnings_date("AAPL")
+        assert result == naive.replace(tzinfo=UTC)
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_falls_back_to_earnings_timestamp(self, mock_ticker):
+        when = self.NOW + timedelta(days=2)
+        source = self._source_with_info({"earningsTimestamp": int(when.timestamp())}, mock_ticker)
+        assert source.earnings_date("AAPL") is not None
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_unparseable_value_returns_none(self, mock_ticker):
+        source = self._source_with_info({"earningsDate": "next Tuesday"}, mock_ticker)
+        assert source.earnings_date("AAPL") is None
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker", side_effect=Exception("Network error"))
+    def test_provider_failure_returns_none(self, mock_ticker):
+        assert YFinanceDataSource().earnings_date("AAPL") is None
 
 
 class TestIntegration:
