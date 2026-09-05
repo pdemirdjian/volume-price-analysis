@@ -162,7 +162,12 @@ def get_universes() -> dict[str, list[str]]:
 
 
 def __getattr__(name: str) -> Any:
-    """Provide the legacy module-level ``UNIVERSES`` name, built lazily."""
+    """Provide the legacy module-level ``UNIVERSES`` name, built lazily.
+
+    The attribute is a read-only snapshot: each access returns a fresh copy, so
+    mutating ``analysis.UNIVERSES`` does not affect ``run_scan``. Callers that
+    want custom universes should pass ``universes=`` to ``run_scan`` instead.
+    """
     if name == "UNIVERSES":
         return get_universes()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -462,7 +467,7 @@ async def run_scan(
     elif universe.lower() in universes:
         scan_symbols = universes[universe.lower()]
         universe_used = universe.lower()
-    else:
+    elif "full_market" in universes:
         logger.warning(
             "Unknown universe %r; falling back to 'full_market'. Valid values: %s",
             universe,
@@ -470,6 +475,13 @@ async def run_scan(
         )
         scan_symbols = universes["full_market"]
         universe_used = "full_market"
+    else:
+        # A caller-supplied `universes` override need not contain 'full_market',
+        # so there is nothing to fall back to -- fail loudly rather than KeyError.
+        raise ValueError(
+            f"Unknown universe '{universe}' and no 'full_market' fallback available. "
+            f"Valid values: {', '.join(sorted(universes))}"
+        )
 
     # Parallel scanning with concurrency limit
     logger.info(

@@ -7,6 +7,7 @@ from volume_price_analysis.analysis import (
     InsufficientDataError,
     _adaptive_periods,
     _build_sp500_symbols,
+    _cached_universes,
     analyze_single_symbol,
     build_headline,
     get_universes,
@@ -837,7 +838,19 @@ class TestGetUniverses:
         assert set(universes) == {"sp500", "etfs", "full_market"}
 
     def test_cached_between_calls(self):
-        assert get_universes() == get_universes()
+        """The expensive build runs once: repeat calls are lru_cache hits.
+
+        Equality alone would pass even without caching, so assert on the cache
+        itself and on identity of the inner lists (get_universes copies only the
+        outer mapping).
+        """
+        get_universes()  # ensure the cache is warm
+        before = _cached_universes.cache_info().hits
+        first = get_universes()
+        second = get_universes()
+        assert _cached_universes.cache_info().hits == before + 2
+        assert first["sp500"] is second["sp500"]
+        assert first["full_market"] is second["full_market"]
 
     def test_caller_copy_does_not_mutate_cache(self):
         universes = get_universes()
@@ -884,6 +897,16 @@ class TestRunScanInjectedUniverses:
         )
         assert result["scan_parameters"]["universe"] == "full_market"
         assert result["scan_parameters"]["symbols_in_universe"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unknown_universe_without_full_market_raises(self, mocker):
+        """An override with no 'full_market' has nothing to fall back to."""
+        mocker.patch(
+            "volume_price_analysis.analysis.analyze_single_symbol",
+            return_value=None,
+        )
+        with pytest.raises(ValueError, match="no 'full_market' fallback"):
+            await run_scan(universe="nope", universes={"tiny": ["AAA"]})
 
     @pytest.mark.asyncio
     async def test_timeout_seconds_is_reported_in_error(self, mocker):
