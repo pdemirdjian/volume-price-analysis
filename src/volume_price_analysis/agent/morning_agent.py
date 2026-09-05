@@ -15,6 +15,7 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -39,9 +40,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class BriefingRunResult:
+    """Outcome of a single morning-briefing run.
+
+    ``degraded`` says the briefing was delivered but not at full quality;
+    ``reason`` says why, so callers can log something more useful than a bare
+    boolean.
+    """
+
+    degraded: bool
+    reason: str | None
+    regime: dict
+    symbols_analyzed: list[str]
+    email_sent: bool
+
+
 async def run_morning_briefing(
     config: AgentConfig, dry_run: bool = False, no_ai: bool = False
-) -> bool:
+) -> BriefingRunResult:
     """
     Execute the full morning briefing pipeline.
 
@@ -51,7 +68,7 @@ async def run_morning_briefing(
     4. Send email (unless --dry-run)
 
     Returns:
-        True if the briefing completed normally, False if a fallback was used (degraded).
+        A BriefingRunResult describing how the run went.
     """
     start_time = time.monotonic()
     now = datetime.now(UTC)
@@ -128,7 +145,7 @@ async def run_morning_briefing(
                 analysis["earnings_warning"] = earnings_warnings[sym]
 
     # Step 3: Generate briefing
-    degraded = False
+    degraded_reason: str | None = None
     if no_ai:
         logger.info("Step 3: Skipping AI (--no-ai mode)")
         briefing = None
@@ -138,15 +155,7 @@ async def run_morning_briefing(
             config.ai_provider,
             config.ai_model or "default model",
         )
-        earnings_preamble = ""
-        if earnings_warnings:
-            lines = [f"  - {sym}: {warn}" for sym, warn in sorted(earnings_warnings.items())]
-            earnings_preamble = (
-                "\n\n**EARNINGS EVENT RISK** — the following candidates have earnings "
-                f"within {_EARNINGS_WARN_DAYS} days. Factor event risk into sizing and strategy:\n"
-                + "\n".join(lines)
-                + "\n"
-            )
+        earnings_preamble = build_earnings_preamble(earnings_warnings)
         try:
             briefing = generate_briefing(
                 scan_results=scan_results,
@@ -159,7 +168,9 @@ async def run_morning_briefing(
         except Exception:
             logger.exception("AI briefing generation failed")
             briefing = _fallback_briefing(scan_results, deep_analyses)
-            degraded = True
+            degraded_reason = (
+                f"AI briefing generation failed via {config.ai_provider}; used fallback briefing"
+            )
             logger.warning("Using fallback briefing — AI provider was unavailable")
 
     # The regime verdict heads every rendered briefing (AI or fallback); the
@@ -169,17 +180,11 @@ async def run_morning_briefing(
 
     # Step 4: Deliver
     elapsed_total = time.monotonic() - start_time
-    symbols_scanned = scan_results.get("scan_parameters", {}).get("symbols_scanned")
-    scanned_part = f"{symbols_scanned} symbols scanned | " if symbols_scanned else ""
-    stats_line = (
-        f"\n\n---\n"
-        f"**14-day holding period** - Indicators, expected moves, and strategies "
-        f"are calibrated for approx. 14 DTE options. Shorter-duration plays (0-5 DTE) "
-        f"may need different setups.\n\n"
-        f"*Generated in {elapsed_total:.1f}s | "
-        f"{scanned_part}"
-        f"{total_candidates} candidates found | "
-        f"{len(deep_analyses)} deep analyses*"
+    stats_line = build_stats_line(
+        elapsed_s=elapsed_total,
+        symbols_scanned=scan_results.get("scan_parameters", {}).get("symbols_scanned"),
+        total_candidates=total_candidates,
+        deep_count=len(deep_analyses),
     )
 
     if dry_run:
@@ -220,7 +225,13 @@ async def run_morning_briefing(
         )
 
     logger.info("Morning briefing complete in %.1fs", elapsed_total)
-    return not degraded
+    return BriefingRunResult(
+        degraded=degraded_reason is not None,
+        reason=degraded_reason,
+        regime=regime,
+        symbols_analyzed=analysed_symbols,
+        email_sent=not dry_run,
+    )
 
 
 _EARNINGS_WARN_DAYS = 14
@@ -359,6 +370,58 @@ def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def build_earnings_preamble(warnings: dict[str, str]) -> str:
+    """Render the earnings-risk preamble prepended to the AI prompt.
+
+    Returns an empty string when no analysed symbol has upcoming earnings.
+    """
+    if not warnings:
+        return ""
+    lines = [f"  - {sym}: {warn}" for sym, warn in sorted(warnings.items())]
+    return (
+        "\n\n**EARNINGS EVENT RISK** — the following candidates have earnings "
+        f"within {_EARNINGS_WARN_DAYS} days. Factor event risk into sizing and strategy:\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
+def build_stats_line(
+    elapsed_s: float,
+    symbols_scanned: int | None,
+    total_candidates: int,
+    deep_count: int,
+) -> str:
+    """Render the footer appended to every delivered briefing."""
+    scanned_part = f"{symbols_scanned} symbols scanned | " if symbols_scanned else ""
+    return (
+        f"\n\n---\n"
+        f"**14-day holding period** - Indicators, expected moves, and strategies "
+        f"are calibrated for approx. 14 DTE options. Shorter-duration plays (0-5 DTE) "
+        f"may need different setups.\n\n"
+        f"*Generated in {elapsed_s:.1f}s | "
+        f"{scanned_part}"
+        f"{total_candidates} candidates found | "
+        f"{deep_count} deep analyses*"
+    )
+
+
+def _config_errors(config: AgentConfig, dry_run: bool, no_ai: bool) -> list[str]:
+    """Select the config errors that actually block this run mode.
+
+    A dry run never emails, and --no-ai never calls a provider, so each mode
+    ignores the half of ``AgentConfig.validate()`` it cannot trip over.
+    """
+    errors = config.validate()
+    if dry_run and no_ai:
+        return []
+    if dry_run:
+        return [e for e in errors if "API_KEY" in e or "AI_PROVIDER" in e]
+    if no_ai:
+        return [e for e in errors if "API_KEY" not in e and "AI_PROVIDER" not in e]
+    return errors
+
+
 def main():
     """Entry point for the morning briefing agent."""
     parser = argparse.ArgumentParser(description="Morning market briefing agent")
@@ -368,28 +431,15 @@ def main():
 
     config = AgentConfig.from_env()
 
-    # Validate config (skip email validation for dry-run)
-    if not args.dry_run:
-        errors = config.validate()
-        if args.no_ai:
-            # Only need email config, not API key
-            errors = [e for e in errors if "API_KEY" not in e and "AI_PROVIDER" not in e]
-        if errors:
-            for error in errors:
-                logger.error("Config error: %s", error)
-            sys.exit(1)
-    elif not args.no_ai:
-        # Dry-run with AI still needs valid provider + key
-        errors = config.validate()
-        ai_errors = [e for e in errors if "API_KEY" in e or "AI_PROVIDER" in e]
-        if ai_errors:
-            for error in ai_errors:
-                logger.error("Config error: %s", error)
-            sys.exit(1)
+    errors = _config_errors(config, dry_run=args.dry_run, no_ai=args.no_ai)
+    if errors:
+        for error in errors:
+            logger.error("Config error: %s", error)
+        sys.exit(1)
 
     try:
-        success = asyncio.run(run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai))
-        if not success:
+        result = asyncio.run(run_morning_briefing(config, dry_run=args.dry_run, no_ai=args.no_ai))
+        if result.degraded:
             sys.exit(2)
     except Exception as e:
         logger.exception("Morning briefing failed critically")

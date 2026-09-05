@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from volume_price_analysis.agent.morning_agent import BriefingRunResult
 from volume_price_analysis.agent.scheduler import (
     _next_run,
     _run_loop,
@@ -16,6 +17,18 @@ from volume_price_analysis.agent.scheduler import (
     main,
     run_scheduler,
 )
+
+
+def _ok_result(reason=None):
+    """A BriefingRunResult standing in for run_morning_briefing's return value."""
+    return BriefingRunResult(
+        degraded=reason is not None,
+        reason=reason,
+        regime={"regime": "bullish"},
+        symbols_analyzed=["AAPL"],
+        email_sent=True,
+    )
+
 
 ET = ZoneInfo("America/New_York")
 
@@ -346,7 +359,7 @@ class TestRunLoop:
         async def _fake_briefing(config, *args, **kwargs):
             used_configs.append(config)
             stop_event.set()
-            return True
+            return _ok_result()
 
         with (
             patch(
@@ -380,7 +393,7 @@ class TestRunLoop:
         async def _fake_briefing(config, *args, **kwargs):
             used_configs.append(config)
             stop_event.set()
-            return True
+            return _ok_result()
 
         with (
             caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.scheduler"),
@@ -410,7 +423,7 @@ class TestRunLoop:
 
         async def _fake_briefing(*args, **kwargs):
             stop_event.set()
-            return True
+            return _ok_result()
 
         with (
             caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
@@ -439,7 +452,7 @@ class TestRunLoop:
 
         async def _fake_briefing(*args, **kwargs):
             stop_event.set()
-            return True
+            return _ok_result()
 
         with (
             caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
@@ -467,7 +480,7 @@ class TestRunLoop:
 
         async def _fake_briefing(*args, **kwargs):
             stop_event.set()
-            return True
+            return _ok_result()
 
         with (
             caplog.at_level(logging.INFO, logger="volume_price_analysis.agent.scheduler"),
@@ -487,6 +500,35 @@ class TestRunLoop:
             await _run_loop(time(8, 30), ET, stop_event)
 
         assert "completed successfully" in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_degraded_briefing_logs_reason(self, caplog):
+        """_run_loop surfaces the degradation reason, not just a bare warning."""
+        stop_event = asyncio.Event()
+
+        async def _fake_briefing(*args, **kwargs):
+            stop_event.set()
+            return _ok_result(reason="AI provider exploded")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.scheduler"),
+            patch("volume_price_analysis.agent.scheduler.AgentConfig.from_env") as mock_config,
+            patch(
+                "volume_price_analysis.agent.scheduler.run_morning_briefing",
+                side_effect=_fake_briefing,
+            ),
+            patch(
+                "volume_price_analysis.agent.scheduler._next_run",
+                return_value=datetime.now(ET) - timedelta(seconds=1),
+            ),
+        ):
+            config = MagicMock()
+            config.validate.return_value = []
+            mock_config.return_value = config
+            await _run_loop(time(8, 30), ET, stop_event)
+
+        assert "degraded mode" in caplog.text.lower()
+        assert "AI provider exploded" in caplog.text
 
     @pytest.mark.asyncio
     async def test_error_email_failure_is_logged(self, caplog):
