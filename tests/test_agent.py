@@ -1,6 +1,7 @@
 """Tests for the morning briefing agent."""
 
 import json
+import logging
 import smtplib
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -19,9 +20,14 @@ from volume_price_analysis.agent.ai_client import (
 )
 from volume_price_analysis.agent.config import MAX_DEEP_ANALYSIS_CAP, AgentConfig
 from volume_price_analysis.agent.email_sender import (
+    SmtpCreds,
     _linkify_tickers,
     _parse_recipients,
+    build_briefing_message,
+    build_error_message,
+    build_raw_data_message,
     send_briefing_email,
+    send_email,
     send_error_email,
     send_raw_data_email,
 )
@@ -883,198 +889,78 @@ class TestAgentConfigRepr:
         assert "5" in result
 
 
-class TestErrorEmailSanitization:
-    """Test error email sanitization logic."""
+class FakeSmtp:
+    """Minimal stand-in for ``smtplib.SMTP`` usable as a ``send_email`` factory."""
 
-    def test_error_email_truncates_long_message(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+    def __init__(self, sendmail_error: Exception | None = None):
+        self.sendmail_error = sendmail_error
+        self.host: str | None = None
+        self.port: int | None = None
+        self.starttls_calls = 0
+        self.login_args: tuple[str, str] | None = None
+        self.sent: list[tuple[str, list[str], str]] = []
 
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+    def __call__(self, host, port):
+        self.host = host
+        self.port = port
+        return self
 
-        long_message = "A" * 1000
+    def __enter__(self):
+        return self
 
-        send_error_email(
-            error_message=long_message,
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
+    def __exit__(self, *exc_info):
+        return False
+
+    def starttls(self, context=None):
+        self.starttls_calls += 1
+
+    def login(self, user, password):
+        self.login_args = (user, password)
+
+    def sendmail(self, from_addr, to_addrs, message):
+        if self.sendmail_error is not None:
+            raise self.sendmail_error
+        self.sent.append((from_addr, to_addrs, message))
+
+
+def _creds(to_addr: str = "recipient@test.com", **kwargs) -> SmtpCreds:
+    """Build test credentials from a comma-separated recipient string."""
+    return SmtpCreds.from_parts(
+        from_addr="sender@test.com", password="test-pass", to_addr=to_addr, **kwargs
+    )
+
+
+def _body_text(message) -> str:
+    """Concatenate the decoded payloads of every part of a built message."""
+    return "\n".join(
+        part.get_payload(decode=True).decode() for part in message.walk() if not part.is_multipart()
+    )
+
+
+class TestSmtpCreds:
+    """Test SmtpCreds construction."""
+
+    def test_from_config(self):
+        config = AgentConfig(
+            email_from="sender@test.com",
+            email_password="test-pass",
+            email_to="alice@test.com, bob@test.com",
+            email_smtp_host="custom.smtp.com",
+            email_smtp_port=465,
         )
 
-        sent_args = mock_smtp_instance.sendmail.call_args
-        msg_str = sent_args[0][2]
-        # The 1000-char message should be truncated to 500 chars
-        assert "A" * 501 not in msg_str
-        assert "A" * 500 in msg_str
+        creds = SmtpCreds.from_config(config)
 
-    def test_error_email_redacts_urls(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+        assert creds.from_addr == "sender@test.com"
+        assert creds.password == "test-pass"
+        assert creds.to_addrs == ["alice@test.com", "bob@test.com"]
+        assert creds.smtp_host == "custom.smtp.com"
+        assert creds.smtp_port == 465
 
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        send_error_email(
-            error_message="Failed at https://api.example.com/key=abc123 during request",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        msg_str = sent_args[0][2]
-        assert "https://api.example.com/key=abc123" not in msg_str
-        assert "[URL redacted]" in msg_str
-
-    def test_error_email_redacts_secrets(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        send_error_email(
-            error_message="Error: key=sk-12345 and password: mysecret were exposed",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        msg_str = sent_args[0][2]
-        assert "sk-12345" not in msg_str
-        assert "mysecret" not in msg_str
-        assert "[REDACTED]" in msg_str
-
-    def test_error_email_empty_message(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        send_error_email(
-            error_message="",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        msg_str = sent_args[0][2]
-        assert "Unknown error" in msg_str
-
-
-class TestHtmlSanitization:
-    """Test that nh3 HTML sanitization strips dangerous tags in briefing emails."""
-
-    def test_briefing_email_sanitizes_html(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        # Markdown that contains an XSS script tag
-        malicious_markdown = "# Hello\n\n<script>alert('xss')</script>\n\nSafe content here."
-
-        send_briefing_email(
-            subject="Test Briefing",
-            body_markdown=malicious_markdown,
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        msg_str = sent_args[0][2]
-
-        # Extract the HTML part from the multipart message (after "Content-Type: text/html")
-        html_boundary = msg_str.split("Content-Type: text/html")
-        assert len(html_boundary) > 1, "Expected an HTML part in the multipart email"
-        html_part = html_boundary[1]
-
-        # The script tag must be stripped from the HTML part by nh3
-        assert "<script>" not in html_part
-        assert "alert('xss')" not in html_part
-        # But safe content should remain in the HTML part
-        assert "Safe content here" in html_part
-
-
-class TestSendBriefingEmail:
-    """Test email sending (mocked SMTP)."""
-
-    def test_sends_multipart_email(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        send_briefing_email(
-            subject="Test Briefing",
-            body_markdown="# Hello\n\nThis is a **test**.",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        mock_smtp_instance.starttls.assert_called_once()
-        mock_smtp_instance.login.assert_called_once_with("sender@test.com", "test-pass")
-        mock_smtp_instance.sendmail.assert_called_once()
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        assert sent_args[0][0] == "sender@test.com"
-        assert sent_args[0][1] == ["recipient@test.com"]
-        msg_str = sent_args[0][2]
-        assert "text/plain" in msg_str
-        assert "text/html" in msg_str
-
-    def test_sends_to_multiple_recipients(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        send_briefing_email(
-            subject="Test Briefing",
-            body_markdown="# Hello",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="alice@test.com,bob@test.com,carol@test.com",
-        )
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        # sendmail must receive a LIST of addresses, not a comma-separated string
-        assert sent_args[0][1] == ["alice@test.com", "bob@test.com", "carol@test.com"]
-
-    def test_filters_empty_recipients_from_trailing_comma(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        send_briefing_email(
-            subject="Test Briefing",
-            body_markdown="# Hello",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="alice@test.com,bob@test.com,",
-        )
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        assert sent_args[0][1] == ["alice@test.com", "bob@test.com"]
+    def test_defaults_smtp_host_and_port(self):
+        creds = SmtpCreds.from_parts("a@b.com", "pw", "c@d.com")
+        assert creds.smtp_host == "smtp.gmail.com"
+        assert creds.smtp_port == 587
 
     def test_raises_on_empty_recipients(self):
         with pytest.raises(ValueError, match="No valid recipient"):
@@ -1083,13 +969,255 @@ class TestSendBriefingEmail:
         with pytest.raises(ValueError, match="No valid recipient"):
             _parse_recipients(",,")
 
-    def test_send_error_email_multiple_recipients(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(ValueError, match="No valid recipient"):
+            SmtpCreds.from_parts("a@b.com", "pw", ",,")
 
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
+    def test_filters_empty_recipients_from_trailing_comma(self):
+        creds = _creds("alice@test.com,bob@test.com,")
+        assert creds.to_addrs == ["alice@test.com", "bob@test.com"]
+
+
+class TestBuildErrorMessage:
+    """Test error message construction and sanitization."""
+
+    def test_truncates_long_message(self):
+        msg = build_error_message(_creds(), "A" * 1000)
+
+        body = _body_text(msg)
+        # The 1000-char message should be truncated to 500 chars
+        assert "A" * 501 not in body
+        assert "A" * 500 in body
+
+    def test_redacts_urls(self):
+        msg = build_error_message(
+            _creds(), "Failed at https://api.example.com/key=abc123 during request"
+        )
+
+        body = _body_text(msg)
+        assert "https://api.example.com/key=abc123" not in body
+        assert "[URL redacted]" in body
+
+    def test_redacts_secrets(self):
+        msg = build_error_message(
+            _creds(), "Error: key=sk-12345 and password: mysecret were exposed"
+        )
+
+        body = _body_text(msg)
+        assert "sk-12345" not in body
+        assert "mysecret" not in body
+        assert "[REDACTED]" in body
+
+    def test_empty_message(self):
+        assert "Unknown error" in _body_text(build_error_message(_creds(), ""))
+
+    def test_subject_and_recipients(self):
+        msg = build_error_message(_creds("alice@test.com,bob@test.com"), "Something failed")
+
+        assert msg["Subject"] == "Morning Briefing - ERROR"
+        assert msg["From"] == "sender@test.com"
+        assert msg["To"] == "alice@test.com, bob@test.com"
+
+
+class TestBuildBriefingMessage:
+    """Test briefing message construction."""
+
+    def test_multipart_with_plain_and_html(self):
+        msg = build_briefing_message(_creds(), "Test Briefing", "# Hello\n\nThis is a **test**.")
+
+        assert msg["Subject"] == "Test Briefing"
+        assert msg["From"] == "sender@test.com"
+        assert msg["To"] == "recipient@test.com"
+        content_types = [p.get_content_type() for p in msg.walk() if not p.is_multipart()]
+        assert content_types == ["text/plain", "text/html"]
+
+    def test_recipient_header_lists_every_address(self):
+        msg = build_briefing_message(
+            _creds("alice@test.com,bob@test.com,carol@test.com"), "Test", "# Hello"
+        )
+        assert msg["To"] == "alice@test.com, bob@test.com, carol@test.com"
+
+    def test_sanitizes_html(self):
+        # Markdown that contains an XSS script tag
+        malicious_markdown = "# Hello\n\n<script>alert('xss')</script>\n\nSafe content here."
+
+        msg = build_briefing_message(_creds(), "Test Briefing", malicious_markdown)
+
+        html_part = next(p for p in msg.walk() if p.get_content_type() == "text/html")
+        html = html_part.get_payload(decode=True).decode()
+        # The script tag must be stripped from the HTML part by nh3
+        assert "<script>" not in html
+        assert "alert('xss')" not in html
+        # But safe content should remain in the HTML part
+        assert "Safe content here" in html
+
+    def test_newlines_stripped_from_subject(self):
+        msg = build_briefing_message(
+            _creds(),
+            "Test\r\nBcc: evil@attacker.com\r\nSubject: Injected",
+            "# Hello",
+        )
+
+        assert msg["Subject"] == "TestBcc: evil@attacker.comSubject: Injected"
+        # Newlines removed: no injected Bcc header on its own line
+        assert "\nBcc:" not in msg.as_string()
+        assert "\r\nBcc:" not in msg.as_string()
+
+    def test_linkifies_ticker_symbols(self):
+        msg = build_briefing_message(
+            _creds(), "Test", "AAPL looks strong, RSI is high.", ticker_symbols=["AAPL"]
+        )
+
+        html_part = next(p for p in msg.walk() if p.get_content_type() == "text/html")
+        html = html_part.get_payload(decode=True).decode()
+        assert 'href="https://www.tradingview.com/chart/?symbol=AAPL"' in html
+        assert ">AAPL</a>" in html
+        # Non-candidate acronyms stay unlinked
+        assert ">RSI</a>" not in html
+
+    def test_no_linkification_without_symbols(self):
+        msg = build_briefing_message(_creds(), "Test", "AAPL looks strong.")
+
+        html_part = next(p for p in msg.walk() if p.get_content_type() == "text/html")
+        assert "tradingview.com" not in html_part.get_payload(decode=True).decode()
+
+
+class TestBuildRawDataMessage:
+    """Test raw data message construction."""
+
+    def test_includes_scan_results_as_json(self):
+        msg = build_raw_data_message(
+            _creds(),
+            scan_results={"summary": {"total_candidates": 5, "bullish": 3}},
+            deep_analyses=[],
+            date_str="2026-03-02",
+        )
+
+        assert msg["Subject"] == "Morning Market Data (Raw) - 2026-03-02"
+        body = _body_text(msg)
+        assert "Morning Market Scan Results" in body
+        assert "total_candidates" in body
+        assert "5" in body
+
+    def test_includes_deep_analyses(self):
+        msg = build_raw_data_message(
+            _creds(),
+            scan_results={"summary": {"total_candidates": 1}},
+            deep_analyses=[{"symbol": "AAPL", "score": 4.5}, {"symbol": "MSFT", "score": 3.8}],
+            date_str="2026-03-02",
+        )
+
+        body = _body_text(msg)
+        assert "Deep Analysis Results" in body
+        assert "## AAPL" in body
+        assert "## MSFT" in body
+        assert "4.5" in body
+        assert "3.8" in body
+
+    def test_no_deep_analysis_section_when_empty(self):
+        msg = build_raw_data_message(_creds(), scan_results={"summary": {}}, deep_analyses=[])
+        assert "Deep Analysis Results" not in _body_text(msg)
+
+    def test_handles_unknown_symbol(self):
+        msg = build_raw_data_message(
+            _creds(), scan_results={}, deep_analyses=[{"score": 2.0}]
+        )  # no "symbol" key
+        assert "## Unknown" in _body_text(msg)
+
+    def test_preamble_precedes_scan_results(self):
+        msg = build_raw_data_message(
+            _creds(),
+            scan_results={},
+            deep_analyses=[],
+            preamble="**Market Regime: BEARISH**",
+        )
+
+        body = _body_text(msg)
+        assert body.startswith("**Market Regime: BEARISH**")
+        assert body.index("**Market Regime: BEARISH**") < body.index("Morning Market Scan Results")
+
+
+class TestSendEmail:
+    """Test the single SMTP transport function via an injected factory."""
+
+    def test_sends_via_factory(self):
+        creds = _creds("alice@test.com,bob@test.com")
+        message = build_briefing_message(creds, "Test Briefing", "# Hello")
+        smtp = FakeSmtp()
+
+        send_email(message, creds, smtp_factory=smtp)
+
+        assert smtp.host == "smtp.gmail.com"
+        assert smtp.port == 587
+        assert smtp.starttls_calls == 1
+        assert smtp.login_args == ("sender@test.com", "test-pass")
+        from_addr, to_addrs, sent = smtp.sent[0]
+        assert from_addr == "sender@test.com"
+        # sendmail must receive a LIST of addresses, not a comma-separated string
+        assert to_addrs == ["alice@test.com", "bob@test.com"]
+        assert "text/plain" in sent
+        assert "text/html" in sent
+
+    def test_uses_custom_host_and_port(self):
+        creds = _creds(smtp_host="custom.smtp.com", smtp_port=465)
+        smtp = FakeSmtp()
+
+        send_email(build_error_message(creds, "boom"), creds, smtp_factory=smtp)
+
+        assert (smtp.host, smtp.port) == ("custom.smtp.com", 465)
+
+    def test_raises_and_logs_smtp_exception(self, caplog):
+        creds = _creds()
+        smtp = FakeSmtp(sendmail_error=smtplib.SMTPException("Connection refused"))
+
+        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
+            with pytest.raises(smtplib.SMTPException, match="Connection refused"):
+                send_email(build_error_message(creds, "boom"), creds, smtp_factory=smtp)
+
+        assert "Failed to send email" in caplog.text
+
+
+class TestEmailWrappers:
+    """Test the thin build-and-send wrappers kept for existing call sites."""
+
+    def test_send_briefing_email_builds_and_sends(self, mocker):
+        mock_send = mocker.patch("volume_price_analysis.agent.email_sender.send_email")
+
+        send_briefing_email(
+            subject="Test Briefing",
+            body_markdown="# Hello",
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="alice@test.com,bob@test.com",
+            smtp_host="custom.smtp.com",
+            smtp_port=465,
+        )
+
+        message, creds = mock_send.call_args.args
+        assert message["Subject"] == "Test Briefing"
+        assert creds.to_addrs == ["alice@test.com", "bob@test.com"]
+        assert (creds.smtp_host, creds.smtp_port) == ("custom.smtp.com", 465)
+
+    def test_send_raw_data_email_builds_and_sends(self, mocker):
+        mock_send = mocker.patch("volume_price_analysis.agent.email_sender.send_email")
+
+        send_raw_data_email(
+            scan_results={"summary": {"total_candidates": 5}},
+            deep_analyses=[],
+            from_addr="sender@test.com",
+            password="test-pass",
+            to_addr="recipient@test.com",
+            smtp_host="custom.smtp.com",
+            smtp_port=465,
+            date_str="2026-03-02",
+        )
+
+        message, creds = mock_send.call_args.args
+        assert message["Subject"] == "Morning Market Data (Raw) - 2026-03-02"
+        assert "total_candidates" in _body_text(message)
+        assert (creds.smtp_host, creds.smtp_port) == ("custom.smtp.com", 465)
+
+    def test_send_error_email_builds_and_sends(self, mocker):
+        mock_send = mocker.patch("volume_price_analysis.agent.email_sender.send_email")
 
         send_error_email(
             error_message="Something failed",
@@ -1098,8 +1226,38 @@ class TestSendBriefingEmail:
             to_addr="alice@test.com,bob@test.com",
         )
 
-        sent_args = mock_smtp_instance.sendmail.call_args
-        assert sent_args[0][1] == ["alice@test.com", "bob@test.com"]
+        message, creds = mock_send.call_args.args
+        assert message["Subject"] == "Morning Briefing - ERROR"
+        assert "Something failed" in _body_text(message)
+        assert creds.to_addrs == ["alice@test.com", "bob@test.com"]
+
+    def test_send_error_email_swallows_send_failure(self, mocker, caplog):
+        mocker.patch(
+            "volume_price_analysis.agent.email_sender.send_email",
+            side_effect=smtplib.SMTPException("Network error"),
+        )
+
+        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
+            # Should NOT raise - the exception is caught and logged
+            send_error_email(
+                error_message="Something broke",
+                from_addr="sender@test.com",
+                password="test-pass",
+                to_addr="recipient@test.com",
+            )
+
+        assert "Failed to send error notification email" in caplog.text
+
+    def test_send_error_email_swallows_bad_recipients(self, caplog):
+        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
+            send_error_email(
+                error_message="Something broke",
+                from_addr="sender@test.com",
+                password="test-pass",
+                to_addr="",
+            )
+
+        assert "Failed to send error notification email" in caplog.text
 
 
 class TestRunMorningBriefing:
@@ -1315,203 +1473,6 @@ class TestRunMorningBriefing:
         body = mock_send.call_args.kwargs["body_markdown"]
         assert body.startswith("**Market Regime: BEARISH**")
         assert "flagged" in body
-
-
-class TestSendBriefingEmailSmtpFailure:
-    """Test that send_briefing_email re-raises SMTPException (lines 90-92)."""
-
-    def test_raises_smtp_exception(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp_instance.sendmail.side_effect = smtplib.SMTPException("Connection refused")
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        with pytest.raises(smtplib.SMTPException, match="Connection refused"):
-            send_briefing_email(
-                subject="Test Briefing",
-                body_markdown="# Hello",
-                from_addr="sender@test.com",
-                password="test-pass",
-                to_addr="recipient@test.com",
-            )
-
-    def test_logs_smtp_exception(self, mocker, caplog):
-        import logging
-
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp_instance.sendmail.side_effect = smtplib.SMTPException("Auth failed")
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
-            with pytest.raises(smtplib.SMTPException):
-                send_briefing_email(
-                    subject="Test",
-                    body_markdown="content",
-                    from_addr="a@b.com",
-                    password="pass",
-                    to_addr="c@d.com",
-                )
-
-        assert "Failed to send briefing email" in caplog.text
-
-
-class TestSendErrorEmailFailure:
-    """Test that send_error_email swallows exceptions (lines 132-133)."""
-
-    def test_swallows_smtp_exception(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp_instance.sendmail.side_effect = smtplib.SMTPException("Network error")
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        # Should NOT raise - the exception is caught and logged
-        send_error_email(
-            error_message="Something broke",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-    def test_logs_failure_to_send_error_email(self, mocker, caplog):
-        import logging
-
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp_instance.sendmail.side_effect = Exception("Unexpected failure")
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
-            send_error_email(
-                error_message="Something broke",
-                from_addr="sender@test.com",
-                password="test-pass",
-                to_addr="recipient@test.com",
-            )
-
-        assert "Failed to send error notification email" in caplog.text
-
-
-class TestSendRawDataEmail:
-    """Test send_raw_data_email function (lines 147-159)."""
-
-    def test_sends_scan_results_as_json(self, mocker):
-        mock_send = mocker.patch(
-            "volume_price_analysis.agent.email_sender.send_briefing_email",
-        )
-
-        scan_results = {"summary": {"total_candidates": 5, "bullish": 3}}
-
-        send_raw_data_email(
-            scan_results=scan_results,
-            deep_analyses=[],
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-            date_str="2026-03-02",
-        )
-
-        mock_send.assert_called_once()
-        call_kwargs = mock_send.call_args.kwargs
-        assert call_kwargs["subject"] == "Morning Market Data (Raw) - 2026-03-02"
-        assert call_kwargs["from_addr"] == "sender@test.com"
-        assert call_kwargs["password"] == "test-pass"
-        assert call_kwargs["to_addr"] == "recipient@test.com"
-        body = call_kwargs["body_markdown"]
-        assert "Morning Market Scan Results" in body
-        assert "total_candidates" in body
-        assert "5" in body
-
-    def test_includes_deep_analyses(self, mocker):
-        mock_send = mocker.patch(
-            "volume_price_analysis.agent.email_sender.send_briefing_email",
-        )
-
-        scan_results = {"summary": {"total_candidates": 1}}
-        deep_analyses = [
-            {"symbol": "AAPL", "score": 4.5},
-            {"symbol": "MSFT", "score": 3.8},
-        ]
-
-        send_raw_data_email(
-            scan_results=scan_results,
-            deep_analyses=deep_analyses,
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-            date_str="2026-03-02",
-        )
-
-        mock_send.assert_called_once()
-        body = mock_send.call_args.kwargs["body_markdown"]
-        assert "Deep Analysis Results" in body
-        assert "## AAPL" in body
-        assert "## MSFT" in body
-        assert "4.5" in body
-        assert "3.8" in body
-
-    def test_no_deep_analysis_section_when_empty(self, mocker):
-        mock_send = mocker.patch(
-            "volume_price_analysis.agent.email_sender.send_briefing_email",
-        )
-
-        send_raw_data_email(
-            scan_results={"summary": {}},
-            deep_analyses=[],
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        body = mock_send.call_args.kwargs["body_markdown"]
-        assert "Deep Analysis Results" not in body
-
-    def test_handles_unknown_symbol(self, mocker):
-        mock_send = mocker.patch(
-            "volume_price_analysis.agent.email_sender.send_briefing_email",
-        )
-
-        send_raw_data_email(
-            scan_results={},
-            deep_analyses=[{"score": 2.0}],  # no "symbol" key
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        body = mock_send.call_args.kwargs["body_markdown"]
-        assert "## Unknown" in body
-
-    def test_passes_smtp_params(self, mocker):
-        mock_send = mocker.patch(
-            "volume_price_analysis.agent.email_sender.send_briefing_email",
-        )
-
-        send_raw_data_email(
-            scan_results={},
-            deep_analyses=[],
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-            smtp_host="custom.smtp.com",
-            smtp_port=465,
-        )
-
-        call_kwargs = mock_send.call_args.kwargs
-        assert call_kwargs["smtp_host"] == "custom.smtp.com"
-        assert call_kwargs["smtp_port"] == 465
 
 
 # ---------------------------------------------------------------------------
@@ -2012,32 +1973,6 @@ class TestMain:
         assert exc_info.value.code == 2
         # Close the real coroutine main() handed to the mocked asyncio.run.
         mock_run.call_args[0][0].close()
-
-
-class TestSubjectHeaderInjection:
-    """Test that SMTP header injection via subject is prevented."""
-
-    def test_newlines_stripped_from_subject(self, mocker):
-        mock_smtp = MagicMock()
-        mock_smtp_instance = MagicMock()
-        mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_smtp_instance)
-        mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
-
-        mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", mock_smtp)
-
-        send_briefing_email(
-            subject="Test\r\nBcc: evil@attacker.com\r\nSubject: Injected",
-            body_markdown="# Hello",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-        )
-
-        sent_args = mock_smtp_instance.sendmail.call_args
-        msg_str = sent_args[0][2]
-        # Newlines removed: no injected Bcc header on its own line
-        assert "\nBcc:" not in msg_str
-        assert "\r\nBcc:" not in msg_str
 
 
 class TestEmailFormatValidation:
