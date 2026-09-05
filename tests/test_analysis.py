@@ -5,11 +5,15 @@ import pytest
 from volume_price_analysis.analysis import (
     UNIVERSES,
     InsufficientDataError,
+    _adaptive_periods,
     _build_sp500_symbols,
+    _cached_universes,
     analyze_single_symbol,
     build_headline,
+    get_universes,
     run_options_analysis,
     run_scan,
+    score_symbol,
 )
 from volume_price_analysis.indicators import (
     SQUEEZE_WINDOW,
@@ -686,3 +690,229 @@ class TestBuildHeadline:
         assert headline["recommendation"] == "bullish"
         assert isinstance(headline["rationale"], str)
         assert headline["rationale"]
+
+
+def _synthetic_ohlcv(periods: int = 60, trend: float = 1.0):
+    """Build a deterministic OHLCV frame for pure scoring tests (no mocking)."""
+    import pandas as pd
+
+    closes = [100.0 + trend * i + (i % 3) * 0.5 for i in range(periods)]
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2024-01-01", periods=periods, freq="D"),
+            "Open": [c - 0.5 for c in closes],
+            "High": [c + 1.5 for c in closes],
+            "Low": [c - 1.5 for c in closes],
+            "Close": closes,
+            "Volume": [1_000_000 + (i % 7) * 25_000 for i in range(periods)],
+        }
+    )
+
+
+class TestScoreSymbol:
+    """score_symbol is pure: synthetic DataFrames in, candidate dict out."""
+
+    def test_raises_insufficient_data(self):
+        data = _synthetic_ohlcv(periods=10)
+        with pytest.raises(InsufficientDataError, match="10 bars"):
+            score_symbol(data, "TEST", 14, 2.0, 20, 100, "any")
+
+    def test_returns_candidate_shape(self):
+        candidate = score_symbol(_synthetic_ohlcv(), "TEST", 14, 0, 0, 100, "any")
+        assert candidate is not None
+        assert candidate["symbol"] == "TEST"
+        for key in (
+            "composite_score",
+            "recommendation",
+            "signal_quality",
+            "adx",
+            "adx_period",
+            "rsi",
+            "iv_percentile",
+            "hv_percentile",
+            "expected_move_pct",
+            "rvol",
+            "latest_price",
+            "key_levels",
+        ):
+            assert key in candidate
+        assert candidate["hv_percentile"] == candidate["iv_percentile"]
+
+    def test_min_score_filter_rejects(self):
+        data = _synthetic_ohlcv()
+        assert score_symbol(data, "TEST", 14, 0, 0, 100, "any") is not None
+        # No symbol can score above 10, so an 11 floor must reject everything.
+        assert score_symbol(data, "TEST", 14, 11, 0, 100, "any") is None
+
+    def test_min_adx_filter_rejects(self):
+        data = _synthetic_ohlcv()
+        assert score_symbol(data, "TEST", 14, 0, 1000, 100, "any") is None
+
+    def test_max_iv_filter_rejects(self):
+        data = _synthetic_ohlcv()
+        assert score_symbol(data, "TEST", 14, 0, 0, -1, "any") is None
+
+    def test_min_volume_filter_rejects(self):
+        data = _synthetic_ohlcv()
+        assert score_symbol(data, "TEST", 14, 0, 0, 100, "any", min_avg_volume=10**12) is None
+        assert score_symbol(data, "TEST", 14, 0, 0, 100, "any", min_avg_volume=1) is not None
+
+    def test_direction_filter(self):
+        """An uptrending series scores positive, so 'bearish' must reject it."""
+        data = _synthetic_ohlcv(trend=1.0)
+        bull = score_symbol(data, "TEST", 14, 0, 0, 100, "bullish")
+        assert bull is not None
+        assert bull["composite_score"] > 0
+        assert score_symbol(data, "TEST", 14, 0, 0, 100, "bearish") is None
+
+    def test_adx_period_follows_holding_period(self):
+        data = _synthetic_ohlcv()
+        fast = score_symbol(data, "TEST", 14, 0, 0, 100, "any")
+        slow = score_symbol(data, "TEST", 30, 0, 0, 100, "any")
+        assert fast is not None and slow is not None
+        assert fast["adx_period"] == 10
+        assert slow["adx_period"] == 14
+
+    def test_matches_analyze_single_symbol(self, mocker, sample_stock_data):
+        """analyze_single_symbol is fetch + score_symbol; results must agree."""
+        mocker.patch(
+            "volume_price_analysis.analysis.fetch_stock_data",
+            return_value=sample_stock_data,
+        )
+        via_fetch = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        direct = score_symbol(sample_stock_data, "TEST", 14, 0, 0, 100, "any")
+        assert via_fetch == direct
+
+
+class TestAdaptivePeriods:
+    """Boundary behavior of the <=14 / <=21 / else breakpoints."""
+
+    FAST = {
+        "mfi_period": 7,
+        "volume_window": 10,
+        "rsi_period": 7,
+        "adx_period": 10,
+        "hv_window": 10,
+    }
+    BALANCED = {
+        "mfi_period": 10,
+        "volume_window": 14,
+        "rsi_period": 10,
+        "adx_period": 14,
+        "hv_window": 14,
+    }
+    STANDARD = {
+        "mfi_period": 14,
+        "volume_window": 20,
+        "rsi_period": 14,
+        "adx_period": 14,
+        "hv_window": 20,
+    }
+
+    def test_boundary_14(self):
+        assert _adaptive_periods(14) == self.FAST
+
+    def test_boundary_15(self):
+        assert _adaptive_periods(15) == self.BALANCED
+
+    def test_boundary_21(self):
+        assert _adaptive_periods(21) == self.BALANCED
+
+    def test_boundary_22(self):
+        assert _adaptive_periods(22) == self.STANDARD
+
+    def test_matches_reported_parameters(self):
+        """run_options_analysis must report exactly these periods."""
+        for hp in (14, 15, 21, 22):
+            result = run_options_analysis("TEST", _synthetic_ohlcv(), holding_period=hp)
+            expected = _adaptive_periods(hp)
+            for key, value in expected.items():
+                assert result["parameters"][key] == value
+
+
+class TestGetUniverses:
+    """Lazy universe construction."""
+
+    def test_returns_expected_keys(self):
+        universes = get_universes()
+        assert set(universes) == {"sp500", "etfs", "full_market"}
+
+    def test_cached_between_calls(self):
+        """The expensive build runs once: repeat calls are lru_cache hits.
+
+        Equality alone would pass even without caching, so assert on the cache
+        itself and on identity of the inner lists (get_universes copies only the
+        outer mapping).
+        """
+        get_universes()  # ensure the cache is warm
+        before = _cached_universes.cache_info().hits
+        first = get_universes()
+        second = get_universes()
+        assert _cached_universes.cache_info().hits == before + 2
+        assert first["sp500"] is second["sp500"]
+        assert first["full_market"] is second["full_market"]
+
+    def test_caller_copy_does_not_mutate_cache(self):
+        universes = get_universes()
+        universes["injected"] = ["ZZZ"]
+        assert "injected" not in get_universes()
+
+    def test_legacy_module_attribute_still_works(self):
+        from volume_price_analysis import analysis
+
+        assert analysis.UNIVERSES["full_market"] == get_universes()["full_market"]
+
+    def test_unknown_module_attribute_raises(self):
+        from volume_price_analysis import analysis
+
+        with pytest.raises(AttributeError):
+            _ = analysis.NOT_A_REAL_ATTRIBUTE
+
+
+class TestRunScanInjectedUniverses:
+    """run_scan accepts an injected universe mapping and a timeout budget."""
+
+    @pytest.mark.asyncio
+    async def test_universes_override_is_used(self, mocker):
+        mocker.patch(
+            "volume_price_analysis.analysis.analyze_single_symbol",
+            return_value=None,
+        )
+        result = await run_scan(
+            universe="tiny",
+            universes={"tiny": ["AAA", "BBB"], "full_market": ["ZZZ"]},
+        )
+        assert result["scan_parameters"]["universe"] == "tiny"
+        assert result["scan_parameters"]["symbols_in_universe"] == 2
+
+    @pytest.mark.asyncio
+    async def test_unknown_universe_falls_back_within_override(self, mocker):
+        mocker.patch(
+            "volume_price_analysis.analysis.analyze_single_symbol",
+            return_value=None,
+        )
+        result = await run_scan(
+            universe="nope",
+            universes={"tiny": ["AAA"], "full_market": ["ZZZ"]},
+        )
+        assert result["scan_parameters"]["universe"] == "full_market"
+        assert result["scan_parameters"]["symbols_in_universe"] == 1
+
+    @pytest.mark.asyncio
+    async def test_unknown_universe_without_full_market_raises(self, mocker):
+        """An override with no 'full_market' has nothing to fall back to."""
+        mocker.patch(
+            "volume_price_analysis.analysis.analyze_single_symbol",
+            return_value=None,
+        )
+        with pytest.raises(ValueError, match="no 'full_market' fallback"):
+            await run_scan(universe="nope", universes={"tiny": ["AAA"]})
+
+    @pytest.mark.asyncio
+    async def test_timeout_seconds_is_reported_in_error(self, mocker):
+        mocker.patch(
+            "volume_price_analysis.analysis.asyncio.wait_for",
+            side_effect=TimeoutError,
+        )
+        with pytest.raises(ValueError, match="timed out after 5 seconds"):
+            await run_scan(symbols=["AAPL"], timeout_seconds=5)
