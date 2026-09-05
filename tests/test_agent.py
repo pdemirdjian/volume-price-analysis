@@ -32,14 +32,29 @@ from volume_price_analysis.agent.email_sender import (
     send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
+    BriefingRunResult,
     _candidate_symbols,
     _check_earnings,
+    _config_errors,
     _fallback_briefing,
     _fetch_earnings_warnings,
     _get_top_symbols,
+    build_earnings_preamble,
+    build_stats_line,
     main,
     run_morning_briefing,
 )
+
+
+def _briefing_result(degraded=False, reason=None):
+    """Stand-in for run_morning_briefing's return value in main() tests."""
+    return BriefingRunResult(
+        degraded=degraded,
+        reason=reason,
+        regime={"regime": "bullish"},
+        symbols_analyzed=["AAPL"],
+        email_sent=True,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -1755,6 +1770,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1797,6 +1813,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1839,6 +1856,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1863,6 +1881,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
+            return_value=_briefing_result(),
         )
 
         main()
@@ -1951,7 +1970,7 @@ class TestMain:
         assert exc_info.value.code == 1
 
     def test_main_degraded_briefing_exits_code_2(self, mocker):
-        """When run_morning_briefing returns False (degraded), main() exits with code 2."""
+        """A degraded BriefingRunResult makes main() exit with code 2."""
         mocker.patch("sys.argv", ["morning-briefing"])
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
@@ -1965,7 +1984,7 @@ class TestMain:
         )
         mock_run = mocker.patch(
             "volume_price_analysis.agent.morning_agent.asyncio.run",
-            return_value=False,
+            return_value=_briefing_result(degraded=True, reason="AI provider unavailable"),
         )
 
         with pytest.raises(SystemExit) as exc_info:
@@ -2024,10 +2043,10 @@ class TestEmailFormatValidation:
 
 
 class TestRunMorningBriefingDegradedReturn:
-    """Test that run_morning_briefing returns False when fallback is used."""
+    """run_morning_briefing reports degradation (and why) via BriefingRunResult."""
 
     @pytest.mark.asyncio
-    async def test_ai_failure_returns_false(self, mocker):
+    async def test_ai_failure_returns_degraded_result(self, mocker):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -2067,10 +2086,15 @@ class TestRunMorningBriefingDegradedReturn:
         )
 
         result = await run_morning_briefing(config, dry_run=False, no_ai=False)
-        assert result is False
+        assert result.degraded is True
+        assert result.reason is not None
+        assert "gemini" in result.reason
+        assert result.symbols_analyzed == ["AAPL"]
+        assert result.email_sent is True
+        assert "regime" in result.regime
 
     @pytest.mark.asyncio
-    async def test_successful_briefing_returns_true(self, mocker):
+    async def test_successful_briefing_returns_healthy_result(self, mocker):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -2101,7 +2125,10 @@ class TestRunMorningBriefingDegradedReturn:
         )
 
         result = await run_morning_briefing(config, dry_run=False, no_ai=False)
-        assert result is True
+        assert result.degraded is False
+        assert result.reason is None
+        assert result.symbols_analyzed == []
+        assert result.email_sent is True
 
 
 class TestSystemPromptVolatilityLabeling:
@@ -2466,3 +2493,85 @@ class TestLinkifyTickers:
 
     def test_empty_string(self):
         assert _linkify_tickers("", {"AAPL"}) == ""
+
+
+class TestBuildEarningsPreamble:
+    """build_earnings_preamble renders the AI prompt's earnings-risk block."""
+
+    def test_empty_warnings_render_nothing(self):
+        assert build_earnings_preamble({}) == ""
+
+    def test_warnings_are_sorted_and_labelled(self):
+        preamble = build_earnings_preamble(
+            {"MSFT": "EARNINGS in 3 day(s)", "AAPL": "EARNINGS in 7 day(s)"}
+        )
+        assert "EARNINGS EVENT RISK" in preamble
+        assert "within 14 days" in preamble
+        assert preamble.index("AAPL") < preamble.index("MSFT")
+        assert "  - AAPL: EARNINGS in 7 day(s)" in preamble
+        assert preamble.startswith("\n\n")
+        assert preamble.endswith("\n")
+
+
+class TestBuildStatsLine:
+    """build_stats_line renders the footer appended to delivered briefings."""
+
+    def test_includes_scan_count_when_known(self):
+        line = build_stats_line(
+            elapsed_s=12.34, symbols_scanned=500, total_candidates=7, deep_count=3
+        )
+        assert line.startswith("\n\n---\n")
+        assert "500 symbols scanned |" in line
+        assert "7 candidates found" in line
+        assert "3 deep analyses" in line
+        assert "Generated in 12.3s" in line
+
+    def test_omits_scan_count_when_missing(self):
+        line = build_stats_line(
+            elapsed_s=1.0, symbols_scanned=None, total_candidates=0, deep_count=0
+        )
+        assert "symbols scanned" not in line
+        assert "0 candidates found" in line
+
+    def test_omits_scan_count_when_zero(self):
+        line = build_stats_line(elapsed_s=1.0, symbols_scanned=0, total_candidates=1, deep_count=1)
+        assert "symbols scanned" not in line
+
+
+class TestConfigErrors:
+    """_config_errors keeps only the errors that can actually block a run mode."""
+
+    @staticmethod
+    def _config(**overrides):
+        base = {
+            "ai_provider": "gemini",
+            "ai_provider_api_key": "",
+            "email_from": "",
+            "email_password": "",
+            "email_to": "",
+        }
+        base.update(overrides)
+        return AgentConfig(**base)
+
+    def test_dry_run_no_ai_ignores_everything(self):
+        assert _config_errors(self._config(), dry_run=True, no_ai=True) == []
+
+    def test_dry_run_with_ai_keeps_only_ai_errors(self):
+        errors = _config_errors(self._config(), dry_run=True, no_ai=False)
+        assert errors == ["AI_PROVIDER_API_KEY is required"]
+
+    def test_no_ai_keeps_only_email_errors(self):
+        errors = _config_errors(self._config(), dry_run=False, no_ai=True)
+        assert all("API_KEY" not in e and "AI_PROVIDER" not in e for e in errors)
+        assert "EMAIL_FROM is required" in errors
+
+    def test_full_run_keeps_all_errors(self):
+        errors = _config_errors(self._config(), dry_run=False, no_ai=False)
+        assert "AI_PROVIDER_API_KEY is required" in errors
+        assert "EMAIL_FROM is required" in errors
+
+    def test_valid_config_has_no_errors(self):
+        config = self._config(
+            ai_provider_api_key="k", email_from="a@b.com", email_password="p", email_to="c@d.com"
+        )
+        assert _config_errors(config, dry_run=False, no_ai=False) == []
