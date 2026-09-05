@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.9.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.2...v2.9.3) (2026-09-05)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=1.3.0 ([#448](https://github.com/pdemirdjian/volume-price-analysis/issues/448)) ([9031fec](https://github.com/pdemirdjian/volume-price-analysis/commit/9031fecda295fade9169a107d70447194106c0f7))
+* **deps:** update dependency google-genai to ~=2.21.0 ([#445](https://github.com/pdemirdjian/volume-price-analysis/issues/445)) ([6be7b28](https://github.com/pdemirdjian/volume-price-analysis/commit/6be7b28b4ed4434e472dd4d572683a283a8c0035))
+
 ## [2.9.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.1...v2.9.2) (2026-09-03)
 
 
