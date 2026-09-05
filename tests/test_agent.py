@@ -6,6 +6,7 @@ import smtplib
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from volume_price_analysis.agent.ai_client import (
@@ -38,6 +39,7 @@ from volume_price_analysis.agent.email_sender import (
     send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
+    _EARNINGS_WARN_DAYS,
     BriefingRunResult,
     _candidate_symbols,
     _check_earnings,
@@ -49,6 +51,20 @@ from volume_price_analysis.agent.morning_agent import (
     build_stats_line,
     main,
     run_morning_briefing,
+)
+from volume_price_analysis.data_fetcher import InMemoryDataSource
+
+# A minimal frame standing in for fetched history. These tests mock
+# run_options_analysis, so only the fetch succeeding matters.
+_STUB_FRAME = pd.DataFrame(
+    {
+        "Date": pd.date_range("2026-01-01", periods=5),
+        "Open": [100.0] * 5,
+        "High": [101.0] * 5,
+        "Low": [99.0] * 5,
+        "Close": [100.0] * 5,
+        "Volume": [1_000_000] * 5,
+    }
 )
 
 
@@ -63,20 +79,17 @@ def _briefing_result(degraded=False, reason=None):
     )
 
 
-@pytest.fixture(autouse=True)
-def _no_network_earnings_fetch(mocker):
-    """Keep unit tests off the network.
+def agent_source(symbols=(), *, spy=None, earnings=None, errors=None):
+    """Build the DataSource run_morning_briefing should use.
 
-    run_morning_briefing's earnings guard otherwise makes real yfinance calls
-    (and leaks its sqlite cache connection) for every analysed symbol. Tests
-    that exercise the earnings helpers directly are unaffected: they call the
-    functions through this module's imports, not the patched morning_agent
-    attribute.
+    Injecting one keeps the whole pipeline — scan, SPY regime fetch, per-symbol
+    fetches, earnings guard — off the network without patching import paths.
+    Symbols absent from ``frames`` fail exactly as they would in production.
     """
-    mocker.patch(
-        "volume_price_analysis.agent.morning_agent._fetch_earnings_warnings",
-        return_value={},
-    )
+    frames = dict.fromkeys(symbols, _STUB_FRAME)
+    if spy is not None:
+        frames["SPY"] = spy
+    return InMemoryDataSource(frames=frames, earnings=earnings, errors=errors)
 
 
 class TestAgentConfig:
@@ -1309,10 +1322,6 @@ class TestRunMorningBriefing:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={
                 "symbol": "AAPL",
@@ -1333,7 +1342,7 @@ class TestRunMorningBriefing:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source(["AAPL"]))
 
         captured = capsys.readouterr()
         assert "Test Briefing" in captured.out
@@ -1371,12 +1380,7 @@ class TestRunMorningBriefing:
             email_to="c@d.com",
         )
 
-        mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-
-        await run_morning_briefing(config, dry_run=False, no_ai=True)
+        await run_morning_briefing(config, dry_run=False, no_ai=True, data_source=agent_source())
 
         mock_generate.assert_not_called()
         mock_raw_email.assert_called_once()
@@ -1403,10 +1407,6 @@ class TestRunMorningBriefing:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={"symbol": "AAPL", "composite_signal": {"score": 3.0}},
         )
@@ -1427,7 +1427,9 @@ class TestRunMorningBriefing:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=False, no_ai=False)
+        await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source(["AAPL"])
+        )
 
         mock_send.assert_called_once()
         body = mock_send.call_args.kwargs.get("body_markdown", "")
@@ -1465,10 +1467,6 @@ class TestRunMorningBriefing:
             }
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            side_effect=lambda symbol, *a, **kw: spy_data if symbol == "SPY" else MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={"symbol": "AAPL", "composite_signal": {"score": 4.5}},
         )
@@ -1489,7 +1487,9 @@ class TestRunMorningBriefing:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=False, no_ai=False)
+        await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source(["AAPL"], spy=spy_data)
+        )
 
         annotated_scan = mock_generate.call_args.kwargs["scan_results"]
         assert annotated_scan["market_regime"]["regime"] == "bearish"
@@ -1501,6 +1501,53 @@ class TestRunMorningBriefing:
         body = mock_send.call_args.kwargs["body_markdown"]
         assert body.startswith("**Market Regime: BEARISH**")
         assert "flagged" in body
+
+    @pytest.mark.asyncio
+    async def test_earnings_from_source_warn_the_analysis_and_the_prompt(self, mocker):
+        """The earnings guard runs end-to-end against the injected data source."""
+        bull = {"symbol": "AAPL", "composite_score": 4.5}
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_scan",
+            return_value={
+                "summary": {
+                    "total_candidates": 1,
+                    "bullish_setups": 1,
+                    "bearish_setups": 0,
+                    "high_conviction": 0,
+                    "errors": 0,
+                },
+                "high_conviction_setups": [],
+                "top_bullish": [bull],
+                "top_bearish": [],
+            },
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_options_analysis",
+            return_value={"symbol": "AAPL", "composite_signal": {"score": 4.5}},
+        )
+        mock_generate = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value="# Briefing",
+        )
+        mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
+
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="test-key",
+            email_from="a@b.com",
+            email_password="pass",
+            email_to="c@d.com",
+            max_deep_analysis=1,
+        )
+        source = agent_source(["AAPL"], earnings={"AAPL": datetime.now(UTC) + timedelta(days=5)})
+
+        await run_morning_briefing(config, dry_run=False, no_ai=False, data_source=source)
+
+        preamble = mock_generate.call_args.kwargs["earnings_preamble"]
+        assert "EARNINGS EVENT RISK" in preamble
+        assert "AAPL" in preamble
+        deep = mock_generate.call_args.kwargs["deep_analyses"]
+        assert "EARNINGS" in deep[0]["earnings_warning"]
 
 
 # ---------------------------------------------------------------------------
@@ -1530,10 +1577,6 @@ class TestDeepAnalysisException:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            side_effect=Exception("Yahoo Finance unavailable"),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             return_value=BriefingResult(text="# Briefing with no deep data"),
         )
@@ -1548,7 +1591,13 @@ class TestDeepAnalysisException:
         )
 
         # Should NOT raise despite fetch_stock_data failing for every symbol
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(
+            config,
+            dry_run=True,
+            data_source=agent_source(
+                errors=dict.fromkeys(["AAPL", "TSLA"], ValueError("Yahoo Finance unavailable"))
+            ),
+        )
 
         captured = capsys.readouterr()
         assert "Briefing with no deep data" in captured.out
@@ -1572,10 +1621,6 @@ class TestDeepAnalysisException:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             side_effect=ValueError("Bad data"),
         )
@@ -1593,7 +1638,7 @@ class TestDeepAnalysisException:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source(["AAPL"]))
 
         captured = capsys.readouterr()
         assert "Briefing after analysis error" in captured.out
@@ -1622,10 +1667,6 @@ class TestDryRunNoAi:
             return_value=scan_data,
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={
                 "symbol": "MSFT",
@@ -1642,7 +1683,9 @@ class TestDryRunNoAi:
             max_deep_analysis=1,
         )
 
-        await run_morning_briefing(config, dry_run=True, no_ai=True)
+        await run_morning_briefing(
+            config, dry_run=True, no_ai=True, data_source=agent_source(["MSFT"])
+        )
 
         captured = capsys.readouterr()
         # scan_results JSON printed (line 127)
@@ -1679,7 +1722,7 @@ class TestDryRunNoAi:
             email_to="c@d.com",
         )
 
-        await run_morning_briefing(config, dry_run=True, no_ai=True)
+        await run_morning_briefing(config, dry_run=True, no_ai=True, data_source=agent_source())
 
         captured = capsys.readouterr()
         assert "total_candidates" in captured.out
@@ -1720,7 +1763,7 @@ class TestStatsLineFooter:
             email_to="c@d.com",
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source())
 
         captured = capsys.readouterr()
         assert "540 symbols scanned" in captured.out
@@ -1758,7 +1801,7 @@ class TestStatsLineFooter:
             email_to="c@d.com",
         )
 
-        await run_morning_briefing(config, dry_run=True)
+        await run_morning_briefing(config, dry_run=True, data_source=agent_source())
 
         captured = capsys.readouterr()
         assert "symbols scanned" not in captured.out
@@ -2076,10 +2119,6 @@ class TestRunMorningBriefingDegradedReturn:
             },
         )
         mocker.patch(
-            "volume_price_analysis.agent.morning_agent.fetch_stock_data",
-            return_value=MagicMock(),
-        )
-        mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_options_analysis",
             return_value={"symbol": "AAPL", "composite_signal": {"score": 3.0}},
         )
@@ -2098,7 +2137,9 @@ class TestRunMorningBriefingDegradedReturn:
             max_deep_analysis=1,
         )
 
-        result = await run_morning_briefing(config, dry_run=False, no_ai=False)
+        result = await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source(["AAPL"])
+        )
         assert result.degraded is True
         assert result.reason is not None
         assert "gemini" in result.reason
@@ -2137,7 +2178,9 @@ class TestRunMorningBriefingDegradedReturn:
             email_to="c@d.com",
         )
 
-        result = await run_morning_briefing(config, dry_run=False, no_ai=False)
+        result = await run_morning_briefing(
+            config, dry_run=False, no_ai=False, data_source=agent_source()
+        )
         assert result.degraded is False
         assert result.reason is None
         assert result.symbols_analyzed == []
@@ -2329,86 +2372,69 @@ NOW_UTC = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
 
 class TestCheckEarnings:
-    """Unit tests for _check_earnings edge cases."""
+    """Unit tests for _check_earnings against an injected data source.
 
-    def _mock_info(self, earnings_date):
-        return {"earningsDate": earnings_date}
+    Parsing Yahoo's raw ``.info`` payload now lives in YFinanceDataSource, so
+    those cases are covered in test_data_fetcher.py; here the source hands back
+    a datetime (or nothing) and only the 14-day window logic is under test.
+    """
+
+    def _source(self, earnings_dt):
+        return InMemoryDataSource(earnings={"AAPL": earnings_dt})
 
     def test_no_earnings_date_returns_none(self):
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {}
-            assert _check_earnings("AAPL", NOW_UTC) is None
+        assert _check_earnings("AAPL", NOW_UTC, self._source(None)) is None
+
+    def test_unknown_symbol_returns_none(self):
+        assert _check_earnings("AAPL", NOW_UTC, InMemoryDataSource()) is None
 
     def test_earnings_within_14_days_returns_warning(self):
-        upcoming = NOW_UTC + timedelta(days=7)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": upcoming}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
-            assert "EARNINGS" in result
-            assert "7 day" in result
+        result = _check_earnings("AAPL", NOW_UTC, self._source(NOW_UTC + timedelta(days=7)))
+        assert result is not None
+        assert "EARNINGS" in result
+        assert "7 day" in result
 
     def test_earnings_in_past_returns_none(self):
         past = NOW_UTC - timedelta(days=3)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": past}
-            assert _check_earnings("AAPL", NOW_UTC) is None
+        assert _check_earnings("AAPL", NOW_UTC, self._source(past)) is None
 
     def test_earnings_more_than_14_days_out_returns_none(self):
         far_future = NOW_UTC + timedelta(days=30)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": far_future}
-            assert _check_earnings("AAPL", NOW_UTC) is None
+        assert _check_earnings("AAPL", NOW_UTC, self._source(far_future)) is None
 
-    def test_earnings_as_epoch_int(self):
-        upcoming = NOW_UTC + timedelta(days=5)
-        epoch_ts = int(upcoming.timestamp())
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": epoch_ts}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
-            assert "EARNINGS" in result
-
-    def test_earnings_as_list_uses_first_element(self):
-        upcoming = NOW_UTC + timedelta(days=3)
-        also_upcoming = upcoming + timedelta(days=7)
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": [upcoming, also_upcoming]}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
-            assert "3 day" in result
-
-    def test_yfinance_exception_returns_none(self):
-        with patch(
-            "yfinance.Ticker",
-            side_effect=Exception("Network error"),
-        ):
-            assert _check_earnings("AAPL", NOW_UTC) is None
+    def test_boundary_exactly_14_days_out_warns(self):
+        """The window is inclusive at both ends."""
+        edge = NOW_UTC + timedelta(days=_EARNINGS_WARN_DAYS)
+        assert _check_earnings("AAPL", NOW_UTC, self._source(edge)) is not None
 
     def test_naive_datetime_treated_as_utc(self):
         naive_upcoming = datetime(2026, 7, 3, 12, 0)  # naive, 5 days out
-        with patch("yfinance.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"earningsDate": naive_upcoming}
-            result = _check_earnings("AAPL", NOW_UTC)
-            assert result is not None
+        result = _check_earnings("AAPL", NOW_UTC, self._source(naive_upcoming))
+        assert result is not None
+
+    def test_data_source_failure_returns_none(self):
+        """A provider blowing up must not sink the briefing."""
+
+        class FailingSource(InMemoryDataSource):
+            def earnings_date(self, symbol):
+                raise RuntimeError("provider down")
+
+        assert _check_earnings("AAPL", NOW_UTC, FailingSource()) is None
 
 
 class TestFetchEarningsWarnings:
     """Tests for the concurrent batch fetch helper."""
 
     def test_empty_symbols_returns_empty_dict(self):
-        assert _fetch_earnings_warnings([], NOW_UTC) == {}
+        assert _fetch_earnings_warnings([], NOW_UTC, InMemoryDataSource()) == {}
 
     def test_returns_only_symbols_with_warnings(self):
-        def side_effect(symbol, now):
-            return "EARNINGS in 5 day(s) (2026-07-03)" if symbol == "NVDA" else None
+        source = InMemoryDataSource(earnings={"NVDA": NOW_UTC + timedelta(days=5)})
 
-        with patch(
-            "volume_price_analysis.agent.morning_agent._check_earnings",
-            side_effect=side_effect,
-        ):
-            result = _fetch_earnings_warnings(["AAPL", "NVDA", "MSFT"], NOW_UTC)
-            assert result == {"NVDA": "EARNINGS in 5 day(s) (2026-07-03)"}
+        result = _fetch_earnings_warnings(["AAPL", "NVDA", "MSFT"], NOW_UTC, source)
+
+        assert set(result) == {"NVDA"}
+        assert "EARNINGS in 5 day(s)" in result["NVDA"]
 
     def test_thread_pool_is_bounded(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -2416,17 +2442,11 @@ class TestFetchEarningsWarnings:
         from volume_price_analysis.agent.morning_agent import _EARNINGS_MAX_WORKERS
 
         symbols = [f"SYM{i}" for i in range(_EARNINGS_MAX_WORKERS * 5)]
-        with (
-            patch(
-                "volume_price_analysis.agent.morning_agent._check_earnings",
-                return_value=None,
-            ),
-            patch(
-                "volume_price_analysis.agent.morning_agent.ThreadPoolExecutor",
-                wraps=ThreadPoolExecutor,
-            ) as mock_pool,
-        ):
-            _fetch_earnings_warnings(symbols, NOW_UTC)
+        with patch(
+            "volume_price_analysis.agent.morning_agent.ThreadPoolExecutor",
+            wraps=ThreadPoolExecutor,
+        ) as mock_pool:
+            _fetch_earnings_warnings(symbols, NOW_UTC, InMemoryDataSource())
 
         mock_pool.assert_called_once_with(max_workers=_EARNINGS_MAX_WORKERS)
 

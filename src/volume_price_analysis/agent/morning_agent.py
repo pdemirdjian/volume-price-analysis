@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..analysis import run_options_analysis, run_scan
-from ..data_fetcher import fetch_stock_data
+from ..data_fetcher import DataSource, get_default_data_source
 from .ai_client import PROVIDERS, generate_briefing, resolve_model
 from .config import AgentConfig
 from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
@@ -57,7 +57,10 @@ class BriefingRunResult:
 
 
 async def run_morning_briefing(
-    config: AgentConfig, dry_run: bool = False, no_ai: bool = False
+    config: AgentConfig,
+    dry_run: bool = False,
+    no_ai: bool = False,
+    data_source: DataSource | None = None,
 ) -> BriefingRunResult:
     """
     Execute the full morning briefing pipeline.
@@ -67,9 +70,14 @@ async def run_morning_briefing(
     3. Generate AI briefing (unless --no-ai)
     4. Send email (unless --dry-run)
 
+    Args:
+        data_source: Market-data seam used for the scan, the SPY regime fetch,
+            per-symbol fetches, and earnings checks. None uses production.
+
     Returns:
         A BriefingRunResult describing how the run went.
     """
+    source = data_source if data_source is not None else get_default_data_source()
     start_time = time.monotonic()
     now = datetime.now(UTC)
     date_str = now.strftime("%Y-%m-%d")
@@ -88,6 +96,7 @@ async def run_morning_briefing(
         min_avg_daily_volume=500_000,
         direction="any",
         max_results=15,
+        data_source=source,
     )
 
     total_candidates = scan_results["summary"]["total_candidates"]
@@ -105,7 +114,7 @@ async def run_morning_briefing(
     # unknown verdict with the scan results left unannotated.
     logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
     try:
-        regime = _fetch_market_regime()
+        regime = _fetch_market_regime(source)
         scan_results = annotate_regime_conflicts(scan_results, regime)
         conflict_count = sum(
             1 for c in scan_results.get("high_conviction_setups", []) if c.get("regime_conflict")
@@ -124,7 +133,7 @@ async def run_morning_briefing(
     deep_analyses = []
     for symbol in top_symbols:
         try:
-            data = fetch_stock_data(symbol, None, None, "3mo")
+            data = source.fetch(symbol, period="3mo")
             analysis = run_options_analysis(symbol, data, holding_period=14)
             deep_analyses.append(analysis)
             logger.info("  %s: score=%.1f", symbol, analysis["composite_signal"]["score"])
@@ -136,7 +145,7 @@ async def run_morning_briefing(
 
     # Step 2b: Earnings guard — batch-fetch for all analysed symbols
     analysed_symbols = [a["symbol"] for a in deep_analyses if "symbol" in a]
-    earnings_warnings = _fetch_earnings_warnings(analysed_symbols, now)
+    earnings_warnings = _fetch_earnings_warnings(analysed_symbols, now, source)
     if earnings_warnings:
         logger.info("Earnings warnings: %s", earnings_warnings)
         for analysis in deep_analyses:
@@ -240,27 +249,14 @@ _EARNINGS_WARN_DAYS = 14
 _EARNINGS_MAX_WORKERS = 8
 
 
-def _check_earnings(symbol: str, now: datetime) -> str | None:
+def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | None:
     """Return a warning string if the symbol has earnings within 14 days, else None."""
     try:
-        import yfinance as yf
-
-        info = yf.Ticker(symbol).info
-        raw = info.get("earningsDate") or info.get("earningsTimestamp")
-        if raw is None:
+        earnings_dt = source.earnings_date(symbol)
+        if earnings_dt is None:
             return None
-
-        # yfinance may return a list (range) or a single value
-        if isinstance(raw, list):
-            raw = raw[0]
-
-        # Normalise to an aware datetime
-        if isinstance(raw, (int, float)):
-            earnings_dt = datetime.fromtimestamp(raw, tz=UTC)
-        elif isinstance(raw, datetime):
-            earnings_dt = raw if raw.tzinfo else raw.replace(tzinfo=UTC)
-        else:
-            return None
+        if earnings_dt.tzinfo is None:
+            earnings_dt = earnings_dt.replace(tzinfo=UTC)
 
         delta = earnings_dt - now
         if timedelta(0) <= delta <= timedelta(days=_EARNINGS_WARN_DAYS):
@@ -272,12 +268,14 @@ def _check_earnings(symbol: str, now: datetime) -> str | None:
         return None
 
 
-def _fetch_earnings_warnings(symbols: list[str], now: datetime) -> dict[str, str]:
+def _fetch_earnings_warnings(
+    symbols: list[str], now: datetime, source: DataSource
+) -> dict[str, str]:
     """Fetch earnings dates for all symbols concurrently. Returns symbol -> warning string."""
     if not symbols:
         return {}
     with ThreadPoolExecutor(max_workers=min(len(symbols), _EARNINGS_MAX_WORKERS)) as pool:
-        futures = {sym: pool.submit(_check_earnings, sym, now) for sym in symbols}
+        futures = {sym: pool.submit(_check_earnings, sym, now, source) for sym in symbols}
         result: dict[str, str] = {}
         for sym, fut in futures.items():
             warning = fut.result()
@@ -286,10 +284,10 @@ def _fetch_earnings_warnings(symbols: list[str], now: datetime) -> dict[str, str
         return result
 
 
-def _fetch_market_regime() -> dict:
+def _fetch_market_regime(source: DataSource) -> dict:
     """Fetch SPY history and compute the market regime; failures degrade to unknown."""
     try:
-        spy_data = fetch_stock_data("SPY", None, None, "3mo")
+        spy_data = source.fetch("SPY", period="3mo")
         # Exclude any in-progress session so a manual intraday run stays strictly
         # causal — the check must always read the prior session's close.
         today_eastern = datetime.now(ZoneInfo("America/New_York")).date()

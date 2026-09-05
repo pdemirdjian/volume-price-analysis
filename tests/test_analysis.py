@@ -1,5 +1,6 @@
 """Tests for analysis.py - extracted scan and options analysis logic."""
 
+import pandas as pd
 import pytest
 
 from volume_price_analysis.analysis import (
@@ -15,12 +16,30 @@ from volume_price_analysis.analysis import (
     run_scan,
     score_symbol,
 )
+from volume_price_analysis.data_fetcher import InMemoryDataSource
 from volume_price_analysis.indicators import (
     SQUEEZE_WINDOW,
     calculate_adx,
     calculate_composite_score,
     detect_bollinger_squeeze,
 )
+
+# A frame with too little history to analyze (< MIN_SCAN_HISTORY), so scans skip it fast.
+SMALL_FRAME = pd.DataFrame(
+    {
+        "Date": pd.date_range("2024-01-01", periods=10),
+        "Open": [100] * 10,
+        "High": [101] * 10,
+        "Low": [99] * 10,
+        "Close": [100] * 10,
+        "Volume": [1000000] * 10,
+    }
+)
+
+
+def source_for(symbols, frame, errors=None):
+    """An InMemoryDataSource serving ``frame`` for every symbol in ``symbols``."""
+    return InMemoryDataSource(frames=dict.fromkeys(symbols, frame), errors=errors)
 
 
 class TestUniverses:
@@ -179,54 +198,56 @@ class TestRunOptionsAnalysis:
 
 
 class TestAnalyzeSingleSymbol:
-    """Test analyze_single_symbol with mocked data fetching."""
+    """Test analyze_single_symbol against an injected in-memory data source."""
 
-    def test_raises_insufficient_data_when_too_few_rows(self, mocker):
+    def test_raises_insufficient_data_when_too_few_rows(self):
         """Should raise InsufficientDataError (a 'skip', not an error) for <30 rows."""
-        import pandas as pd
-
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
+        source = source_for(["TEST"], SMALL_FRAME)
 
         with pytest.raises(InsufficientDataError):
-            analyze_single_symbol("TEST", "3mo", 14, 2.0, 20, 100, "any")
+            analyze_single_symbol("TEST", "3mo", 14, 2.0, 20, 100, "any", data_source=source)
 
-    def test_candidate_includes_hv_percentile(self, mocker, sample_stock_data):
+    def test_unknown_symbol_raises_value_error(self):
+        """The in-memory source mirrors production: an unknown symbol is a ValueError."""
+        source = InMemoryDataSource()
+
+        with pytest.raises(ValueError, match="No data found for symbol"):
+            analyze_single_symbol("NOPE", "3mo", 14, 2.0, 20, 100, "any", data_source=source)
+
+    def test_fetches_with_the_requested_period(self, sample_stock_data):
+        """The period argument reaches the data source rather than being dropped."""
+
+        class RecordingSource(InMemoryDataSource):
+            def __init__(self):
+                super().__init__(frames={"TEST": sample_stock_data})
+                self.periods = []
+
+            def fetch(self, symbol, *, period="1mo", start=None, end=None, timeout=30):
+                self.periods.append(period)
+                return super().fetch(symbol, period=period, start=start, end=end, timeout=timeout)
+
+        source = RecordingSource()
+        analyze_single_symbol("TEST", "6mo", 14, 0, 0, 100, "any", data_source=source)
+        assert source.periods == ["6mo"]
+
+    def test_candidate_includes_hv_percentile(self, sample_stock_data):
         """A returned candidate carries the honestly-labeled hv_percentile twin."""
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=sample_stock_data,
-        )
+        source = source_for(["TEST"], sample_stock_data)
 
-        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any", data_source=source)
         assert candidate is not None
         assert "hv_percentile" in candidate
         assert candidate["hv_percentile"] == candidate["iv_percentile"]
 
-    def test_candidate_adx_is_composite_adaptive_adx(self, mocker, sample_stock_data):
+    def test_candidate_adx_is_composite_adaptive_adx(self, sample_stock_data):
         """Reported ADX must be the composite's adaptive ADX, coherent with signal_quality.
 
         Regression for HOM-48: the scan previously reported a fixed ADX(14) that was
         incoherent with the composite's adaptive ADX(10) used for scoring/signal_quality.
         """
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=sample_stock_data,
-        )
+        source = source_for(["TEST"], sample_stock_data)
 
-        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any", data_source=source)
         assert candidate is not None
 
         composite = calculate_composite_score(sample_stock_data, 14)
@@ -237,15 +258,12 @@ class TestAnalyzeSingleSymbol:
         assert candidate["trend_strength"] == composite["adx_summary"]["trend_strength"]
         assert candidate["trend_direction"] == composite["adx_summary"]["trend_direction"]
 
-    def test_candidate_adx_differs_from_legacy_fixed_adx14(self, mocker, sample_stock_data):
+    def test_candidate_adx_differs_from_legacy_fixed_adx14(self, sample_stock_data):
         """On this fixture the adaptive ADX(10) and legacy ADX(14) actually diverge,
         so the change is observable (not a no-op)."""
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=sample_stock_data,
-        )
+        source = source_for(["TEST"], sample_stock_data)
 
-        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any", data_source=source)
         assert candidate is not None
 
         # On sample_stock_data, ADX(10) ~= 20.6 vs ADX(14) ~= 20.8, so they round
@@ -258,78 +276,32 @@ class TestAnalyzeSingleSymbol:
 
 
 class TestRunScan:
-    """Test run_scan orchestration."""
+    """Test run_scan orchestration against an injected in-memory data source."""
 
     @pytest.mark.asyncio
-    async def test_custom_symbols_override_universe(self, mocker):
+    async def test_custom_symbols_override_universe(self):
         """When custom symbols are provided, universe should be 'custom'."""
-        import pandas as pd
+        source = source_for(["AAPL", "MSFT"], SMALL_FRAME)
 
-        # Mock fetch_stock_data to return insufficient data (quick skip)
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
-
-        result = await run_scan(symbols=["AAPL", "MSFT"], universe="tech")
+        result = await run_scan(symbols=["AAPL", "MSFT"], universe="tech", data_source=source)
         assert result["scan_parameters"]["universe"] == "custom"
         assert result["scan_parameters"]["symbols_in_universe"] == 2
 
     @pytest.mark.asyncio
-    async def test_invalid_universe_falls_back_to_full_market(self, mocker):
+    async def test_invalid_universe_falls_back_to_full_market(self):
         """Unknown universe should fall back to full_market."""
-        import pandas as pd
+        source = source_for(UNIVERSES["full_market"], SMALL_FRAME)
 
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
-
-        result = await run_scan(universe="nonexistent", symbols=None)
+        result = await run_scan(universe="nonexistent", symbols=None, data_source=source)
         assert result["scan_parameters"]["universe"] == "full_market"
 
     @pytest.mark.asyncio
     async def test_invalid_universe_logs_warning(self, mocker):
         """Unknown universe should emit a WARNING naming the bad value and the fallback."""
-        import pandas as pd
-
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
+        source = source_for(UNIVERSES["full_market"], SMALL_FRAME)
         mock_warning = mocker.patch("volume_price_analysis.analysis.logger.warning")
 
-        await run_scan(universe="tech", symbols=None)
+        await run_scan(universe="tech", symbols=None, data_source=source)
 
         assert mock_warning.called, "Expected logger.warning to be called for unknown universe"
         calls_text = " ".join(str(c) for c in mock_warning.call_args_list)
@@ -337,26 +309,11 @@ class TestRunScan:
         assert "full_market" in calls_text, f"Expected 'full_market' in warning; got: {calls_text}"
 
     @pytest.mark.asyncio
-    async def test_scan_result_structure(self, mocker):
+    async def test_scan_result_structure(self):
         """Verify scan results have expected structure."""
-        import pandas as pd
+        source = source_for(["TEST"], SMALL_FRAME)
 
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
-
-        result = await run_scan(symbols=["TEST"])
+        result = await run_scan(symbols=["TEST"], data_source=source)
         assert "scan_parameters" in result
         assert "summary" in result
         assert "high_conviction_setups" in result
@@ -371,63 +328,45 @@ class TestRunScan:
         assert result["scan_parameters"]["adx_period"] == 10  # holding_period default 14
 
     @pytest.mark.asyncio
-    async def test_scan_parameters_adx_period_tracks_holding_period(
-        self, mocker, sample_stock_data
-    ):
+    async def test_scan_parameters_adx_period_tracks_holding_period(self, sample_stock_data):
         """The reported adx_period is adaptive: ADX(10) for short holds, ADX(14) otherwise.
 
         Lets clients interpret the now-adaptive `adx`, `min_adx`, and the
         high_conviction (adx >= 28) gate against the correct period (HOM-48).
         """
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=sample_stock_data,
-        )
+        source = source_for(["TEST"], sample_stock_data)
 
-        short = await run_scan(symbols=["TEST"], holding_period=14, min_score=0, min_adx=0)
+        short = await run_scan(
+            symbols=["TEST"], holding_period=14, min_score=0, min_adx=0, data_source=source
+        )
         assert short["scan_parameters"]["adx_period"] == 10
 
-        long = await run_scan(symbols=["TEST"], holding_period=21, min_score=0, min_adx=0)
+        long = await run_scan(
+            symbols=["TEST"], holding_period=21, min_score=0, min_adx=0, data_source=source
+        )
         assert long["scan_parameters"]["adx_period"] == 14
         # Each candidate's own adx_period agrees with the scan-level value.
         for candidate in long["top_bullish"] + long["top_bearish"]:
             assert candidate["adx_period"] == 14
 
     @pytest.mark.asyncio
-    async def test_scan_handles_errors_gracefully(self, mocker):
+    async def test_scan_handles_errors_gracefully(self):
         """Errors for individual symbols should be captured, not crash the scan."""
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            side_effect=ValueError("No data found"),
-        )
+        # BADTICKER is absent from the source, so it fails exactly as production would.
+        source = InMemoryDataSource()
 
-        result = await run_scan(symbols=["BADTICKER"])
+        result = await run_scan(symbols=["BADTICKER"], data_source=source)
         assert result["summary"]["errors"] >= 1
         assert result["summary"]["total_candidates"] == 0
         # A genuine fetch error is an error, not a skip.
         assert result["summary"]["skipped"] == 0
 
     @pytest.mark.asyncio
-    async def test_summary_reports_skipped_count(self, mocker):
+    async def test_summary_reports_skipped_count(self):
         """Insufficient-data symbols are counted as 'skipped', distinct from errors."""
-        import pandas as pd
+        source = source_for(["AAA", "BBB", "CCC"], SMALL_FRAME)
 
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
-
-        result = await run_scan(symbols=["AAA", "BBB", "CCC"])
+        result = await run_scan(symbols=["AAA", "BBB", "CCC"], data_source=source)
         assert result["summary"]["skipped"] == 3
         assert result["summary"]["errors"] == 0
         assert result["summary"]["total_candidates"] == 0
@@ -435,53 +374,20 @@ class TestRunScan:
         assert result["scan_parameters"]["symbols_scanned"] == 0
 
     @pytest.mark.asyncio
-    async def test_errors_field_is_always_a_list(self, mocker):
+    async def test_errors_field_is_always_a_list(self):
         """The top-level 'errors' field must be a list even when empty (never None)."""
-        import pandas as pd
+        source = source_for(["AAA"], SMALL_FRAME)
 
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
-
-        result = await run_scan(symbols=["AAA"])
+        result = await run_scan(symbols=["AAA"], data_source=source)
         assert isinstance(result["errors"], list)
         assert result["errors"] == []
 
     @pytest.mark.asyncio
-    async def test_scan_accounting_is_complete(self, mocker):
+    async def test_scan_accounting_is_complete(self):
         """scanned + skipped + errors must equal the universe size (honest diagnostics)."""
-        import pandas as pd
+        source = source_for(["AAA", "BBB"], SMALL_FRAME)  # BADX deliberately absent
 
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-
-        def _fetch(symbol, *args, **kwargs):
-            if symbol == "BADX":
-                raise ValueError("No data found")
-            return small_data
-
-        mocker.patch("volume_price_analysis.analysis.fetch_stock_data", side_effect=_fetch)
-
-        result = await run_scan(symbols=["AAA", "BBB", "BADX"])
+        result = await run_scan(symbols=["AAA", "BBB", "BADX"], data_source=source)
         summary = result["summary"]
         params = result["scan_parameters"]
         total = params["symbols_scanned"] + summary["skipped"] + summary["errors"]
@@ -545,27 +451,12 @@ class TestRunScan:
             await run_scan(symbols=symbols)
 
     @pytest.mark.asyncio
-    async def test_accepts_max_symbols(self, mocker):
+    async def test_accepts_max_symbols(self):
         """Passing exactly 500 symbols should NOT raise a symbol-limit error."""
-        import pandas as pd
-
-        small_data = pd.DataFrame(
-            {
-                "Date": pd.date_range("2024-01-01", periods=10),
-                "Open": [100] * 10,
-                "High": [101] * 10,
-                "Low": [99] * 10,
-                "Close": [100] * 10,
-                "Volume": [1000000] * 10,
-            }
-        )
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=small_data,
-        )
-
         symbols = [f"SYM{i}" for i in range(500)]
-        result = await run_scan(symbols=symbols)
+        source = source_for(symbols, SMALL_FRAME)
+
+        result = await run_scan(symbols=symbols, data_source=source)
         # Should complete without the "Too many symbols" error
         assert result["scan_parameters"]["symbols_in_universe"] == 500
 
@@ -773,13 +664,10 @@ class TestScoreSymbol:
         assert fast["adx_period"] == 10
         assert slow["adx_period"] == 14
 
-    def test_matches_analyze_single_symbol(self, mocker, sample_stock_data):
+    def test_matches_analyze_single_symbol(self, sample_stock_data):
         """analyze_single_symbol is fetch + score_symbol; results must agree."""
-        mocker.patch(
-            "volume_price_analysis.analysis.fetch_stock_data",
-            return_value=sample_stock_data,
-        )
-        via_fetch = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any")
+        source = InMemoryDataSource(frames={"TEST": sample_stock_data})
+        via_fetch = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any", data_source=source)
         direct = score_symbol(sample_stock_data, "TEST", 14, 0, 0, 100, "any")
         assert via_fetch == direct
 

@@ -12,7 +12,7 @@ from typing import Any
 import pandas as pd
 from pytickersymbols import PyTickerSymbols
 
-from .data_fetcher import fetch_stock_data
+from .data_fetcher import DataSource, get_default_data_source
 from .indicators import (
     SQUEEZE_WINDOW,
     analyze_volume_trends,
@@ -272,6 +272,7 @@ def analyze_single_symbol(
     max_iv: float,
     direction: str,
     min_avg_volume: float = 0,
+    data_source: DataSource | None = None,
 ) -> dict | None:
     """
     Analyze a single symbol for scan_candidates.
@@ -279,8 +280,12 @@ def analyze_single_symbol(
     Returns a candidate dict if it passes filters, None if it was analyzed but
     did not qualify. Raises ``InsufficientDataError`` when there is too little
     history to analyze (a skip), and propagates other exceptions as errors.
+
+    Args:
+        data_source: Market-data seam; None uses the production adapter.
     """
-    sym_data = fetch_stock_data(symbol, None, None, period)
+    source = data_source if data_source is not None else get_default_data_source()
+    sym_data = source.fetch(symbol, period=period)
     return score_symbol(
         sym_data,
         symbol,
@@ -385,6 +390,7 @@ async def _analyze_symbol_async(
     direction: str,
     semaphore: asyncio.Semaphore,
     min_avg_volume: float = 0,
+    data_source: DataSource | None = None,
 ) -> tuple[str, dict | None, str | None, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
@@ -404,6 +410,7 @@ async def _analyze_symbol_async(
                 max_iv,
                 direction,
                 min_avg_volume,
+                data_source,
             )
             return (symbol, result, None, False)
         except InsufficientDataError:
@@ -426,6 +433,7 @@ async def run_scan(
     min_avg_daily_volume: float = 0,
     universes: dict[str, list[str]] | None = None,
     timeout_seconds: float = 600,
+    data_source: DataSource | None = None,
 ) -> dict:
     """
     Scan the market for options trading candidates.
@@ -444,6 +452,7 @@ async def run_scan(
         min_avg_daily_volume: Minimum average daily share volume (0 = no filter).
         universes: Universe name -> symbols mapping (defaults to ``get_universes()``).
         timeout_seconds: Overall wall-clock budget for the scan.
+        data_source: Market-data seam; None uses the production adapter.
 
     Returns:
         Dictionary with scan results including candidates, summary, and errors.
@@ -502,6 +511,7 @@ async def run_scan(
             direction,
             semaphore,
             min_avg_daily_volume,
+            data_source,
         )
         for sym in scan_symbols
     ]
