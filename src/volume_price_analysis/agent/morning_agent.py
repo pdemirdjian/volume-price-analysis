@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import fetch_stock_data
-from .ai_client import generate_briefing
+from .ai_client import PROVIDERS, generate_briefing, resolve_model
 from .config import AgentConfig
 from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
 from .regime import (
@@ -160,11 +160,11 @@ async def run_morning_briefing(
             briefing = generate_briefing(
                 scan_results=scan_results,
                 deep_analyses=deep_analyses,
-                provider=config.ai_provider,
-                model=config.ai_model,
+                provider=PROVIDERS[config.ai_provider],
+                model=resolve_model(config.ai_provider, config.ai_model),
                 api_key=config.ai_provider_api_key,
                 earnings_preamble=earnings_preamble,
-            )
+            ).text
         except Exception:
             logger.exception("AI briefing generation failed")
             briefing = _fallback_briefing(scan_results, deep_analyses)

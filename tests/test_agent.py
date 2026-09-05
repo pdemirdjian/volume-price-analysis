@@ -10,13 +10,19 @@ import pytest
 
 from volume_price_analysis.agent.ai_client import (
     _TRUNCATION_WARNING,
+    MAX_OUTPUT_TOKENS,
+    PROVIDERS,
     SYSTEM_PROMPT,
-    _build_user_message,
+    BriefingResult,
     _drop_superseded_scan_fields,
     _project_deep_analysis,
     _project_scan_results,
+    build_briefing_prompt,
     find_ungrounded_tickers,
+    generate_anthropic,
     generate_briefing,
+    generate_gemini,
+    resolve_model,
 )
 from volume_price_analysis.agent.config import MAX_DEEP_ANALYSIS_CAP, AgentConfig
 from volume_price_analysis.agent.email_sender import (
@@ -603,7 +609,7 @@ class TestProjectDeepAnalysis:
         assert projected["volume_signals"]["obv_trend"] is None
 
 
-class TestBuildUserMessageProjection:
+class TestBuildBriefingPrompt:
     """Test that _build_user_message emits the curated projection (O3)."""
 
     def test_curated_message_is_smaller_than_raw_dump(self, sample_stock_data):
@@ -618,7 +624,7 @@ class TestBuildUserMessageProjection:
             "top_bearish": [],
             "errors": [],
         }
-        curated = _build_user_message(scan, [analysis])
+        curated = build_briefing_prompt(scan, [analysis])
         raw_dump = f"{json.dumps(scan, default=str)}{json.dumps(analysis, default=str)}"
         # The whole point of O3: meaningfully less text than the raw JSON dump.
         assert len(curated) < len(raw_dump)
@@ -630,7 +636,7 @@ class TestBuildUserMessageProjection:
         from volume_price_analysis.analysis import run_options_analysis
 
         analysis = run_options_analysis("TEST", sample_stock_data)
-        curated = _build_user_message({"summary": {}}, [analysis])
+        curated = build_briefing_prompt({"summary": {}}, [analysis])
         # Internal scoring detail is dropped from the model-facing prompt.
         assert "score_breakdown" not in curated
         assert "plus_di" not in curated
@@ -655,43 +661,62 @@ class TestBuildUserMessageProjection:
                 "expected_move": {"upper_target": 46.37, "lower_target": 39.75},
             },
         }
-        curated = _build_user_message(scan, [deep])
+        curated = build_briefing_prompt(scan, [deep])
         assert "40.32" not in curated
         assert "39.75" in curated
 
 
-class TestGenerateBriefingAnthropic:
-    """Test Anthropic API integration (mocked)."""
+class _FakeProvider:
+    """Records the arguments generate_briefing hands a provider."""
 
-    def test_calls_anthropic_api(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="# Morning Briefing\nTest content")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 200
-        mock_client.messages.create.return_value = mock_message
+    def __init__(self, text="# Morning Briefing\nTest content"):
+        self.text = text
+        self.calls = []
 
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+    def __call__(self, user_content, model, api_key):
+        self.calls.append((user_content, model, api_key))
+        return self.text
+
+    @property
+    def user_content(self):
+        return self.calls[-1][0]
+
+
+class TestGenerateBriefing:
+    """generate_briefing orchestrates prompt + provider + grounding check."""
+
+    def test_returns_provider_text(self):
+        provider = _FakeProvider()
 
         result = generate_briefing(
             scan_results={"summary": {"total_candidates": 5}},
             deep_analyses=[],
-            provider="anthropic",
+            provider=provider,
+            model="test-model",
+            api_key="test-key",
+        )
+
+        assert isinstance(result, BriefingResult)
+        assert "Morning Briefing" in result.text
+        assert result.ungrounded_tickers == []
+
+    def test_passes_model_and_key_through(self):
+        provider = _FakeProvider()
+
+        generate_briefing(
+            scan_results={},
+            deep_analyses=[],
+            provider=provider,
+            model="some-model",
             api_key="sk-test",
         )
 
-        assert "Morning Briefing" in result
-        mock_client.messages.create.assert_called_once()
+        _, model, api_key = provider.calls[0]
+        assert model == "some-model"
+        assert api_key == "sk-test"
 
-    def test_includes_scan_data_in_prompt(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="briefing")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 200
-        mock_client.messages.create.return_value = mock_message
-
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+    def test_includes_scan_data_in_prompt(self):
+        provider = _FakeProvider(text="briefing")
 
         generate_briefing(
             scan_results={
@@ -699,174 +724,162 @@ class TestGenerateBriefingAnthropic:
                 "high_conviction_setups": [{"symbol": "NVDA", "composite_score": 6.2}],
             },
             deep_analyses=[{"symbol": "AAPL"}],
-            provider="anthropic",
-            api_key="sk-test",
+            provider=provider,
+            model="m",
+            api_key="k",
         )
 
-        call_args = mock_client.messages.create.call_args
-        user_msg = call_args.kwargs["messages"][0]["content"]
         # Curated high-signal data reaches the model: candidate + deep symbols.
-        assert "AAPL" in user_msg
-        assert "NVDA" in user_msg
-        assert "total_candidates" in user_msg
+        assert "AAPL" in provider.user_content
+        assert "NVDA" in provider.user_content
+        assert "total_candidates" in provider.user_content
 
-    def test_appends_warning_on_truncation(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="# Truncated briefing")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 16384
-        mock_message.stop_reason = "max_tokens"
-        mock_client.messages.create.return_value = mock_message
-
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="anthropic",
-            api_key="sk-test",
-        )
-
-        assert _TRUNCATION_WARNING in result
-
-    def test_no_warning_on_normal_completion(self, mocker):
-        mock_client = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="# Full briefing")]
-        mock_message.usage.input_tokens = 100
-        mock_message.usage.output_tokens = 500
-        mock_message.stop_reason = "end_turn"
-        mock_client.messages.create.return_value = mock_message
-
-        mocker.patch("anthropic.Anthropic", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="anthropic",
-            api_key="sk-test",
-        )
-
-        assert _TRUNCATION_WARNING not in result
-
-
-class TestGenerateBriefingGemini:
-    """Test Gemini API integration (mocked)."""
-
-    def test_calls_gemini_api(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Morning Briefing\nGemini content"
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={"summary": {"total_candidates": 5}},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert "Morning Briefing" in result
-        mock_client.models.generate_content.assert_called_once()
-
-    def test_uses_default_model(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "briefing"
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
+    def test_includes_earnings_preamble(self):
+        provider = _FakeProvider(text="briefing")
 
         generate_briefing(
             scan_results={},
             deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
+            provider=provider,
+            model="m",
+            api_key="k",
+            earnings_preamble="**EARNINGS EVENT RISK** — NVDA reports tomorrow.",
         )
 
-        call_args = mock_client.models.generate_content.call_args
-        assert call_args.kwargs["model"] == "gemini-2.5-pro"
+        assert "EARNINGS EVENT RISK" in provider.user_content
 
-    def test_appends_warning_on_truncation(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Truncated briefing"
-        mock_finish_reason = MagicMock()
-        mock_finish_reason.name = "MAX_TOKENS"
-        mock_candidate = MagicMock()
-        mock_candidate.finish_reason = mock_finish_reason
-        mock_response.candidates = [mock_candidate]
-        mock_client.models.generate_content.return_value = mock_response
+    def test_provider_error_propagates(self):
+        def boom(user_content, model, api_key):
+            raise RuntimeError("provider down")
 
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert _TRUNCATION_WARNING in result
-
-    def test_no_warning_on_normal_completion(self, mocker):
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Full briefing"
-        mock_finish_reason = MagicMock()
-        mock_finish_reason.name = "STOP"
-        mock_candidate = MagicMock()
-        mock_candidate.finish_reason = mock_finish_reason
-        mock_response.candidates = [mock_candidate]
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert _TRUNCATION_WARNING not in result
-
-    def test_truncation_detection_with_string_finish_reason(self, mocker):
-        """Handles SDK versions where finish_reason is a plain string."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "# Truncated briefing"
-        mock_candidate = MagicMock(spec=[])  # no attributes by default
-        mock_candidate.finish_reason = "MAX_TOKENS"
-        mock_response.candidates = [mock_candidate]
-        mock_client.models.generate_content.return_value = mock_response
-
-        mocker.patch("google.genai.Client", return_value=mock_client)
-
-        result = generate_briefing(
-            scan_results={},
-            deep_analyses=[],
-            provider="gemini",
-            api_key="test-key",
-        )
-
-        assert _TRUNCATION_WARNING in result
-
-
-class TestGenerateBriefingInvalidProvider:
-    """Test error handling for invalid provider."""
-
-    def test_raises_on_invalid_provider(self):
-        with pytest.raises(ValueError, match="Unknown AI provider"):
+        with pytest.raises(RuntimeError, match="provider down"):
             generate_briefing(
                 scan_results={},
                 deep_analyses=[],
-                provider="openai",
-                api_key="key",
+                provider=boom,
+                model="m",
+                api_key="k",
             )
+
+
+class TestProviderRegistry:
+    """PROVIDERS maps AI_PROVIDER names onto the production adapters."""
+
+    def test_registry_contents(self):
+        assert PROVIDERS["anthropic"] is generate_anthropic
+        assert PROVIDERS["gemini"] is generate_gemini
+
+    def test_registry_covers_every_valid_config_provider(self):
+        # config.AgentConfig.validate() is the single validator of names.
+        assert set(PROVIDERS) == {"gemini", "anthropic"}
+
+    def test_resolve_model_defaults_per_provider(self):
+        assert resolve_model("gemini") == "gemini-2.5-pro"
+        assert resolve_model("anthropic") == "claude-sonnet-4-6"
+
+    def test_resolve_model_honours_explicit_override(self):
+        assert resolve_model("gemini", "gemini-flash") == "gemini-flash"
+
+
+class TestGenerateAnthropicAdapter:
+    """SDK-level tests for the Anthropic adapter itself."""
+
+    @staticmethod
+    def _mock_client(mocker, text="# Morning Briefing", stop_reason="end_turn"):
+        mock_client = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = [MagicMock(text=text)]
+        mock_message.usage.input_tokens = 100
+        mock_message.usage.output_tokens = 200
+        mock_message.stop_reason = stop_reason
+        mock_client.messages.create.return_value = mock_message
+        mocker.patch("anthropic.Anthropic", return_value=mock_client)
+        return mock_client
+
+    def test_calls_messages_api(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        result = generate_anthropic("user content", "claude-test", "sk-test")
+
+        assert "Morning Briefing" in result
+        assert _TRUNCATION_WARNING not in result
+        kwargs = mock_client.messages.create.call_args.kwargs
+        assert kwargs["model"] == "claude-test"
+        assert kwargs["system"] == SYSTEM_PROMPT
+        assert kwargs["max_tokens"] == MAX_OUTPUT_TOKENS
+        assert kwargs["messages"][0]["content"] == "user content"
+
+    def test_appends_warning_on_truncation(self, mocker):
+        self._mock_client(mocker, text="# Truncated", stop_reason="max_tokens")
+
+        result = generate_anthropic("user content", "claude-test", "sk-test")
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_max_tokens_override(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        generate_anthropic("user content", "claude-test", "sk-test", max_tokens=512)
+
+        assert mock_client.messages.create.call_args.kwargs["max_tokens"] == 512
+
+
+class TestGenerateGeminiAdapter:
+    """SDK-level tests for the Gemini adapter itself."""
+
+    @staticmethod
+    def _mock_client(mocker, text="# Morning Briefing", finish_reason=None):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = text
+        if finish_reason is None:
+            mock_response.candidates = []
+        else:
+            mock_candidate = MagicMock(spec=[])
+            mock_candidate.finish_reason = finish_reason
+            mock_response.candidates = [mock_candidate]
+        mock_client.models.generate_content.return_value = mock_response
+        mocker.patch("google.genai.Client", return_value=mock_client)
+        return mock_client
+
+    def test_calls_generate_content(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        result = generate_gemini("user content", "gemini-test", "test-key")
+
+        assert "Morning Briefing" in result
+        assert _TRUNCATION_WARNING not in result
+        kwargs = mock_client.models.generate_content.call_args.kwargs
+        assert kwargs["model"] == "gemini-test"
+        assert kwargs["contents"] == "user content"
+        assert kwargs["config"]["system_instruction"] == SYSTEM_PROMPT
+        assert kwargs["config"]["max_output_tokens"] == MAX_OUTPUT_TOKENS
+
+    def test_appends_warning_on_truncation(self, mocker):
+        """Enum-like finish_reason exposing a .name attribute."""
+        enum_like = MagicMock()
+        enum_like.name = "MAX_TOKENS"
+        self._mock_client(mocker, text="# Truncated", finish_reason=enum_like)
+
+        result = generate_gemini("user content", "gemini-test", "test-key")
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_truncation_detection_with_string_finish_reason(self, mocker):
+        """Handles SDK versions where finish_reason is a plain string."""
+        self._mock_client(mocker, text="# Truncated", finish_reason="MAX_TOKENS")
+
+        result = generate_gemini("user content", "gemini-test", "test-key")
+
+        assert _TRUNCATION_WARNING in result
+
+    def test_max_tokens_override(self, mocker):
+        mock_client = self._mock_client(mocker)
+
+        generate_gemini("user content", "gemini-test", "test-key", max_tokens=512)
+
+        kwargs = mock_client.models.generate_content.call_args.kwargs
+        assert kwargs["config"]["max_output_tokens"] == 512
 
 
 class TestAgentConfigRepr:
@@ -1308,7 +1321,7 @@ class TestRunMorningBriefing:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Test Briefing\nLooks good!",
+            return_value=BriefingResult(text="# Test Briefing\nLooks good!"),
         )
 
         config = AgentConfig(
@@ -1461,7 +1474,7 @@ class TestRunMorningBriefing:
         )
         mock_generate = mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing",
+            return_value=BriefingResult(text="# Briefing"),
         )
         mock_send = mocker.patch(
             "volume_price_analysis.agent.morning_agent.send_briefing_email",
@@ -1522,7 +1535,7 @@ class TestDeepAnalysisException:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing with no deep data",
+            return_value=BriefingResult(text="# Briefing with no deep data"),
         )
 
         config = AgentConfig(
@@ -1568,7 +1581,7 @@ class TestDeepAnalysisException:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing after analysis error",
+            return_value=BriefingResult(text="# Briefing after analysis error"),
         )
 
         config = AgentConfig(
@@ -1696,7 +1709,7 @@ class TestStatsLineFooter:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="Briefing body",
+            return_value=BriefingResult(text="Briefing body"),
         )
 
         config = AgentConfig(
@@ -1734,7 +1747,7 @@ class TestStatsLineFooter:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="Briefing body",
+            return_value=BriefingResult(text="Briefing body"),
         )
 
         config = AgentConfig(
@@ -2112,7 +2125,7 @@ class TestRunMorningBriefingDegradedReturn:
         )
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value="# Briefing",
+            return_value=BriefingResult(text="# Briefing"),
         )
         mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
 
@@ -2259,7 +2272,7 @@ class TestFindUngroundedTickers:
 
 
 class TestGenerateBriefingGrounding:
-    """HOM-45: generate_briefing logs a warning when the briefing names unknown tickers."""
+    """HOM-45: generate_briefing reports tickers the briefing invented."""
 
     @staticmethod
     def _scan():
@@ -2271,46 +2284,40 @@ class TestGenerateBriefingGrounding:
             "errors": [],
         }
 
-    def test_logs_warning_on_hallucinated_ticker(self, mocker, caplog):
+    def test_reports_and_logs_hallucinated_ticker(self, caplog):
         import logging
 
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "AAPL is bullish. Also buy ZZZZ calls."
-        mock_response.candidates = []
-        mock_client.models.generate_content.return_value = mock_response
-        mocker.patch("google.genai.Client", return_value=mock_client)
+        provider = _FakeProvider(text="AAPL is bullish. Also buy ZZZZ calls.")
 
         with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
             result = generate_briefing(
                 scan_results=self._scan(),
                 deep_analyses=[],
-                provider="gemini",
-                api_key="test-key",
+                provider=provider,
+                model="m",
+                api_key="k",
             )
 
-        assert "ZZZZ" in result
+        assert "ZZZZ" in result.text
+        assert result.ungrounded_tickers == ["ZZZZ"]
         assert "ZZZZ" in caplog.text
         assert "hallucination" in caplog.text.lower()
 
-    def test_no_warning_when_grounded(self, mocker, caplog):
+    def test_no_warning_when_grounded(self, caplog):
         import logging
 
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.text = "AAPL is bullish today; watch the VWAP."
-        mock_response.candidates = []
-        mock_client.models.generate_content.return_value = mock_response
-        mocker.patch("google.genai.Client", return_value=mock_client)
+        provider = _FakeProvider(text="AAPL is bullish today; watch the VWAP.")
 
         with caplog.at_level(logging.WARNING, logger="volume_price_analysis.agent.ai_client"):
-            generate_briefing(
+            result = generate_briefing(
                 scan_results=self._scan(),
                 deep_analyses=[],
-                provider="gemini",
-                api_key="test-key",
+                provider=provider,
+                model="m",
+                api_key="k",
             )
 
+        assert result.ungrounded_tickers == []
         assert "hallucination" not in caplog.text.lower()
 
 
