@@ -202,6 +202,34 @@ _DRIVER_LABELS = {
 # neutral (matches the +/-2 recommendation boundary in calculate_composite_score).
 _NEUTRAL_SCORE_BAND = 2.0
 
+# High-conviction gate: a scan candidate qualifies only when all three hold.
+# `adx` is the composite's adaptive-period ADX (see run_scan); the HV bound is
+# read against the iv_percentile/hv_percentile proxy. Shared with the briefing
+# pick block (agent/picks.py) so the label there matches the scan's own count.
+HIGH_CONVICTION_MIN_ABS_SCORE = 4.0
+HIGH_CONVICTION_MIN_ADX = 28.0
+HIGH_CONVICTION_MAX_HV_PERCENTILE = 50.0
+
+
+def passes_high_conviction_gate(candidate: dict) -> bool:
+    """True when a scan candidate dict clears the high-conviction gate.
+
+    Missing or non-numeric fields fail the gate rather than raising, so partial
+    candidate dicts (tests, older payloads) classify as not-high.
+    """
+    try:
+        score = abs(float(candidate["composite_score"]))
+        adx = float(candidate["adx"])
+        hv = candidate.get("hv_percentile", candidate.get("iv_percentile"))
+        hv_pct = float(hv)  # type: ignore[arg-type]
+    except KeyError, TypeError, ValueError:
+        return False
+    return (
+        score >= HIGH_CONVICTION_MIN_ABS_SCORE
+        and adx >= HIGH_CONVICTION_MIN_ADX
+        and hv_pct <= HIGH_CONVICTION_MAX_HV_PERCENTILE
+    )
+
 
 def _build_rationale(score: float, label: str, signal_quality: str, breakdown: dict) -> str:
     """Compose a one-line, data-grounded rationale for the headline.
@@ -226,11 +254,11 @@ def _build_rationale(score: float, label: str, signal_quality: str, breakdown: d
 
     if drivers:
         return (
-            f"{label} (score {score:+.1f}/10, {signal_quality} conviction): "
+            f"{label} (score {score:+.1f}/10, {signal_quality} signal quality): "
             f"{', '.join(drivers)} aligned {direction}."
         )
     return (
-        f"{label} (score {score:+.1f}/10, {signal_quality} conviction): "
+        f"{label} (score {score:+.1f}/10, {signal_quality} signal quality): "
         f"driven by aggregate volume-price signals."
     )
 
@@ -560,11 +588,7 @@ async def run_scan(
     # ADX (ADX(10) for holding_period<=14, else ADX(14)) -- coherent with min_adx and
     # signal_quality. The 28 gate is read against that period; adx_period is reported in
     # scan_parameters so clients can interpret it. See HOM-48.
-    high_conviction = [
-        c
-        for c in candidates
-        if abs(c["composite_score"]) >= 4 and c["adx"] >= 28 and c["iv_percentile"] <= 50
-    ]
+    high_conviction = [c for c in candidates if passes_high_conviction_gate(c)]
 
     return {
         "scan_parameters": {

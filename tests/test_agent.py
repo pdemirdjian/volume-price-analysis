@@ -3,7 +3,8 @@
 import json
 import logging
 import smtplib
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -20,10 +21,12 @@ from volume_price_analysis.agent.ai_client import (
     _project_scan_results,
     build_briefing_prompt,
     find_ungrounded_tickers,
+    format_briefing_date,
     generate_anthropic,
     generate_briefing,
     generate_gemini,
     resolve_model,
+    strip_date_placeholders,
 )
 from volume_price_analysis.agent.config import MAX_DEEP_ANALYSIS_CAP, AgentConfig
 from volume_price_analysis.agent.email_sender import (
@@ -47,11 +50,13 @@ from volume_price_analysis.agent.morning_agent import (
     _fallback_briefing,
     _fetch_earnings_warnings,
     _get_top_symbols,
+    build_briefing_body,
     build_earnings_preamble,
     build_stats_line,
     main,
     run_morning_briefing,
 )
+from volume_price_analysis.agent.picks import annotate_conviction, build_picks, render_picks_table
 from volume_price_analysis.data_fetcher import InMemoryDataSource
 
 # A minimal frame standing in for fetched history. These tests mock
@@ -374,7 +379,9 @@ def _full_deep_analysis():
             "recommendation": "bullish",
             "composite_score": 4.2,
             "signal_quality": "high",
-            "rationale": "Bullish (score +4.2/10, high conviction): price vs VWAP aligned bullish.",
+            "rationale": (
+                "Bullish (score +4.2/10, high signal quality): price vs VWAP aligned bullish."
+            ),
         },
         "parameters": {"holding_period": 14, "mfi_period": 7, "volume_window": 10},
         "composite_signal": {
@@ -1499,7 +1506,9 @@ class TestRunMorningBriefing:
         assert annotated_scan["summary"]["high_conviction"] == 1
 
         body = mock_send.call_args.kwargs["body_markdown"]
-        assert body.startswith("**Market Regime: BEARISH**")
+        # The dated title heads the template; the regime verdict follows it.
+        assert body.startswith("# Morning Market Briefing — ")
+        assert body.splitlines()[2].startswith("**Market Regime: BEARISH**")
         assert "flagged" in body
 
     @pytest.mark.asyncio
@@ -2602,3 +2611,296 @@ class TestConfigErrors:
             ai_provider_api_key="k", email_from="a@b.com", email_password="p", email_to="c@d.com"
         )
         assert _config_errors(config, dry_run=False, no_ai=False) == []
+
+
+# ---------------------------------------------------------------------------
+# PDE-69: fixed conviction vocabulary and programmatic date
+# ---------------------------------------------------------------------------
+
+_GOLDEN = Path(__file__).parent / "golden" / "briefing_body.md"
+
+
+class TestSystemPromptDateAndConviction:
+    def test_prompt_forbids_date_placeholders(self):
+        assert "[Today's Date]" in SYSTEM_PROMPT
+        assert "do NOT write" in SYSTEM_PROMPT
+
+    def test_prompt_fixes_conviction_vocabulary(self):
+        assert '"conviction" field' in SYSTEM_PROMPT
+        assert "HIGH, MEDIUM, or LOW" in SYSTEM_PROMPT
+        assert "Signal Quality" in SYSTEM_PROMPT  # named as a forbidden scale
+
+
+class TestFormatBriefingDate:
+    def test_no_zero_padding(self):
+        assert format_briefing_date(date(2026, 9, 4)) == "Friday, September 4, 2026"
+
+    def test_two_digit_day(self):
+        assert format_briefing_date(date(2026, 12, 25)) == "Friday, December 25, 2026"
+
+
+class TestStripDatePlaceholders:
+    def test_removes_bracketed_placeholder_lines(self):
+        text = (
+            "# Briefing\n"
+            "Date: [Today's Date]\n"
+            "**Date:** [Insert Date]\n"
+            "*Date*: [DATE]\n"
+            "**Date: [Insert Date]**\n"
+            "## Date: [Today's Date]\n"
+            "- Date: [Today's Date]\n"
+            "Real content\n"
+        )
+        assert strip_date_placeholders(text) == "# Briefing\nReal content\n"
+
+    def test_keeps_real_dates_and_other_brackets(self):
+        text = "Date: September 4, 2026\nSee [link](x) for the date\n"
+        assert strip_date_placeholders(text) == text
+
+    def test_leaves_links_and_trailing_prose_intact(self):
+        # A bracket that is a markdown link or is followed by prose is not a
+        # placeholder line; stripping a prefix would leave debris behind.
+        text = (
+            "Date: [September 4, 2026](https://example.com/calendar) — earnings\n"
+            "Date: [Today's Date] - Market Open\n"
+        )
+        assert strip_date_placeholders(text) == text
+
+    def test_empty(self):
+        assert strip_date_placeholders("") == ""
+
+
+class TestBriefingDateInPrompt:
+    def test_date_is_stated_up_front(self):
+        prompt = build_briefing_prompt({"summary": {}}, [], briefing_date=date(2026, 9, 4))
+        assert "Briefing date: Friday, September 4, 2026 (2026-09-04, US/Eastern)." in prompt
+        assert prompt.index("Briefing date:") < prompt.index("## Scan Results")
+
+    def test_omitted_when_unknown(self):
+        assert "Briefing date" not in build_briefing_prompt({"summary": {}}, [])
+
+    def test_generate_briefing_passes_date_and_scrubs_output(self):
+        provider = _FakeProvider(text="Date: [Today's Date]\n# Briefing\nBody")
+        result = generate_briefing(
+            scan_results={"summary": {}},
+            deep_analyses=[],
+            provider=provider,
+            model="m",
+            api_key="k",
+            briefing_date=date(2026, 9, 4),
+        )
+        assert "Briefing date: Friday, September 4, 2026" in provider.user_content
+        assert result.text == "# Briefing\nBody"
+
+
+class TestConvictionReachesTheModel:
+    def test_deep_projection_carries_conviction(self):
+        assert _project_deep_analysis({"symbol": "A", "conviction": "HIGH"})["conviction"] == "HIGH"
+        assert "conviction" not in _project_deep_analysis({"symbol": "A"})
+
+    def test_prompt_contains_conviction_for_scan_candidates(self):
+        scan = {
+            "summary": {},
+            "high_conviction_setups": [{"symbol": "AAPL", "composite_score": 5.0}],
+            "top_bullish": [{"symbol": "AAPL", "composite_score": 5.0}],
+        }
+        prompt = build_briefing_prompt(annotate_conviction(scan), [])
+        assert '"conviction": "HIGH"' in prompt
+
+
+def _golden_body():
+    scan = {
+        "high_conviction_setups": [
+            {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1, "regime_conflict": ""}
+        ],
+        "top_bullish": [
+            {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1},
+            {"symbol": "MSFT", "composite_score": 2.4, "signal_quality": "medium"},
+        ],
+        "top_bearish": [
+            {
+                "symbol": "TSLA",
+                "composite_score": -4.1,
+                "latest_price": 240.55,
+                "regime_conflict": "bearish setup against a bullish tape",
+            }
+        ],
+    }
+    deep = [
+        {"symbol": "AAPL", "latest_price": 190.25, "earnings_warning": "EARNINGS in 5 day(s)"},
+    ]
+    return build_briefing_body(
+        briefing_date=date(2026, 9, 4),
+        regime_header=(
+            "**Market Regime: BULLISH** — SPY closed at 500.00, 1.2% above its 20-day SMA "
+            "(494.07) as of 2026-09-03. 1 high-conviction pick flagged as counter-regime."
+        ),
+        picks_table=render_picks_table(build_picks(scan, deep)),
+        briefing=(
+            "## Executive Summary\n\nTape is constructive.\n\n"
+            "## Top Picks\n\n- **AAPL** @ $190.25 | Score +5.2 | bullish | Conviction: HIGH\n"
+        ),
+        stats_line=build_stats_line(
+            elapsed_s=42.0, symbols_scanned=540, total_candidates=3, deep_count=1
+        ),
+    )
+
+
+class TestBriefingBodyGolden:
+    """Pin the delivered email layout: title, regime, pick table, text, footer."""
+
+    def test_matches_golden_file(self):
+        # Normalise CRLF so a Windows checkout with autocrlf still compares.
+        expected = _GOLDEN.read_text(encoding="utf-8").replace("\r\n", "\n")
+        actual = _golden_body()
+        assert actual == expected, (
+            "Email body layout changed. If intentional, regenerate tests/golden/"
+            "briefing_body.md from _golden_body() and review the diff."
+        )
+
+    def test_every_pick_has_exactly_one_conviction(self):
+        body = _golden_body()
+        table_rows = [
+            line for line in body.splitlines() if line.startswith("| ") and "Symbol" not in line
+        ]
+        for row in table_rows:
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            assert cells[2] in ("HIGH", "MEDIUM", "LOW")
+
+
+class TestRunMorningBriefingDateAndPicks:
+    @pytest.mark.asyncio
+    async def test_date_is_eastern_and_body_is_templated(self, mocker):
+        scan = {
+            "scan_parameters": {"symbols_scanned": 10},
+            "summary": {
+                "total_candidates": 1,
+                "bullish_setups": 1,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [{"symbol": "AAPL", "composite_score": 4.4, "latest_price": 10.0}],
+            "top_bearish": [],
+        }
+        mocker.patch("volume_price_analysis.agent.morning_agent.run_scan", return_value=scan)
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.run_options_analysis",
+            return_value={
+                "symbol": "AAPL",
+                "composite_signal": {"score": 4.4},
+                "latest_price": 10.5,
+            },
+        )
+        mock_generate = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value=BriefingResult(text="## Executive Summary\nok"),
+        )
+        mock_send = mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
+        config = AgentConfig(
+            ai_provider="gemini",
+            ai_provider_api_key="k",
+            email_from="a@b.com",
+            email_password="p",
+            email_to="c@d.com",
+            max_deep_analysis=1,
+        )
+        # 01:30 UTC on the 5th is still the evening of the 4th in New York.
+        now = datetime(2026, 9, 5, 1, 30, tzinfo=UTC)
+
+        await run_morning_briefing(config, data_source=agent_source(["AAPL"]), now=now)
+
+        assert mock_generate.call_args.kwargs["briefing_date"] == date(2026, 9, 4)
+        scan_to_model = mock_generate.call_args.kwargs["scan_results"]
+        assert scan_to_model["top_bullish"][0]["conviction"] == "MEDIUM"
+        assert mock_generate.call_args.kwargs["deep_analyses"][0]["conviction"] == "MEDIUM"
+
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["subject"] == "Morning Market Briefing - 2026-09-04"
+        body = kwargs["body_markdown"]
+        assert body.startswith("# Morning Market Briefing — Friday, September 4, 2026\n")
+        assert "## Pick Summary" in body
+        assert "| AAPL | bullish | MEDIUM | +4.40 | 10.50 | — |" in body
+        assert body.index("## Pick Summary") < body.index("## Executive Summary")
+        assert body.rstrip().endswith("1 deep analyses*")
+
+    @pytest.mark.asyncio
+    async def test_fallback_briefing_gets_the_same_template(self, mocker, capsys):
+        scan = {
+            "summary": {
+                "total_candidates": 0,
+                "bullish_setups": 0,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch("volume_price_analysis.agent.morning_agent.run_scan", return_value=scan)
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            side_effect=RuntimeError("down"),
+        )
+        config = AgentConfig(ai_provider="gemini", ai_provider_api_key="k")
+
+        result = await run_morning_briefing(
+            config,
+            dry_run=True,
+            data_source=agent_source(),
+            now=datetime(2026, 9, 4, 12, 30, tzinfo=UTC),
+        )
+
+        out = capsys.readouterr().out
+        assert result.degraded
+        assert out.startswith("# Morning Market Briefing — Friday, September 4, 2026\n")
+        assert "## Pick Summary" in out
+        assert "no candidates passed the scan filters" in out
+        assert "## Fallback Briefing (AI unavailable)" in out
+        # Exactly one H1: the template's.
+        assert sum(line.startswith("# ") for line in out.splitlines()) == 1
+
+    @pytest.mark.asyncio
+    async def test_naive_now_is_rejected(self):
+        config = AgentConfig(ai_provider="gemini", ai_provider_api_key="k")
+        with pytest.raises(ValueError, match="aware"):
+            await run_morning_briefing(
+                config, dry_run=True, data_source=agent_source(), now=datetime(2026, 9, 4)
+            )
+
+    @pytest.mark.asyncio
+    async def test_regime_check_uses_the_briefing_date(self, mocker):
+        """The regime's causal cutoff is the injected briefing date, not the wall clock."""
+        scan = {
+            "summary": {
+                "total_candidates": 0,
+                "bullish_setups": 0,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch("volume_price_analysis.agent.morning_agent.run_scan", return_value=scan)
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value=BriefingResult(text="ok"),
+        )
+        regime = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.compute_market_regime",
+            return_value={"regime": "unknown", "reason": "x"},
+        )
+        config = AgentConfig(ai_provider="gemini", ai_provider_api_key="k")
+
+        await run_morning_briefing(
+            config,
+            dry_run=True,
+            data_source=agent_source(spy=_STUB_FRAME),
+            now=datetime(2026, 9, 5, 1, 30, tzinfo=UTC),
+        )
+
+        assert regime.call_args.kwargs["today"] == date(2026, 9, 4)
