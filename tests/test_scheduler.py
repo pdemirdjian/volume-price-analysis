@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from volume_price_analysis.agent.healthcheck import DEFAULT_HEARTBEAT_PATH
+from volume_price_analysis.agent.healthcheck import default_heartbeat_path
 from volume_price_analysis.agent.morning_agent import BriefingRunResult
 from volume_price_analysis.agent.scheduler import (
     _next_run,
@@ -670,7 +670,7 @@ class TestSchedulerMain:
         ):
             main()
         mock_sched.assert_called_once_with(
-            time(8, 30), ET, skip_holidays=False, heartbeat=DEFAULT_HEARTBEAT_PATH
+            time(8, 30), ET, skip_holidays=False, heartbeat=default_heartbeat_path()
         )
 
     def test_custom_time(self):
@@ -684,7 +684,7 @@ class TestSchedulerMain:
         ):
             main()
         mock_sched.assert_called_once_with(
-            time(10, 45), ET, skip_holidays=False, heartbeat=DEFAULT_HEARTBEAT_PATH
+            time(10, 45), ET, skip_holidays=False, heartbeat=default_heartbeat_path()
         )
 
     def test_skip_holidays_flag(self):
@@ -698,7 +698,7 @@ class TestSchedulerMain:
         ):
             main()
         mock_sched.assert_called_once_with(
-            time(8, 30), ET, skip_holidays=True, heartbeat=DEFAULT_HEARTBEAT_PATH
+            time(8, 30), ET, skip_holidays=True, heartbeat=default_heartbeat_path()
         )
 
     def test_invalid_time_format_exits(self, caplog):

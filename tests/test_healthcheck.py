@@ -2,7 +2,10 @@
 
 import asyncio
 import logging
-from datetime import datetime, time
+import os
+import tempfile
+from datetime import datetime, time, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -10,12 +13,13 @@ import pytest
 
 from volume_price_analysis.agent import healthcheck, scheduler
 from volume_price_analysis.agent.healthcheck import (
-    DEFAULT_HEARTBEAT_PATH,
     HEARTBEAT_ENV_VAR,
+    HEARTBEAT_FILENAME,
     HEARTBEAT_MAX_AGE_SECONDS,
     check_heartbeat,
+    default_heartbeat_path,
     heartbeat_path,
-    touch_heartbeat,
+    write_heartbeat,
 )
 from volume_price_analysis.agent.scheduler import _run_loop, _wait_for_next_run
 
@@ -28,42 +32,65 @@ class TestCheckHeartbeat:
         assert reason is not None
         assert "does not exist" in reason
 
-    def test_fresh_file_is_healthy(self, tmp_path):
+    def test_fresh_stamp_is_healthy(self, tmp_path):
         hb = tmp_path / "hb"
-        hb.touch()
-        assert check_heartbeat(hb, max_age_seconds=60, now=hb.stat().st_mtime + 30) is None
+        write_heartbeat(hb, clock=lambda: 1000.0)
+        assert check_heartbeat(hb, max_age_seconds=60, now=1030.0) is None
 
-    def test_stale_file_is_unhealthy(self, tmp_path):
+    def test_stale_stamp_is_unhealthy(self, tmp_path):
         hb = tmp_path / "hb"
-        hb.touch()
-        reason = check_heartbeat(hb, max_age_seconds=60, now=hb.stat().st_mtime + 61)
+        write_heartbeat(hb, clock=lambda: 1000.0)
+        reason = check_heartbeat(hb, max_age_seconds=60, now=1061.0)
         assert reason is not None
         assert "old" in reason
 
-    def test_uses_wall_clock_by_default(self, tmp_path):
+    def test_future_stamp_is_unhealthy(self, tmp_path):
+        # A monotonic reading ahead of ours was written under a different boot;
+        # it must not read as fresh.
         hb = tmp_path / "hb"
-        hb.touch()
+        write_heartbeat(hb, clock=lambda: 5000.0)
+        reason = check_heartbeat(hb, max_age_seconds=60, now=1000.0)
+        assert reason is not None
+        assert "future" in reason
+
+    def test_garbage_content_is_unhealthy(self, tmp_path):
+        hb = tmp_path / "hb"
+        hb.write_text("not a number")
+        reason = check_heartbeat(hb)
+        assert reason is not None
+        assert "monotonic timestamp" in reason
+
+    def test_uses_monotonic_clock_by_default(self, tmp_path):
+        hb = tmp_path / "hb"
+        write_heartbeat(hb)
         assert check_heartbeat(hb) is None
 
-    def test_unreadable_path_is_unhealthy(self, tmp_path):
-        # A directory where a file is expected: stat succeeds on POSIX, so
-        # force the OSError branch explicitly.
+    def test_wall_clock_step_does_not_matter(self, tmp_path):
+        # Only the file's contents (monotonic) are consulted, never its mtime.
+        hb = tmp_path / "hb"
+        write_heartbeat(hb, clock=lambda: 1000.0)
+
+        os.utime(hb, (0, 0))  # mtime at the epoch: "stale" by wall clock
+        assert check_heartbeat(hb, max_age_seconds=60, now=1010.0) is None
+
+    def test_unreadable_path_is_unhealthy(self):
         hb = MagicMock()
-        hb.stat.side_effect = PermissionError("nope")
+        hb.read_text.side_effect = PermissionError("nope")
         reason = check_heartbeat(hb)
         assert reason is not None
         assert "cannot read" in reason
 
     def test_max_age_covers_scheduler_sleep_chunk(self):
-        # The loop only touches the file when it wakes; the probe must tolerate
+        # The loop only writes the file when it wakes; the probe must tolerate
         # at least two missed wakes plus a briefing run before crying wolf.
         assert HEARTBEAT_MAX_AGE_SECONDS >= 2 * scheduler._MAX_SLEEP_CHUNK_SECONDS
 
 
 class TestHeartbeatPath:
-    def test_default(self, monkeypatch):
+    def test_default_is_in_platform_tempdir(self, monkeypatch):
         monkeypatch.delenv(HEARTBEAT_ENV_VAR, raising=False)
-        assert heartbeat_path() == DEFAULT_HEARTBEAT_PATH
+        assert heartbeat_path() == Path(tempfile.gettempdir()) / HEARTBEAT_FILENAME
+        assert heartbeat_path() == default_heartbeat_path()
 
     def test_env_override(self, monkeypatch, tmp_path):
         monkeypatch.setenv(HEARTBEAT_ENV_VAR, str(tmp_path / "custom"))
@@ -71,29 +98,34 @@ class TestHeartbeatPath:
 
     def test_empty_env_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv(HEARTBEAT_ENV_VAR, "")
-        assert heartbeat_path() == DEFAULT_HEARTBEAT_PATH
+        assert heartbeat_path() == default_heartbeat_path()
 
 
-class TestTouchHeartbeat:
-    def test_creates_and_refreshes(self, tmp_path):
+class TestWriteHeartbeat:
+    def test_writes_monotonic_reading(self, tmp_path):
         hb = tmp_path / "hb"
-        touch_heartbeat(hb)
-        assert hb.exists()
-        first = hb.stat().st_mtime_ns
-        touch_heartbeat(hb)
-        assert hb.stat().st_mtime_ns >= first
+        write_heartbeat(hb, clock=lambda: 123.4567)
+        assert hb.read_text() == "123.457\n"
+        assert not (tmp_path / "hb.tmp").exists()
 
-    def test_unwritable_path_logs_and_does_not_raise(self, tmp_path, caplog):
+    def test_overwrites_atomically(self, tmp_path):
+        hb = tmp_path / "hb"
+        write_heartbeat(hb, clock=lambda: 1.0)
+        write_heartbeat(hb, clock=lambda: 2.0)
+        assert hb.read_text() == "2.000\n"
+
+    def test_unwritable_path_logs_without_traceback_and_does_not_raise(self, tmp_path, caplog):
         hb = tmp_path / "missing-dir" / "hb"
         with caplog.at_level(logging.WARNING):
-            touch_heartbeat(hb)
-        assert "Could not update heartbeat" in caplog.text
+            write_heartbeat(hb)
+        assert "Could not write heartbeat" in caplog.text
+        assert "Traceback" not in caplog.text
 
 
 class TestMain:
     def test_healthy_exit_zero(self, tmp_path, monkeypatch, capsys):
         hb = tmp_path / "hb"
-        hb.touch()
+        write_heartbeat(hb)
         monkeypatch.setenv(HEARTBEAT_ENV_VAR, str(hb))
         healthcheck.main()
         assert "healthy" in capsys.readouterr().out
@@ -109,43 +141,42 @@ class TestSchedulerHeartbeat:
     """The loop must keep the heartbeat fresh while sleeping and around runs."""
 
     @pytest.mark.asyncio
-    async def test_wait_touches_heartbeat_on_each_wake(self, tmp_path):
+    async def test_wait_writes_heartbeat_on_each_wake(self, tmp_path):
         hb = tmp_path / "hb"
         stop_event = asyncio.Event()
-        next_dt = datetime.now(ET).replace(microsecond=0)
-        next_dt = next_dt.replace(year=next_dt.year + 1)
-        touches = 0
-        original = healthcheck.touch_heartbeat
+        next_dt = datetime.now(ET) + timedelta(days=365)
+        writes = 0
+        original = healthcheck.write_heartbeat
 
-        def counting_touch(path):
-            nonlocal touches
-            touches += 1
+        def counting_write(path):
+            nonlocal writes
+            writes += 1
             original(path)
-            if touches >= 3:
+            if writes >= 3:
                 stop_event.set()
 
         with (
             patch("volume_price_analysis.agent.scheduler._MAX_SLEEP_CHUNK_SECONDS", 0.01),
-            patch("volume_price_analysis.agent.scheduler.touch_heartbeat", counting_touch),
+            patch("volume_price_analysis.agent.scheduler.write_heartbeat", counting_write),
         ):
             result = await asyncio.wait_for(
                 _wait_for_next_run(next_dt, time(8, 30), ET, stop_event, heartbeat=hb),
                 timeout=5,
             )
         assert result is None
-        assert touches >= 3
-        assert hb.exists()
+        assert writes >= 3
+        assert check_heartbeat(hb) is None
 
     @pytest.mark.asyncio
-    async def test_wait_without_heartbeat_touches_nothing(self):
+    async def test_wait_without_heartbeat_writes_nothing(self):
         stop_event = asyncio.Event()
         stop_event.set()
-        with patch("volume_price_analysis.agent.scheduler.touch_heartbeat") as touch:
+        with patch("volume_price_analysis.agent.scheduler.write_heartbeat") as write:
             await _wait_for_next_run(datetime.now(ET), time(8, 30), ET, stop_event)
-        touch.assert_not_called()
+        write.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_run_loop_touches_heartbeat_around_briefing(self, tmp_path):
+    async def test_run_loop_writes_heartbeat_around_briefing(self, tmp_path):
         hb = tmp_path / "hb"
         stop_event = asyncio.Event()
         fired = datetime.now(ET)
@@ -154,7 +185,7 @@ class TestSchedulerHeartbeat:
             return fired
 
         async def _briefing(config):
-            # Heartbeat was touched before the run started.
+            # Heartbeat was written before the run started.
             assert hb.exists()
             hb.unlink()
             stop_event.set()
@@ -181,7 +212,7 @@ class TestSchedulerHeartbeat:
         assert hb.exists()
 
     @pytest.mark.asyncio
-    async def test_run_loop_touches_heartbeat_after_failed_briefing(self, tmp_path):
+    async def test_run_loop_writes_heartbeat_after_failed_briefing(self, tmp_path):
         hb = tmp_path / "hb"
         stop_event = asyncio.Event()
 

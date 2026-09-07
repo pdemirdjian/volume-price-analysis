@@ -20,7 +20,7 @@ import holidays
 
 from .config import AgentConfig
 from .email_sender import send_error_email
-from .healthcheck import heartbeat_path, touch_heartbeat
+from .healthcheck import heartbeat_path, write_heartbeat
 from .morning_agent import run_morning_briefing
 
 # Configure logging to stdout (Docker best practice)
@@ -101,12 +101,12 @@ async def _wait_for_next_run(
     Returns the schedule datetime that fired, or None if *stop_event* was set
     first. *last_fired* is the most recent schedule that already ran; it floors
     re-derivation so a backward clock jump can never re-fire it. When
-    *heartbeat* is given, the file is touched on every wake so the container
+    *heartbeat* is given, the file is written on every wake so the container
     healthcheck can tell a sleeping loop from a hung one.
     """
     while True:
         if heartbeat is not None:
-            touch_heartbeat(heartbeat)
+            write_heartbeat(heartbeat)
         if stop_event.is_set():
             return None
         now = datetime.now(tz)
@@ -148,7 +148,7 @@ async def _run_loop(
     """Core scheduling loop: compute next run, sleep, execute, repeat.
 
     *heartbeat*, when given, is the liveness file the container healthcheck
-    reads; it is touched on every wake and on either side of a briefing run.
+    reads; it is written on every wake and on either side of a briefing run.
     """
     config = AgentConfig.from_env()
     errors = config.validate()
@@ -219,10 +219,10 @@ async def _run_loop(
         else:
             config = fresh_config
 
-        # Execute briefing. Touch the heartbeat on both sides so a run that
+        # Execute briefing. Write the heartbeat on both sides so a run that
         # takes a while doesn't read as a hang, and a hang inside it does.
         if heartbeat is not None:
-            touch_heartbeat(heartbeat)
+            write_heartbeat(heartbeat)
         try:
             logger.info("Running morning briefing...")
             result = await run_morning_briefing(config)
@@ -249,7 +249,7 @@ async def _run_loop(
                 except Exception:
                     logger.exception("Failed to send error email")
         if heartbeat is not None:
-            touch_heartbeat(heartbeat)
+            write_heartbeat(heartbeat)
 
 
 async def run_scheduler(
