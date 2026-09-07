@@ -87,4 +87,5 @@ ignore_missing_imports = true
 volume-price-analysis = "volume_price_analysis.server:cli"
 morning-briefing = "volume_price_analysis.agent.morning_agent:main"
 morning-scheduler = "volume_price_analysis.agent.scheduler:main"
+morning-healthcheck = "volume_price_analysis.agent.healthcheck:main"
 vpa-backtest = "volume_price_analysis.backtest:main"
