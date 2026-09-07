@@ -16,14 +16,15 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
-from .ai_client import PROVIDERS, generate_briefing, resolve_model
+from .ai_client import PROVIDERS, format_briefing_date, generate_briefing, resolve_model
 from .config import AgentConfig
 from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
+from .picks import annotate_conviction, build_picks, render_picks_table
 from .regime import (
     REGIME_SMA_PERIOD,
     annotate_regime_conflicts,
@@ -38,6 +39,10 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+# Briefings are dated in market time: the scheduler fires at 08:30 ET, and a
+# UTC date would roll over at 20:00 ET the evening before.
+MARKET_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -61,6 +66,7 @@ async def run_morning_briefing(
     dry_run: bool = False,
     no_ai: bool = False,
     data_source: DataSource | None = None,
+    now: datetime | None = None,
 ) -> BriefingRunResult:
     """
     Execute the full morning briefing pipeline.
@@ -73,14 +79,17 @@ async def run_morning_briefing(
     Args:
         data_source: Market-data seam used for the scan, the SPY regime fetch,
             per-symbol fetches, and earnings checks. None uses production.
+        now: The run's clock reading (aware datetime); the briefing date is its
+            Eastern calendar day. None reads the wall clock.
 
     Returns:
         A BriefingRunResult describing how the run went.
     """
     source = data_source if data_source is not None else get_default_data_source()
     start_time = time.monotonic()
-    now = datetime.now(UTC)
-    date_str = now.strftime("%Y-%m-%d")
+    now = datetime.now(UTC) if now is None else now
+    briefing_date = now.astimezone(MARKET_TZ).date()
+    date_str = briefing_date.isoformat()
 
     logger.info("Starting morning briefing for %s", date_str)
 
@@ -126,6 +135,16 @@ async def run_morning_briefing(
         regime_header = format_regime_header(regime)
     logger.info("Regime verdict: %s", regime.get("regime", "unknown"))
 
+    # Fixed conviction vocabulary (PDE-69): computed here, echoed by the model,
+    # and rendered into the pick table so the three can never disagree.
+    scan_results = annotate_conviction(scan_results)
+    conviction_by_symbol = {
+        c["symbol"]: c["conviction"]
+        for key in ("high_conviction_setups", "top_bullish", "top_bearish")
+        for c in scan_results.get(key, [])
+        if isinstance(c, dict) and c.get("symbol")
+    }
+
     # Step 2: Deep analysis on top N candidates
     top_symbols = _get_top_symbols(scan_results, config.max_deep_analysis)
     logger.info("Step 2: Deep analysis on %d symbols: %s", len(top_symbols), top_symbols)
@@ -135,6 +154,8 @@ async def run_morning_briefing(
         try:
             data = source.fetch(symbol, period="3mo")
             analysis = run_options_analysis(symbol, data, holding_period=14)
+            if symbol in conviction_by_symbol:
+                analysis["conviction"] = conviction_by_symbol[symbol]
             deep_analyses.append(analysis)
             logger.info("  %s: score=%.1f", symbol, analysis["composite_signal"]["score"])
         except Exception:
@@ -173,6 +194,7 @@ async def run_morning_briefing(
                 model=resolve_model(config.ai_provider, config.ai_model),
                 api_key=config.ai_provider_api_key,
                 earnings_preamble=earnings_preamble,
+                briefing_date=briefing_date,
             ).text
         except Exception:
             logger.exception("AI briefing generation failed")
@@ -182,11 +204,6 @@ async def run_morning_briefing(
             )
             logger.warning("Using fallback briefing — AI provider was unavailable")
 
-    # The regime verdict heads every rendered briefing (AI or fallback); the
-    # no-AI raw email carries it inside the scan_results JSON instead.
-    if briefing is not None:
-        briefing = regime_header + "\n\n" + briefing
-
     # Step 4: Deliver
     elapsed_total = time.monotonic() - start_time
     stats_line = build_stats_line(
@@ -195,11 +212,24 @@ async def run_morning_briefing(
         total_candidates=total_candidates,
         deep_count=len(deep_analyses),
     )
+    # Every rendered briefing (AI or fallback) is wrapped in the same dated
+    # template; the no-AI raw email carries the regime inside the JSON instead.
+    body = (
+        None
+        if briefing is None
+        else build_briefing_body(
+            briefing_date=briefing_date,
+            regime_header=regime_header,
+            picks_table=render_picks_table(build_picks(scan_results, deep_analyses)),
+            briefing=briefing,
+            stats_line=stats_line,
+        )
+    )
 
     if dry_run:
         logger.info("Step 4: Dry run - printing to stdout")
-        if briefing:
-            print(briefing + stats_line)
+        if body:
+            print(body)
         else:
             print(regime_header)
             print(json.dumps(scan_results, indent=2, default=str))
@@ -220,11 +250,11 @@ async def run_morning_briefing(
         )
     else:
         logger.info("Step 4: Sending briefing email")
-        assert briefing is not None  # Always set when not no_ai
+        assert body is not None  # Always set when not no_ai
         subject = f"Morning Market Briefing - {date_str}"
         send_briefing_email(
             subject=subject,
-            body_markdown=briefing + stats_line,
+            body_markdown=body,
             from_addr=config.email_from,
             password=config.email_password,
             to_addr=config.email_to,
@@ -381,6 +411,28 @@ def build_earnings_preamble(warnings: dict[str, str]) -> str:
         f"within {_EARNINGS_WARN_DAYS} days. Factor event risk into sizing and strategy:\n"
         + "\n".join(lines)
         + "\n"
+    )
+
+
+def build_briefing_body(
+    briefing_date: date,
+    regime_header: str,
+    picks_table: str,
+    briefing: str,
+    stats_line: str,
+) -> str:
+    """Assemble the delivered email body from its programmatic and generated parts.
+
+    The template — dated title, regime verdict, fixed pick table — is rendered
+    here, never by the model, so the date is always real and the pick block
+    always parses (PDE-69). ``tests/golden/briefing_body.md`` pins the layout.
+    """
+    return (
+        f"# Morning Market Briefing — {format_briefing_date(briefing_date)}\n\n"
+        f"{regime_header}\n\n"
+        f"## Pick Summary\n\n{picks_table}\n\n"
+        f"{briefing}"
+        f"{stats_line}"
     )
 
 

@@ -10,6 +10,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +82,22 @@ fields are a ±1 standard deviation expected move over the holding period;
 label them as such (e.g., "14-day ±1σ upper target"), not as predictions or
 price objectives.
 
+DATE: The briefing date is stated in the data ("Briefing date: ..."). The
+email template already renders a dated title above your text, so do NOT write
+a date line, greeting, or placeholder such as "Date: [Today's Date]". If you
+mention the date in prose, use the one provided, verbatim.
+
+CONVICTION: Every candidate in the data carries a "conviction" field that is
+exactly one of HIGH, MEDIUM, or LOW. Wherever you present a pick, label it
+"Conviction: <value>" using that field verbatim. Never invent another scale
+("Signal Quality", "Strong", stars, etc.) and never leave a pick unlabeled. A
+fixed pick table is rendered above your text; do not reproduce it.
+
 Format the briefing in markdown with clear sections:
 1. **Executive Summary** - 2-3 sentence overview of today's market setup
 2. **Top Picks** - For each high-conviction candidate, include:
-   - Symbol, price, composite score, and direction (bullish/bearish)
+   - Symbol, price, composite score, direction (bullish/bearish), and
+     "Conviction: HIGH|MEDIUM|LOW"
    - Key levels (support/resistance from volume profile)
    - Suggested strategy (calls, puts, spreads, etc.) with 14-day DTE framing
    - Risk factors to watch
@@ -335,6 +348,7 @@ def generate_briefing(
     model: str,
     api_key: str,
     earnings_preamble: str = "",
+    briefing_date: date | None = None,
 ) -> BriefingResult:
     """
     Generate a natural-language briefing from scan results and deep analyses.
@@ -347,13 +361,17 @@ def generate_briefing(
         model: Model name passed through to the provider.
         api_key: API key passed through to the provider.
         earnings_preamble: Optional earnings-event-risk warning block prepended to user message.
+        briefing_date: The date the briefing is for; injected into the prompt so the
+            model never has to guess it (PDE-69).
 
     Returns:
         A BriefingResult carrying the markdown briefing and any ungrounded tickers.
     """
-    user_content = build_briefing_prompt(scan_results, deep_analyses, earnings_preamble)
+    user_content = build_briefing_prompt(
+        scan_results, deep_analyses, earnings_preamble, briefing_date=briefing_date
+    )
 
-    briefing = provider(user_content, model, api_key)
+    briefing = strip_date_placeholders(provider(user_content, model, api_key))
 
     # Anti-hallucination guardrail: every ticker named in the briefing should
     # exist in the scan/analysis data we passed to the model. Log (don't block)
@@ -493,6 +511,10 @@ def _project_deep_analysis(analysis: dict) -> dict:
     if insights:
         projected["insights"] = insights
 
+    # Fixed conviction label (PDE-69): the model echoes this verbatim.
+    if analysis.get("conviction"):
+        projected["conviction"] = analysis["conviction"]
+
     return projected
 
 
@@ -530,8 +552,27 @@ def _drop_superseded_scan_fields(projected_scan: dict, deep_analyses: list[dict]
     return result
 
 
+def format_briefing_date(briefing_date: date) -> str:
+    """Render a briefing date the way it appears in the email title and prompt."""
+    return f"{briefing_date:%A, %B} {briefing_date.day}, {briefing_date.year}"
+
+
+# Lines the model sometimes emits when asked to "fill in" a date, e.g.
+# "Date: [Today's Date]" or "**Date:** [Insert Date]". The template owns the
+# date, so any such line is dropped from the generated text.
+_DATE_PLACEHOLDER_LINE = re.compile(r"(?im)^[ \t]*\**date\**:?\**[ \t]*\[[^\]\n]*\][ \t]*\n?")
+
+
+def strip_date_placeholders(briefing: str) -> str:
+    """Remove bracketed date-placeholder lines from generated briefing text."""
+    return _DATE_PLACEHOLDER_LINE.sub("", briefing)
+
+
 def build_briefing_prompt(
-    scan_results: dict, deep_analyses: list[dict], earnings_preamble: str = ""
+    scan_results: dict,
+    deep_analyses: list[dict],
+    earnings_preamble: str = "",
+    briefing_date: date | None = None,
 ) -> str:
     """Build the user message sent to a briefing provider.
 
@@ -539,11 +580,17 @@ def build_briefing_prompt(
     by a deep analysis, project each deep analysis) and renders the result as
     JSON blocks under markdown headings, optionally preceded by an
     earnings-event-risk preamble. Pairs with :data:`SYSTEM_PROMPT`, which the
-    provider adapters supply as the system instruction.
+    provider adapters supply as the system instruction. When ``briefing_date``
+    is given it is stated up front so the model never has to guess it.
     """
     projected_scan = _project_scan_results(scan_results)
     projected_scan = _drop_superseded_scan_fields(projected_scan, deep_analyses)
     user_content = "Generate a morning options trading briefing from this data:\n\n"
+    if briefing_date is not None:
+        user_content += (
+            f"Briefing date: {format_briefing_date(briefing_date)} "
+            f"({briefing_date.isoformat()}, US/Eastern).\n\n"
+        )
     if earnings_preamble:
         user_content += earnings_preamble + "\n"
     user_content += "## Scan Results\n"
