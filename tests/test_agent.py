@@ -379,7 +379,9 @@ def _full_deep_analysis():
             "recommendation": "bullish",
             "composite_score": 4.2,
             "signal_quality": "high",
-            "rationale": "Bullish (score +4.2/10, high conviction): price vs VWAP aligned bullish.",
+            "rationale": (
+                "Bullish (score +4.2/10, high signal quality): price vs VWAP aligned bullish."
+            ),
         },
         "parameters": {"holding_period": 14, "mfi_period": 7, "volume_window": 10},
         "composite_signal": {
@@ -2644,12 +2646,24 @@ class TestStripDatePlaceholders:
             "Date: [Today's Date]\n"
             "**Date:** [Insert Date]\n"
             "*Date*: [DATE]\n"
+            "**Date: [Insert Date]**\n"
+            "## Date: [Today's Date]\n"
+            "- Date: [Today's Date]\n"
             "Real content\n"
         )
         assert strip_date_placeholders(text) == "# Briefing\nReal content\n"
 
     def test_keeps_real_dates_and_other_brackets(self):
         text = "Date: September 4, 2026\nSee [link](x) for the date\n"
+        assert strip_date_placeholders(text) == text
+
+    def test_leaves_links_and_trailing_prose_intact(self):
+        # A bracket that is a markdown link or is followed by prose is not a
+        # placeholder line; stripping a prefix would leave debris behind.
+        text = (
+            "Date: [September 4, 2026](https://example.com/calendar) — earnings\n"
+            "Date: [Today's Date] - Market Open\n"
+        )
         assert strip_date_placeholders(text) == text
 
     def test_empty(self):
@@ -2844,4 +2858,49 @@ class TestRunMorningBriefingDateAndPicks:
         assert out.startswith("# Morning Market Briefing — Friday, September 4, 2026\n")
         assert "## Pick Summary" in out
         assert "no candidates passed the scan filters" in out
-        assert "Fallback - AI unavailable" in out
+        assert "## Fallback Briefing (AI unavailable)" in out
+        # Exactly one H1: the template's.
+        assert sum(line.startswith("# ") for line in out.splitlines()) == 1
+
+    @pytest.mark.asyncio
+    async def test_naive_now_is_rejected(self):
+        config = AgentConfig(ai_provider="gemini", ai_provider_api_key="k")
+        with pytest.raises(ValueError, match="aware"):
+            await run_morning_briefing(
+                config, dry_run=True, data_source=agent_source(), now=datetime(2026, 9, 4)
+            )
+
+    @pytest.mark.asyncio
+    async def test_regime_check_uses_the_briefing_date(self, mocker):
+        """The regime's causal cutoff is the injected briefing date, not the wall clock."""
+        scan = {
+            "summary": {
+                "total_candidates": 0,
+                "bullish_setups": 0,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        }
+        mocker.patch("volume_price_analysis.agent.morning_agent.run_scan", return_value=scan)
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.generate_briefing",
+            return_value=BriefingResult(text="ok"),
+        )
+        regime = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.compute_market_regime",
+            return_value={"regime": "unknown", "reason": "x"},
+        )
+        config = AgentConfig(ai_provider="gemini", ai_provider_api_key="k")
+
+        await run_morning_briefing(
+            config,
+            dry_run=True,
+            data_source=agent_source(spy=_STUB_FRAME),
+            now=datetime(2026, 9, 5, 1, 30, tzinfo=UTC),
+        )
+
+        assert regime.call_args.kwargs["today"] == date(2026, 9, 4)

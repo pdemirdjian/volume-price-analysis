@@ -7,10 +7,12 @@ vocabulary: every pick gets exactly one of ``HIGH`` / ``MEDIUM`` / ``LOW``,
 derived from the scan's own gates, and the picks are rendered as a fixed
 markdown table that audits can parse without reading prose.
 
-Conviction rule (mirrors ``analysis.run_scan``):
+Conviction rule (shares its thresholds with ``analysis.run_scan``):
 
 - ``HIGH``: the scan's high-conviction gate held — |score| >= 4, ADX >= 28 and
-  HV percentile <= 50 — i.e. the symbol is in ``high_conviction_setups``.
+  HV percentile <= 50 (``analysis.passes_high_conviction_gate``). Evaluated on
+  the candidate itself, not on membership in ``high_conviction_setups``: the
+  scan truncates that list to five, but the summary counts every qualifier.
 - ``MEDIUM``: one strong leg but not the full gate — |score| >= 4 *or* the
   composite's ``signal_quality`` is ``"high"`` (ADX > 30).
 - ``LOW``: everything else that passed the scan filters.
@@ -22,12 +24,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from ..analysis import HIGH_CONVICTION_MIN_ABS_SCORE, passes_high_conviction_gate
+
 Conviction = Literal["HIGH", "MEDIUM", "LOW"]
 CONVICTIONS: tuple[Conviction, ...] = ("HIGH", "MEDIUM", "LOW")
 
-# |composite_score| at or above which a pick counts as strongly scored. Matches
-# the score leg of the scan's high-conviction gate.
-STRONG_SCORE = 4.0
+# |composite_score| at or above which a pick counts as strongly scored (the
+# score leg of the high-conviction gate).
+STRONG_SCORE = HIGH_CONVICTION_MIN_ABS_SCORE
 
 _CANDIDATE_LISTS = ("high_conviction_setups", "top_bullish", "top_bearish")
 
@@ -49,14 +53,27 @@ class Pick:
     earnings_warning: str | None = None
 
 
-def conviction_for(candidate: dict, *, high_conviction: bool) -> Conviction:
-    """Classify one scan candidate. ``high_conviction`` says the scan gate held."""
-    if high_conviction:
+def conviction_for(candidate: dict, *, high_conviction: bool = False) -> Conviction:
+    """Classify one scan candidate.
+
+    ``high_conviction`` force-qualifies a candidate the scan already listed
+    under ``high_conviction_setups``; otherwise the gate is re-evaluated from
+    the candidate's own fields, so qualifiers beyond the scan's five-entry cap
+    still read HIGH.
+    """
+    if high_conviction or passes_high_conviction_gate(candidate):
         return "HIGH"
-    score = abs(float(candidate.get("composite_score") or 0.0))
-    if score >= STRONG_SCORE or candidate.get("signal_quality") == "high":
+    if _score_of(candidate) >= STRONG_SCORE or candidate.get("signal_quality") == "high":
         return "MEDIUM"
     return "LOW"
+
+
+def _score_of(candidate: dict) -> float:
+    """Absolute composite score, or 0.0 when missing or non-numeric."""
+    try:
+        return abs(float(candidate.get("composite_score") or 0.0))
+    except TypeError, ValueError:
+        return 0.0
 
 
 def _high_conviction_symbols(scan_results: dict) -> set[str]:
@@ -94,8 +111,8 @@ def build_picks(scan_results: dict, deep_analyses: Iterable[dict] = ()) -> list[
 
     Order matches ``_get_top_symbols``: high-conviction setups first, then the
     bullish list, then the bearish list. A deep analysis for a symbol supplies
-    its price (the consistency rule: deep-analysis values win) and any earnings
-    warning attached to it.
+    its price and score (the consistency rule: deep-analysis values win) and
+    any earnings warning attached to it.
     """
     deep_by_symbol = {
         a["symbol"]: a for a in deep_analyses if isinstance(a, dict) and a.get("symbol")
@@ -111,8 +128,14 @@ def build_picks(scan_results: dict, deep_analyses: Iterable[dict] = ()) -> list[
             if not symbol or symbol in seen:
                 continue
             seen.add(symbol)
-            score = float(candidate.get("composite_score") or 0.0)
             deep = deep_by_symbol.get(symbol, {})
+            composite = deep.get("composite_signal")
+            deep_score = composite.get("score") if isinstance(composite, dict) else None
+            raw_score = candidate.get("composite_score") if deep_score is None else deep_score
+            try:
+                score = float(raw_score or 0.0)
+            except TypeError, ValueError:
+                score = 0.0
             price = deep.get("latest_price", candidate.get("latest_price"))
             picks.append(
                 Pick(

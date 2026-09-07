@@ -26,6 +26,22 @@ class TestConvictionFor:
     def test_strong_score_is_medium(self):
         assert conviction_for({"composite_score": -4.2}, high_conviction=False) == "MEDIUM"
 
+    def test_gate_reevaluated_from_fields(self):
+        # Not in high_conviction_setups (the scan caps that list at five), but
+        # the candidate itself clears the gate.
+        c = {"composite_score": -4.2, "adx": 31.0, "iv_percentile": 22.0}
+        assert conviction_for(c) == "HIGH"
+
+    def test_gate_fails_on_any_leg(self):
+        base = {"composite_score": 4.5, "adx": 30.0, "hv_percentile": 40.0}
+        assert conviction_for(base) == "HIGH"
+        assert conviction_for({**base, "adx": 27.9}) == "MEDIUM"
+        assert conviction_for({**base, "hv_percentile": 50.1}) == "MEDIUM"
+        assert conviction_for({**base, "composite_score": 3.9, "adx": 40}) == "LOW"
+
+    def test_non_numeric_score_is_low(self):
+        assert conviction_for({"composite_score": "n/a"}) == "LOW"
+
     def test_high_signal_quality_is_medium(self):
         c = {"composite_score": 2.1, "signal_quality": "high"}
         assert conviction_for(c, high_conviction=False) == "MEDIUM"
@@ -44,6 +60,16 @@ class TestConvictionFor:
 
 
 class TestAnnotateConviction:
+    def test_sixth_qualifier_beyond_scan_cap_is_still_high(self):
+        qualifiers = [
+            {"symbol": f"S{i}", "composite_score": 5.0, "adx": 35.0, "iv_percentile": 10.0}
+            for i in range(6)
+        ]
+        scan = _scan(high=qualifiers[:5], bull=qualifiers)
+        out = annotate_conviction(scan)
+        assert [c["conviction"] for c in out["top_bullish"]] == ["HIGH"] * 6
+        assert [p.conviction for p in build_picks(scan)] == ["HIGH"] * 6
+
     def test_labels_every_candidate_in_every_list(self):
         aapl = {"symbol": "AAPL", "composite_score": 5.0}
         scan = _scan(high=[aapl], bull=[aapl, {"symbol": "MSFT", "composite_score": 2.2}])
@@ -76,14 +102,25 @@ class TestBuildPicks:
         assert [p.conviction for p in picks] == ["HIGH", "LOW", "MEDIUM"]
         assert [p.direction for p in picks] == ["bullish", "bullish", "bearish"]
 
-    def test_deep_analysis_supplies_price_and_earnings(self):
+    def test_deep_analysis_supplies_price_score_and_earnings(self):
         scan = _scan(bull=[{"symbol": "AAPL", "composite_score": 3.0, "latest_price": 100.0}])
         deep = [
-            {"symbol": "AAPL", "latest_price": 101.5, "earnings_warning": "EARNINGS in 3 day(s)"}
+            {
+                "symbol": "AAPL",
+                "latest_price": 101.5,
+                "composite_signal": {"score": 3.4567},
+                "earnings_warning": "EARNINGS in 3 day(s)",
+            }
         ]
         (pick,) = build_picks(scan, deep)
         assert pick.price == 101.5
+        assert pick.score == 3.46
         assert pick.earnings_warning == "EARNINGS in 3 day(s)"
+
+    def test_deep_analysis_without_score_keeps_scan_score(self):
+        scan = _scan(bull=[{"symbol": "AAPL", "composite_score": 3.0}])
+        (pick,) = build_picks(scan, [{"symbol": "AAPL", "composite_signal": "junk"}])
+        assert pick.score == 3.0
 
     def test_scan_price_when_no_deep_analysis(self):
         scan = _scan(bull=[{"symbol": "AAPL", "composite_score": 3.0, "latest_price": 100.0}])

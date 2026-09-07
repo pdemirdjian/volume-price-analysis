@@ -95,7 +95,7 @@ fixed pick table is rendered above your text; do not reproduce it.
 
 Format the briefing in markdown with clear sections:
 1. **Executive Summary** - 2-3 sentence overview of today's market setup
-2. **Top Picks** - For each high-conviction candidate, include:
+2. **Top Picks** - For each deep-analysed candidate, include:
    - Symbol, price, composite score, direction (bullish/bearish), and
      "Conviction: HIGH|MEDIUM|LOW"
    - Key levels (support/resistance from volume profile)
@@ -558,9 +558,14 @@ def format_briefing_date(briefing_date: date) -> str:
 
 
 # Lines the model sometimes emits when asked to "fill in" a date, e.g.
-# "Date: [Today's Date]" or "**Date:** [Insert Date]". The template owns the
-# date, so any such line is dropped from the generated text.
-_DATE_PLACEHOLDER_LINE = re.compile(r"(?im)^[ \t]*\**date\**:?\**[ \t]*\[[^\]\n]*\][ \t]*\n?")
+# "Date: [Today's Date]" or "**Date: [Insert Date]**". The template owns the
+# date, so any such line is dropped from the generated text. The whole line
+# must be the placeholder (optionally wrapped in emphasis): a bracket that is a
+# markdown link or is followed by prose is left alone.
+_DATE_PLACEHOLDER_LINE = re.compile(
+    r"(?im)^[ \t]*(?:#+[ \t]+|[-*][ \t]+)?[*_]*date[*_]*:?[*_]*[ \t]*"
+    r"\[[^\]\n]*\][*_]*[ \t]*$\n?"
+)
 
 
 def strip_date_placeholders(briefing: str) -> str:

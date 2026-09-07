@@ -87,7 +87,10 @@ async def run_morning_briefing(
     """
     source = data_source if data_source is not None else get_default_data_source()
     start_time = time.monotonic()
-    now = datetime.now(UTC) if now is None else now
+    if now is None:
+        now = datetime.now(UTC)
+    elif now.tzinfo is None:
+        raise ValueError("now must be an aware datetime")
     briefing_date = now.astimezone(MARKET_TZ).date()
     date_str = briefing_date.isoformat()
 
@@ -123,7 +126,7 @@ async def run_morning_briefing(
     # unknown verdict with the scan results left unannotated.
     logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
     try:
-        regime = _fetch_market_regime(source)
+        regime = _fetch_market_regime(source, today=briefing_date)
         scan_results = annotate_regime_conflicts(scan_results, regime)
         conflict_count = sum(
             1 for c in scan_results.get("high_conviction_setups", []) if c.get("regime_conflict")
@@ -314,14 +317,18 @@ def _fetch_earnings_warnings(
         return result
 
 
-def _fetch_market_regime(source: DataSource) -> dict:
-    """Fetch SPY history and compute the market regime; failures degrade to unknown."""
+def _fetch_market_regime(source: DataSource, today: date | None = None) -> dict:
+    """Fetch SPY history and compute the market regime; failures degrade to unknown.
+
+    ``today`` is the briefing's Eastern calendar day (defaults to the wall
+    clock's). Bars dated on or after it are excluded so a manual intraday run
+    stays strictly causal — the check always reads the prior session's close.
+    """
     try:
         spy_data = source.fetch("SPY", period="3mo")
-        # Exclude any in-progress session so a manual intraday run stays strictly
-        # causal — the check must always read the prior session's close.
-        today_eastern = datetime.now(ZoneInfo("America/New_York")).date()
-        return compute_market_regime(spy_data, today=today_eastern)
+        if today is None:
+            today = datetime.now(MARKET_TZ).date()
+        return compute_market_regime(spy_data, today=today)
     except Exception:
         logger.exception("Market regime check failed")
         return compute_market_regime(None)
@@ -369,8 +376,11 @@ def _candidate_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str
 
 
 def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
-    """Generate a basic text briefing when Claude API fails."""
-    lines = ["# Morning Market Briefing (Fallback - AI unavailable)\n"]
+    """Generate a basic text briefing when the AI provider fails.
+
+    Rendered beneath the dated template title, so it opens at H2.
+    """
+    lines = ["## Fallback Briefing (AI unavailable)\n"]
 
     summary = scan_results.get("summary", {})
     lines.append(f"**Candidates found:** {summary.get('total_candidates', 0)}")
