@@ -25,3 +25,4 @@ docker run --env-file .env volume-price-analysis
 - `volume-price-analysis` → `volume_price_analysis.server:main` — MCP server
 - `morning-briefing` → `volume_price_analysis.agent.morning_agent:main` — single briefing run
 - `morning-scheduler` → `volume_price_analysis.agent.scheduler:main` — asyncio scheduler (used in Docker)
+- `morning-healthcheck` → `volume_price_analysis.agent.healthcheck:main` — Docker HEALTHCHECK probe (heartbeat file freshness)

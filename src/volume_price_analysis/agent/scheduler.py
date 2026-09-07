@@ -13,12 +13,14 @@ import logging
 import signal
 import sys
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import holidays
 
 from .config import AgentConfig
 from .email_sender import send_error_email
+from .healthcheck import heartbeat_path, touch_heartbeat
 from .morning_agent import run_morning_briefing
 
 # Configure logging to stdout (Docker best practice)
@@ -34,7 +36,8 @@ ET = ZoneInfo("America/New_York")
 # Never sleep longer than this in one stretch: asyncio timeouts run on the
 # monotonic clock, which drifts from wall time across DST transitions, NTP
 # steps, and container suspend/resume. Waking regularly and re-checking wall
-# time bounds any such error to one chunk.
+# time bounds any such error to one chunk. It also bounds how often the
+# liveness heartbeat is refreshed (see healthcheck.py).
 _MAX_SLEEP_CHUNK_SECONDS = 15 * 60
 
 # NYSE holidays instance (reused across calls)
@@ -91,14 +94,19 @@ async def _wait_for_next_run(
     stop_event: asyncio.Event,
     skip_holidays: bool = False,
     last_fired: datetime | None = None,
+    heartbeat: Path | None = None,
 ) -> datetime | None:
     """Sleep until *next_dt* in bounded chunks, re-deriving the schedule each wake.
 
     Returns the schedule datetime that fired, or None if *stop_event* was set
     first. *last_fired* is the most recent schedule that already ran; it floors
-    re-derivation so a backward clock jump can never re-fire it.
+    re-derivation so a backward clock jump can never re-fire it. When
+    *heartbeat* is given, the file is touched on every wake so the container
+    healthcheck can tell a sleeping loop from a hung one.
     """
     while True:
+        if heartbeat is not None:
+            touch_heartbeat(heartbeat)
         if stop_event.is_set():
             return None
         now = datetime.now(tz)
@@ -135,8 +143,13 @@ async def _run_loop(
     tz: ZoneInfo,
     stop_event: asyncio.Event,
     skip_holidays: bool = False,
+    heartbeat: Path | None = None,
 ) -> None:
-    """Core scheduling loop: compute next run, sleep, execute, repeat."""
+    """Core scheduling loop: compute next run, sleep, execute, repeat.
+
+    *heartbeat*, when given, is the liveness file the container healthcheck
+    reads; it is touched on every wake and on either side of a briefing run.
+    """
     config = AgentConfig.from_env()
     errors = config.validate()
     if errors:
@@ -179,7 +192,13 @@ async def _run_loop(
 
         # Sleep until next run or stop signal
         fired = await _wait_for_next_run(
-            next_dt, target, tz, stop_event, skip_holidays=skip_holidays, last_fired=last_fired
+            next_dt,
+            target,
+            tz,
+            stop_event,
+            skip_holidays=skip_holidays,
+            last_fired=last_fired,
+            heartbeat=heartbeat,
         )
         if fired is None:
             break
@@ -200,7 +219,10 @@ async def _run_loop(
         else:
             config = fresh_config
 
-        # Execute briefing
+        # Execute briefing. Touch the heartbeat on both sides so a run that
+        # takes a while doesn't read as a hang, and a hang inside it does.
+        if heartbeat is not None:
+            touch_heartbeat(heartbeat)
         try:
             logger.info("Running morning briefing...")
             result = await run_morning_briefing(config)
@@ -226,12 +248,15 @@ async def _run_loop(
                     )
                 except Exception:
                     logger.exception("Failed to send error email")
+        if heartbeat is not None:
+            touch_heartbeat(heartbeat)
 
 
 async def run_scheduler(
     target: time,
     tz: ZoneInfo,
     skip_holidays: bool = False,
+    heartbeat: Path | None = None,
 ) -> None:
     """Set up signal handlers and run the scheduling loop."""
     stop_event = asyncio.Event()
@@ -254,13 +279,14 @@ async def run_scheduler(
             loop.add_signal_handler(sig, _signal_handler)
 
     logger.info(
-        "Scheduler starting (target=%s, tz=%s, skip_holidays=%s)",
+        "Scheduler starting (target=%s, tz=%s, skip_holidays=%s, heartbeat=%s)",
         target.strftime("%H:%M"),
         tz,
         skip_holidays,
+        heartbeat,
     )
 
-    await _run_loop(target, tz, stop_event, skip_holidays=skip_holidays)
+    await _run_loop(target, tz, stop_event, skip_holidays=skip_holidays, heartbeat=heartbeat)
 
     logger.info("Scheduler stopped")
 
@@ -295,7 +321,9 @@ def main() -> None:
         logger.error("Invalid --time value %r: %s", args.time, exc)
         sys.exit(1)
 
-    asyncio.run(run_scheduler(target, ET, skip_holidays=args.skip_holidays))
+    asyncio.run(
+        run_scheduler(target, ET, skip_holidays=args.skip_holidays, heartbeat=heartbeat_path())
+    )
 
 
 if __name__ == "__main__":

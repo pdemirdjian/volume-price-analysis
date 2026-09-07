@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from volume_price_analysis.agent.healthcheck import DEFAULT_HEARTBEAT_PATH
 from volume_price_analysis.agent.morning_agent import BriefingRunResult
 from volume_price_analysis.agent.scheduler import (
     _next_run,
@@ -668,7 +669,9 @@ class TestSchedulerMain:
             patch("volume_price_analysis.agent.scheduler.asyncio.run"),
         ):
             main()
-        mock_sched.assert_called_once_with(time(8, 30), ET, skip_holidays=False)
+        mock_sched.assert_called_once_with(
+            time(8, 30), ET, skip_holidays=False, heartbeat=DEFAULT_HEARTBEAT_PATH
+        )
 
     def test_custom_time(self):
         """main() parses --time into a datetime.time and passes it to run_scheduler."""
@@ -680,7 +683,9 @@ class TestSchedulerMain:
             patch("volume_price_analysis.agent.scheduler.asyncio.run"),
         ):
             main()
-        mock_sched.assert_called_once_with(time(10, 45), ET, skip_holidays=False)
+        mock_sched.assert_called_once_with(
+            time(10, 45), ET, skip_holidays=False, heartbeat=DEFAULT_HEARTBEAT_PATH
+        )
 
     def test_skip_holidays_flag(self):
         """main() forwards --skip-holidays to run_scheduler."""
@@ -692,7 +697,9 @@ class TestSchedulerMain:
             patch("volume_price_analysis.agent.scheduler.asyncio.run"),
         ):
             main()
-        mock_sched.assert_called_once_with(time(8, 30), ET, skip_holidays=True)
+        mock_sched.assert_called_once_with(
+            time(8, 30), ET, skip_holidays=True, heartbeat=DEFAULT_HEARTBEAT_PATH
+        )
 
     def test_invalid_time_format_exits(self, caplog):
         """main() exits when --time is not parseable."""
