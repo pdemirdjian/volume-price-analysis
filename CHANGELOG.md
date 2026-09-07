@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.9.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.3...v2.9.4) (2026-09-07)
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=2.22.0 ([#454](https://github.com/pdemirdjian/volume-price-analysis/issues/454)) ([b03a78b](https://github.com/pdemirdjian/volume-price-analysis/commit/b03a78b1839b79d5c767d623a1fa907a957fa520))
+* fixed conviction labels and programmatic date in briefings ([#457](https://github.com/pdemirdjian/volume-price-analysis/issues/457)) ([8b5a5a8](https://github.com/pdemirdjian/volume-price-analysis/commit/8b5a5a831b3334feefefb385c5e500167ecffc67))
+* real scheduler liveness healthcheck and unbuffered container logs ([#456](https://github.com/pdemirdjian/volume-price-analysis/issues/456)) ([47e54bb](https://github.com/pdemirdjian/volume-price-analysis/commit/47e54bbc10eb6059e19864cf45ec9f92ca2652cb))
+
 ## [2.9.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.2...v2.9.3) (2026-09-05)
 
 
