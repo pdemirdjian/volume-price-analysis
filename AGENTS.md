@@ -6,7 +6,8 @@ MCP server providing volume-price technical analysis tools for stock market data
 
 ```
 src/volume_price_analysis/
-├── server.py        # MCP tool definitions & handlers
+├── server.py        # MCP adapter: list-tools + one dispatcher, nothing else
+├── tools.py         # Tool registry: one ToolSpec (name/schema/run) per MCP tool
 ├── indicators.py    # Pure calculation functions (23 indicators)
 ├── data_fetcher.py  # DataSource protocol; YFinanceDataSource (prod) + InMemoryDataSource (tests)
 ├── analysis.py      # Reusable scan/analysis logic
@@ -17,8 +18,9 @@ src/volume_price_analysis/
 
 1. Add calculation function to `indicators.py` (takes DataFrame, returns Series/dict)
 2. Add test to `tests/test_indicators.py`
-3. Add `Tool()` definition in `server.py` `handle_list_tools()`
-4. Add handler case in `handle_call_tool()`
+3. Append a `ToolSpec(name, description, input_schema, run)` to `TOOLS` in `tools.py` — the
+   list-tools response and the dispatcher both derive from it; `server.py` needs no change
+4. Add a case to `tests/test_tool_registry.py`'s `MINIMAL_ARGS` so the registry sweep covers it
 
 Use skills `indicator-validator` and `scan-reviewer` when modifying indicators or scan logic.
 

@@ -102,8 +102,23 @@ gate is shared by the scan (`analysis.run_scan`), the briefing picks
 
 ## tool registry
 
-_Forthcoming (PDE-152)._ The record list that will drive both MCP list and call
-dispatch, replacing the hand-maintained `Tool()` literals in
-`server.handle_list_tools` and the dispatch branches in `server.handle_call_tool`.
-It lives in its own module; `server.py` keeps only the MCP adapter and the
-dispatcher. Tool names and payloads are unchanged by the move.
+The record list that drives both MCP list and call dispatch: `tools.TOOLS`, a
+tuple of `tools.ToolSpec` (`name`, `description`, `input_schema`, `run`,
+`default_period`). `server.handle_list_tools` maps it to `Tool()` objects and
+`server.dispatch` looks a record up by name and awaits its `run` — there is no
+per-tool branching anywhere in `server.py`, which is only the MCP adapter and
+that one dispatcher. Adding a tool means appending one record.
+
+_Avoided:_ **handler** for the per-tool callable — it is a registry record's
+`run`. "Handler" is reserved for the MCP protocol wrappers (`_on_list_tools`,
+`_on_call_tool`, `handle_call_tool`).
+
+## tool context
+
+What one tool invocation is allowed to touch: `tools.ToolContext`, carrying the
+parsed `args`, the `data_source` to read market data through, and a `fetch()`
+that lazily resolves the standard symbol/period/start/end arguments into an
+OHLCV frame. `fetch()` is memoised (one invocation is one fetch) and hands out a
+copy, so no tool can mutate the frame the data source owns. `scan_candidates` is
+the one tool that never calls `fetch()` — it fetches per symbol inside
+`analysis.run_scan`.

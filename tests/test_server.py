@@ -1,4 +1,8 @@
-"""Tests for MCP server functionality."""
+"""Tests for MCP server functionality.
+
+Market data is injected through the ``DataSource`` seam (see the ``market``
+fixture below) rather than by patching a module-level fetch.
+"""
 
 import json
 from unittest.mock import patch
@@ -8,18 +12,58 @@ import pandas as pd
 import pytest
 from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult
 
+from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, InMemoryDataSource
 from volume_price_analysis.server import (
     _SERVER_VERSION,
     _json_response,
     _on_call_tool,
     _on_list_tools,
     _sanitize_for_json,
-    _validate_range,
-    generate_enhanced_summary,
+    dispatch,
     handle_call_tool,
     handle_list_tools,
     server,
 )
+from volume_price_analysis.tools import generate_enhanced_summary
+from volume_price_analysis.tools import validate_range as _validate_range
+
+
+class Market(InMemoryDataSource):
+    """In-memory ``DataSource`` that answers for whichever symbol is asked.
+
+    Server tests exercise tool behaviour, not symbol routing, so one frame
+    (or one error) is registered on demand for the requested symbol.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.default_frame: pd.DataFrame | None = None
+        self.default_error: Exception | None = None
+
+    def fetch(
+        self,
+        symbol: str,
+        *,
+        period: str = "1mo",
+        start: str | None = None,
+        end: str | None = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> pd.DataFrame:
+        if self.default_error is not None:
+            self.errors.setdefault(symbol, self.default_error)
+        if self.default_frame is not None:
+            self.frames.setdefault(symbol, self.default_frame)
+        return super().fetch(symbol, period=period, start=start, end=end, timeout=timeout)
+
+    async def call(self, name: str, arguments: dict):
+        """Dispatch a tool call against this injected data source."""
+        return await dispatch(name, arguments, data_source=self)
+
+
+@pytest.fixture
+def market():
+    """Injected market-data seam for server tool tests."""
+    return Market()
 
 
 class TestListTools:
@@ -105,8 +149,7 @@ class TestCallToolGetStockData:
     """Tests for get_stock_data tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_get_stock_data_basic(self, mock_fetch):
+    async def test_get_stock_data_basic(self, market):
         """Test basic stock data retrieval."""
         # Setup mock
         mock_data = pd.DataFrame(
@@ -119,10 +162,10 @@ class TestCallToolGetStockData:
                 "Volume": [1000000, 1100000, 1200000, 1300000, 1400000],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
         # Call tool
-        result = await handle_call_tool(
+        result = await market.call(
             name="get_stock_data", arguments={"symbol": "AAPL", "period": "5d"}
         )
 
@@ -136,8 +179,7 @@ class TestCallToolGetStockData:
         assert data["latest_volume"] == 1400000
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_get_stock_data_with_dates(self, mock_fetch):
+    async def test_get_stock_data_with_dates(self, market):
         """Test stock data retrieval with date range."""
         mock_data = pd.DataFrame(
             {
@@ -149,9 +191,9 @@ class TestCallToolGetStockData:
                 "Volume": [1000000, 1100000, 1200000],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="get_stock_data",
             arguments={"symbol": "MSFT", "start_date": "2024-01-01", "end_date": "2024-01-03"},
         )
@@ -165,8 +207,7 @@ class TestCallToolOBV:
     """Tests for calculate_obv tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_obv(self, mock_fetch):
+    async def test_calculate_obv(self, market):
         """Test OBV calculation tool."""
         mock_data = pd.DataFrame(
             {
@@ -178,9 +219,9 @@ class TestCallToolOBV:
                 "Volume": [1000000] * 10,
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_obv", arguments={"symbol": "AAPL", "period": "1mo"}
         )
 
@@ -197,8 +238,7 @@ class TestCallToolVWAP:
     """Tests for calculate_vwap tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_vwap(self, mock_fetch):
+    async def test_calculate_vwap(self, market):
         """Test VWAP calculation tool."""
         mock_data = pd.DataFrame(
             {
@@ -210,9 +250,9 @@ class TestCallToolVWAP:
                 "Volume": [1000000] * 10,
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_vwap", arguments={"symbol": "TSLA", "period": "1mo"}
         )
 
@@ -230,8 +270,7 @@ class TestCallToolVolumeProfile:
     """Tests for calculate_volume_profile tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_volume_profile(self, mock_fetch):
+    async def test_calculate_volume_profile(self, market):
         """Test volume profile calculation tool."""
         mock_data = pd.DataFrame(
             {
@@ -243,9 +282,9 @@ class TestCallToolVolumeProfile:
                 "Volume": [1000000] * 20,
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_volume_profile",
             arguments={"symbol": "NVDA", "period": "1mo", "num_bins": 15},
         )
@@ -264,8 +303,7 @@ class TestCallToolMFI:
     """Tests for calculate_mfi tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_mfi(self, mock_fetch):
+    async def test_calculate_mfi(self, market):
         """Test MFI calculation tool."""
         mock_data = pd.DataFrame(
             {
@@ -277,9 +315,9 @@ class TestCallToolMFI:
                 "Volume": [1000000 + i * 10000 for i in range(20)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_mfi",
             arguments={"symbol": "AMD", "period": "1mo", "mfi_period": 14},
         )
@@ -297,8 +335,7 @@ class TestCallToolADLine:
     """Tests for calculate_ad_line tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_ad_line(self, mock_fetch):
+    async def test_calculate_ad_line(self, market):
         """Test AD Line calculation tool."""
         mock_data = pd.DataFrame(
             {
@@ -310,9 +347,9 @@ class TestCallToolADLine:
                 "Volume": [1000000 + i * 10000 for i in range(20)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_ad_line",
             arguments={"symbol": "IBM", "period": "1mo"},
         )
@@ -326,8 +363,7 @@ class TestCallToolADLine:
         assert data["ad_trend"] in ["increasing", "decreasing", "flat"]
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_ad_line_short_data(self, mock_fetch):
+    async def test_calculate_ad_line_short_data(self, market):
         """Test AD Line calculation tool with very little data (edge case)."""
         mock_data = pd.DataFrame(
             {
@@ -339,9 +375,9 @@ class TestCallToolADLine:
                 "Volume": [1000000, 1100000],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_ad_line",
             arguments={"symbol": "IBM", "start_date": "2024-01-01", "end_date": "2024-01-02"},
         )
@@ -360,8 +396,7 @@ class TestCallToolCMF:
     """Tests for calculate_cmf tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_cmf(self, mock_fetch):
+    async def test_calculate_cmf(self, market):
         """Test CMF calculation tool."""
         mock_data = pd.DataFrame(
             {
@@ -373,9 +408,9 @@ class TestCallToolCMF:
                 "Volume": [1000000 + i * 10000 for i in range(20)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_cmf",
             arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
         )
@@ -389,8 +424,7 @@ class TestCallToolCMF:
         assert "Pressure" in data["condition"] or "Neutral" in data["condition"]
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_cmf_insufficient_data(self, mock_fetch):
+    async def test_calculate_cmf_insufficient_data(self, market):
         """Test CMF calculation tool explicitly handling insufficient data."""
         mock_data = pd.DataFrame(
             {
@@ -402,9 +436,9 @@ class TestCallToolCMF:
                 "Volume": [1000000 + i * 10000 for i in range(5)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_cmf",
             arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 20},
         )
@@ -416,8 +450,7 @@ class TestCallToolCMF:
         assert data["condition"] == "Insufficient Data"
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_cmf_selling_pressure(self, mock_fetch):
+    async def test_calculate_cmf_selling_pressure(self, market):
         """Test CMF calculation tool returns selling pressure for negative CMF."""
         # Close near Low produces negative Money Flow Multiplier => negative CMF
         mock_data = pd.DataFrame(
@@ -430,9 +463,9 @@ class TestCallToolCMF:
                 "Volume": [1000000 + i * 10000 for i in range(20)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_cmf",
             arguments={"symbol": "GOOG", "period": "1mo", "cmf_period": 14},
         )
@@ -444,8 +477,7 @@ class TestCallToolCMF:
         assert data["latest_cmf"] < 0
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_calculate_cmf_default_period(self, mock_fetch):
+    async def test_calculate_cmf_default_period(self, market):
         """Test CMF calculation tool with default cmf_period (omitted argument)."""
         mock_data = pd.DataFrame(
             {
@@ -457,9 +489,9 @@ class TestCallToolCMF:
                 "Volume": [1000000 + i * 10000 for i in range(25)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_cmf",
             arguments={"symbol": "GOOG"},
         )
@@ -480,8 +512,7 @@ class TestCallToolVolumeTrends:
     """Tests for analyze_volume_trends tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_analyze_volume_trends(self, mock_fetch):
+    async def test_analyze_volume_trends(self, market):
         """Test volume trends analysis tool."""
         mock_data = pd.DataFrame(
             {
@@ -493,9 +524,9 @@ class TestCallToolVolumeTrends:
                 "Volume": [1000000 + i * 10000 for i in range(30)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="analyze_volume_trends",
             arguments={"symbol": "INTC", "period": "1mo", "window": 20},
         )
@@ -514,8 +545,7 @@ class TestCallToolComprehensive:
     """Tests for comprehensive_analysis tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_comprehensive_analysis(self, mock_fetch):
+    async def test_comprehensive_analysis(self, market):
         """Test comprehensive analysis tool."""
         mock_data = pd.DataFrame(
             {
@@ -527,9 +557,9 @@ class TestCallToolComprehensive:
                 "Volume": [1000000 + i * 20000 for i in range(30)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "1mo"}
         )
 
@@ -551,8 +581,7 @@ class TestCallToolComprehensive:
         assert isinstance(data["summary"], list)
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_comprehensive_analysis_no_series_repr_leak(self, mock_fetch):
+    async def test_comprehensive_analysis_no_series_repr_leak(self, market):
         """relative_volume and price_roc must be scalar dicts, not stringified Series (PDE-13)."""
         # 100 bars: past ~60 rows pandas truncates Series reprs with "...",
         # which is exactly what leaked into the JSON before the fix.
@@ -566,9 +595,9 @@ class TestCallToolComprehensive:
                 "Volume": [1000000 + i * 20000 for i in range(100)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "6mo"}
         )
         data = json.loads(result.content[0].text)
@@ -597,8 +626,7 @@ class TestCallToolComprehensive:
         assert_no_series_repr(data)
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_comprehensive_analysis_includes_headline(self, mock_fetch):
+    async def test_comprehensive_analysis_includes_headline(self, market):
         """Additive top-line headline is present without disturbing existing keys (O4)."""
         mock_data = pd.DataFrame(
             {
@@ -610,9 +638,9 @@ class TestCallToolComprehensive:
                 "Volume": [1000000 + i * 20000 for i in range(30)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "1mo"}
         )
         data = json.loads(result.content[0].text)
@@ -629,8 +657,7 @@ class TestCallToolComprehensive:
         assert isinstance(data["summary"], list)
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_comprehensive_analysis_short_history(self, mock_fetch):
+    async def test_comprehensive_analysis_short_history(self, market):
         """Fewer than 5 bars must not IndexError in the summary (PDE-14)."""
         mock_data = pd.DataFrame(
             {
@@ -642,9 +669,9 @@ class TestCallToolComprehensive:
                 "Volume": [1000000, 1100000, 1200000],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "SPY", "period": "5d"}
         )
         data = json.loads(result.content[0].text)
@@ -658,8 +685,7 @@ class TestCallToolOptions:
     """Tests for options_analysis tool."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_options_analysis_includes_headline(self, mock_fetch):
+    async def test_options_analysis_includes_headline(self, market):
         """options_analysis response carries an additive headline (O4)."""
         mock_data = pd.DataFrame(
             {
@@ -671,9 +697,9 @@ class TestCallToolOptions:
                 "Volume": [1000000 + i * 15000 for i in range(60)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="options_analysis",
             arguments={"symbol": "SPY", "period": "3mo", "holding_period": 14},
         )
@@ -695,12 +721,11 @@ class TestErrorHandling:
     """Tests for error handling in tools."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_invalid_symbol_error(self, mock_fetch):
+    async def test_invalid_symbol_error(self, market):
         """Test handling of invalid symbol."""
-        mock_fetch.side_effect = ValueError("No data found for symbol INVALID")
+        market.default_error = ValueError("No data found for symbol INVALID")
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="get_stock_data", arguments={"symbol": "INVALID", "period": "1mo"}
         )
 
@@ -711,10 +736,9 @@ class TestErrorHandling:
         assert "No data found" in data["error"]
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_unknown_tool_error(self, mock_fetch):
+    async def test_unknown_tool_error(self, market):
         """Test handling of unknown tool name."""
-        mock_fetch.return_value = pd.DataFrame(
+        market.default_frame = pd.DataFrame(
             {
                 "Date": pd.date_range("2024-01-01", periods=30),
                 "Open": [100] * 30,
@@ -724,7 +748,7 @@ class TestErrorHandling:
                 "Volume": [1000000] * 30,
             }
         )
-        result = await handle_call_tool(name="unknown_tool", arguments={"symbol": "AAPL"})
+        result = await market.call(name="unknown_tool", arguments={"symbol": "AAPL"})
 
         assert isinstance(result, CallToolResult)
         assert result.is_error is True
@@ -747,12 +771,11 @@ class TestErrorHandling:
         assert "Invalid symbol format" in data["error"]
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_generic_exception_returns_generic_message(self, mock_fetch):
+    async def test_generic_exception_returns_generic_message(self, market):
         """Test that non-ValueError exceptions return a generic message, hiding internals."""
-        mock_fetch.side_effect = RuntimeError("secret internal path /etc/foo")
+        market.default_error = RuntimeError("secret internal path /etc/foo")
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="get_stock_data", arguments={"symbol": "AAPL", "period": "1mo"}
         )
 
@@ -1110,8 +1133,7 @@ class TestCallToolMFIConditions:
     """Tests for MFI oversold and neutral conditions (server lines 651-654)."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_mfi_oversold_condition(self, mock_fetch):
+    async def test_mfi_oversold_condition(self, market):
         """Test MFI returns 'Oversold (<20)' when MFI < 20."""
         # Strong downtrend with decreasing volume to push MFI below 20
         n = 30
@@ -1125,9 +1147,9 @@ class TestCallToolMFIConditions:
                 "Volume": [2000000 + i * 100000 for i in range(n)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_mfi",
             arguments={"symbol": "BEAR", "period": "1mo", "mfi_period": 14},
         )
@@ -1136,15 +1158,14 @@ class TestCallToolMFIConditions:
         assert data["condition"] in ["Oversold (<20)", "Neutral (20-80)"]
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    @patch("volume_price_analysis.server.calculate_mfi")
-    async def test_mfi_oversold_via_mock(self, mock_mfi, mock_fetch):
+    @patch("volume_price_analysis.tools.calculate_mfi")
+    async def test_mfi_oversold_via_mock(self, mock_mfi, market):
         """Test MFI oversold branch via mocked MFI values."""
-        mock_fetch.return_value = _make_mock_data(n=20)
+        market.default_frame = _make_mock_data(n=20)
         # Return MFI series with last value < 20
         mock_mfi.return_value = pd.Series([15.0] * 20)
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_mfi",
             arguments={"symbol": "TEST", "mfi_period": 14},
         )
@@ -1152,14 +1173,13 @@ class TestCallToolMFIConditions:
         assert data["condition"] == "Oversold (<20)"
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    @patch("volume_price_analysis.server.calculate_mfi")
-    async def test_mfi_neutral_via_mock(self, mock_mfi, mock_fetch):
+    @patch("volume_price_analysis.tools.calculate_mfi")
+    async def test_mfi_neutral_via_mock(self, mock_mfi, market):
         """Test MFI neutral branch via mocked MFI values."""
-        mock_fetch.return_value = _make_mock_data(n=20)
+        market.default_frame = _make_mock_data(n=20)
         mock_mfi.return_value = pd.Series([50.0] * 20)
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_mfi",
             arguments={"symbol": "TEST", "mfi_period": 14},
         )
@@ -1171,8 +1191,7 @@ class TestCallToolADLineEdgeCases:
     """Tests for AD Line flat/decreasing trend (server lines 677, 685-688)."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_ad_line_single_data_point(self, mock_fetch):
+    async def test_ad_line_single_data_point(self, market):
         """Test AD Line with a single data point -> flat trend (line 677)."""
         mock_data = pd.DataFrame(
             {
@@ -1184,9 +1203,9 @@ class TestCallToolADLineEdgeCases:
                 "Volume": [1000000],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_ad_line",
             arguments={"symbol": "FLAT", "period": "1d"},
         )
@@ -1195,8 +1214,7 @@ class TestCallToolADLineEdgeCases:
         assert data["data_points"] == 1
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_obv_single_data_point_is_flat(self, mock_fetch):
+    async def test_obv_single_data_point_is_flat(self, market):
         """PDE-149: the OBV tool now shares the A/D tool's short-series guard."""
         mock_data = pd.DataFrame(
             {
@@ -1208,9 +1226,9 @@ class TestCallToolADLineEdgeCases:
                 "Volume": [1000000],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_obv",
             arguments={"symbol": "FLAT", "period": "1d"},
         )
@@ -1218,8 +1236,7 @@ class TestCallToolADLineEdgeCases:
         assert data["obv_trend"] == "flat"
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_ad_line_decreasing_trend(self, mock_fetch):
+    async def test_ad_line_decreasing_trend(self, market):
         """Test AD Line returns 'decreasing' when A/D is falling (lines 685-686)."""
         # Close near low (negative A/D) to force decreasing A/D line
         n = 10
@@ -1233,9 +1250,9 @@ class TestCallToolADLineEdgeCases:
                 "Volume": [1000000] * n,
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_ad_line",
             arguments={"symbol": "DEC", "period": "1mo"},
         )
@@ -1244,8 +1261,7 @@ class TestCallToolADLineEdgeCases:
         assert data["ad_trend"] in ["decreasing", "flat"]
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_ad_line_flat_trend(self, mock_fetch):
+    async def test_ad_line_flat_trend(self, market):
         """Test AD Line returns 'flat' when A/D is constant (lines 687-688)."""
         # Close at midpoint => MFM = 0 => A/D stays 0
         n = 10
@@ -1259,9 +1275,9 @@ class TestCallToolADLineEdgeCases:
                 "Volume": [1000000] * n,
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_ad_line",
             arguments={"symbol": "FLAT", "period": "1mo"},
         )
@@ -1273,8 +1289,7 @@ class TestCallToolCMFEdgeCases:
     """Tests for CMF edge cases (server lines 714, 726-727)."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_cmf_neutral_zero(self, mock_fetch):
+    async def test_cmf_neutral_zero(self, market):
         """Test CMF returns 'Neutral (0)' when CMF is exactly 0 (lines 726-727)."""
         # Close at exact midpoint of H-L => CMF should be 0
         n = 25
@@ -1288,9 +1303,9 @@ class TestCallToolCMFEdgeCases:
                 "Volume": [1000000] * n,
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_cmf",
             arguments={"symbol": "ZERO", "cmf_period": 20},
         )
@@ -1299,15 +1314,14 @@ class TestCallToolCMFEdgeCases:
         assert data["latest_cmf"] == 0.0
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    @patch("volume_price_analysis.server.calculate_chaikin_money_flow")
-    async def test_cmf_infinite_becomes_none(self, mock_cmf, mock_fetch):
+    @patch("volume_price_analysis.tools.calculate_chaikin_money_flow")
+    async def test_cmf_infinite_becomes_none(self, mock_cmf, market):
         """Test CMF returns Insufficient Data when CMF is infinite (line 714)."""
-        mock_fetch.return_value = _make_mock_data(n=25)
+        market.default_frame = _make_mock_data(n=25)
         # Return CMF series where last finite-ish value is inf
         mock_cmf.return_value = pd.Series([float("inf")] * 25)
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_cmf",
             arguments={"symbol": "INF", "cmf_period": 20},
         )
@@ -1320,11 +1334,10 @@ class TestCallToolOptionsAnalysis:
     """Tests for options_analysis tool (server lines 910-920)."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.run_options_analysis")
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_options_analysis_basic(self, mock_fetch, mock_options):
+    @patch("volume_price_analysis.tools.run_options_analysis")
+    async def test_options_analysis_basic(self, mock_options, market):
         """Test options_analysis tool calls run_options_analysis and returns result."""
-        mock_fetch.return_value = _make_mock_data(n=60)
+        market.default_frame = _make_mock_data(n=60)
         mock_options.return_value = {
             "symbol": "AAPL",
             "holding_period": 14,
@@ -1332,7 +1345,7 @@ class TestCallToolOptionsAnalysis:
             "recommendation": "bullish",
         }
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="options_analysis",
             arguments={"symbol": "AAPL", "holding_period": 14, "days_to_expiration": 30},
         )
@@ -1342,14 +1355,13 @@ class TestCallToolOptionsAnalysis:
         mock_options.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.run_options_analysis")
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_options_analysis_default_dte(self, mock_fetch, mock_options):
+    @patch("volume_price_analysis.tools.run_options_analysis")
+    async def test_options_analysis_default_dte(self, mock_options, market):
         """Test options_analysis defaults days_to_expiration to holding_period."""
-        mock_fetch.return_value = _make_mock_data(n=60)
+        market.default_frame = _make_mock_data(n=60)
         mock_options.return_value = {"symbol": "TSLA", "holding_period": 21}
 
-        await handle_call_tool(
+        await market.call(
             name="options_analysis",
             arguments={"symbol": "TSLA", "holding_period": 21},
         )
@@ -1544,8 +1556,7 @@ class TestComprehensiveAnalysisBranches:
     """Tests for comprehensive_analysis edge case branches (lines 785-795, 808, 813)."""
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_comprehensive_mfi_overbought(self, mock_fetch):
+    async def test_comprehensive_mfi_overbought(self, market):
         """Test comprehensive analysis with overbought MFI (lines 785-786)."""
         # Strongly rising data to push MFI above 80
         n = 30
@@ -1559,9 +1570,9 @@ class TestComprehensiveAnalysisBranches:
                 "Volume": [1000000 + i * 100000 for i in range(n)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "BULL", "period": "1mo"}
         )
         data = json.loads(result.content[0].text)
@@ -1569,8 +1580,7 @@ class TestComprehensiveAnalysisBranches:
         assert isinstance(data["summary"], list)
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_comprehensive_mfi_oversold(self, mock_fetch):
+    async def test_comprehensive_mfi_oversold(self, market):
         """Test comprehensive analysis with oversold MFI (lines 787-788)."""
         n = 30
         mock_data = pd.DataFrame(
@@ -1583,19 +1593,18 @@ class TestComprehensiveAnalysisBranches:
                 "Volume": [1000000 + i * 100000 for i in range(n)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "BEAR", "period": "1mo"}
         )
         data = json.loads(result.content[0].text)
         assert "summary" in data
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.calculate_atr")
-    @patch("volume_price_analysis.server.calculate_bollinger_bands")
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_comprehensive_nan_bandwidth_and_atr(self, mock_fetch, mock_bb, mock_atr):
+    @patch("volume_price_analysis.tools.calculate_atr")
+    @patch("volume_price_analysis.tools.calculate_bollinger_bands")
+    async def test_comprehensive_nan_bandwidth_and_atr(self, mock_bb, mock_atr, market):
         """Test comprehensive analysis with NaN bandwidth and ATR (lines 808, 813)."""
         n = 30
         mock_data = pd.DataFrame(
@@ -1608,7 +1617,7 @@ class TestComprehensiveAnalysisBranches:
                 "Volume": [1000000 + i * 20000 for i in range(n)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
         # Return NaN for all bollinger bands
         mock_bb.return_value = {
             "upper": pd.Series([np.nan] * n),
@@ -1620,7 +1629,7 @@ class TestComprehensiveAnalysisBranches:
         # Return NaN for ATR
         mock_atr.return_value = pd.Series([np.nan] * n)
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "NAN", "period": "1mo"}
         )
         data = json.loads(result.content[0].text)
@@ -1629,11 +1638,10 @@ class TestComprehensiveAnalysisBranches:
         assert data["symbol"] == "NAN"
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.calculate_mfi")
-    @patch("volume_price_analysis.server.calculate_chaikin_money_flow")
-    @patch("volume_price_analysis.server.fetch_stock_data")
+    @patch("volume_price_analysis.tools.calculate_mfi")
+    @patch("volume_price_analysis.tools.calculate_chaikin_money_flow")
     async def test_comprehensive_mfi_oversold_and_cmf_strong_selling(
-        self, mock_fetch, mock_cmf, mock_mfi
+        self, mock_cmf, mock_mfi, market
     ):
         """Test comprehensive analysis with oversold MFI and strong selling CMF (lines 788, 793)."""
         n = 30
@@ -1647,13 +1655,13 @@ class TestComprehensiveAnalysisBranches:
                 "Volume": [1000000 + i * 20000 for i in range(n)],
             }
         )
-        mock_fetch.return_value = mock_data
+        market.default_frame = mock_data
         # MFI < 20 => "Oversold"
         mock_mfi.return_value = pd.Series([15.0] * n)
         # CMF < -0.25 => "Strong selling"
         mock_cmf.return_value = pd.Series([-0.3] * n)
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="comprehensive_analysis", arguments={"symbol": "TEST", "period": "1mo"}
         )
         data = json.loads(result.content[0].text)
@@ -1665,7 +1673,7 @@ class TestComprehensiveAnalysisBranches:
 class TestServerVersion:
     """Tests for the MCP server version reporting."""
 
-    def test_server_version_matches_package_metadata(self):
+    def test_server_version_matches_package_metadata(self, market):
         """_SERVER_VERSION must equal the installed package version."""
         from importlib.metadata import PackageNotFoundError, version
 
@@ -1707,12 +1715,11 @@ class TestCallToolRSIDivergence:
         assert "calculate_rsi_divergence" in names
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_called_returns_expected_keys(self, mock_fetch):
+    async def test_called_returns_expected_keys(self, market):
         """Tool returns symbol + all divergence result keys."""
-        mock_fetch.return_value = self._make_data()
+        market.default_frame = self._make_data()
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_rsi_divergence",
             arguments={"symbol": "AAPL", "period": "3mo"},
         )
@@ -1734,12 +1741,11 @@ class TestCallToolRSIDivergence:
             assert key in data, f"Missing key: {key}"
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.server.fetch_stock_data")
-    async def test_custom_params_passed_through(self, mock_fetch):
+    async def test_custom_params_passed_through(self, market):
         """rsi_period and divergence_lookback are forwarded correctly."""
-        mock_fetch.return_value = self._make_data(80)
+        market.default_frame = self._make_data(80)
 
-        result = await handle_call_tool(
+        result = await market.call(
             name="calculate_rsi_divergence",
             arguments={"symbol": "MSFT", "rsi_period": 9, "divergence_lookback": 15},
         )
