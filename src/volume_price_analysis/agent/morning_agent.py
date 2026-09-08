@@ -30,7 +30,7 @@ from .email_sender import (
     build_raw_data_message,
     send_email,
 )
-from .picks import annotate_conviction, build_picks, render_picks_table
+from .picks import build_picks, render_picks_table
 from .regime import (
     REGIME_SMA_PERIOD,
     annotate_regime_conflicts,
@@ -144,16 +144,6 @@ async def run_morning_briefing(
         regime_header = format_regime_header(regime)
     logger.info("Regime verdict: %s", regime.get("regime", "unknown"))
 
-    # Fixed conviction vocabulary (PDE-69): computed here, echoed by the model,
-    # and rendered into the pick table so the three can never disagree.
-    scan_results = annotate_conviction(scan_results)
-    conviction_by_symbol = {
-        c["symbol"]: c["conviction"]
-        for key in ("high_conviction_setups", "top_bullish", "top_bearish")
-        for c in scan_results.get(key, [])
-        if isinstance(c, dict) and c.get("symbol")
-    }
-
     # Step 2: Deep analysis on top N candidates
     top_symbols = _get_top_symbols(scan_results, config.max_deep_analysis)
     logger.info("Step 2: Deep analysis on %d symbols: %s", len(top_symbols), top_symbols)
@@ -163,8 +153,6 @@ async def run_morning_briefing(
         try:
             data = source.fetch(symbol, period="3mo")
             analysis = run_options_analysis(symbol, data, holding_period=14)
-            if symbol in conviction_by_symbol:
-                analysis["conviction"] = conviction_by_symbol[symbol]
             deep_analyses.append(analysis)
             logger.info("  %s: score=%.1f", symbol, analysis["composite_signal"]["score"])
         except Exception:
@@ -182,6 +170,18 @@ async def run_morning_briefing(
             sym = analysis.get("symbol")
             if sym and sym in earnings_warnings:
                 analysis["earnings_warning"] = earnings_warnings[sym]
+
+    # Step 2c: Fixed conviction vocabulary (PDE-69/PDE-150). The picks builder
+    # takes the regime, applies regime-conflict annotation itself and derives
+    # conviction once; the deep analyses, the AI prompt and the rendered pick
+    # table all read the label off this one list, so they cannot disagree and
+    # no ordering above is load-bearing.
+    picks = build_picks(scan_results, deep_analyses, regime=regime)
+    conviction_by_symbol = {p.symbol: p.conviction for p in picks}
+    for analysis in deep_analyses:
+        sym = analysis.get("symbol")
+        if sym in conviction_by_symbol:
+            analysis["conviction"] = conviction_by_symbol[sym]
 
     # Step 3: Generate briefing
     degraded_reason: str | None = None
@@ -204,6 +204,7 @@ async def run_morning_briefing(
                 api_key=config.ai_provider_api_key,
                 earnings_preamble=earnings_preamble,
                 briefing_date=briefing_date,
+                picks=picks,
             ).text
         except Exception:
             logger.exception("AI briefing generation failed")
@@ -229,7 +230,7 @@ async def run_morning_briefing(
         else build_briefing_body(
             briefing_date=briefing_date,
             regime_header=regime_header,
-            picks_table=render_picks_table(build_picks(scan_results, deep_analyses)),
+            picks_table=render_picks_table(picks),
             briefing=briefing,
             stats_line=stats_line,
         )

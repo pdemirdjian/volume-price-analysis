@@ -8,9 +8,11 @@ Supports multiple providers via the AI_PROVIDER environment variable:
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date
+
+from .picks import Pick
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +351,7 @@ def generate_briefing(
     api_key: str,
     earnings_preamble: str = "",
     briefing_date: date | None = None,
+    picks: Iterable[Pick] = (),
 ) -> BriefingResult:
     """
     Generate a natural-language briefing from scan results and deep analyses.
@@ -363,12 +366,14 @@ def generate_briefing(
         earnings_preamble: Optional earnings-event-risk warning block prepended to user message.
         briefing_date: The date the briefing is for; injected into the prompt so the
             model never has to guess it (PDE-69).
+        picks: The briefing's Pick list — the single source of each candidate's
+            conviction label (PDE-150).
 
     Returns:
         A BriefingResult carrying the markdown briefing and any ungrounded tickers.
     """
     user_content = build_briefing_prompt(
-        scan_results, deep_analyses, earnings_preamble, briefing_date=briefing_date
+        scan_results, deep_analyses, earnings_preamble, briefing_date=briefing_date, picks=picks
     )
 
     briefing = strip_date_placeholders(provider(user_content, model, api_key))
@@ -573,11 +578,36 @@ def strip_date_placeholders(briefing: str) -> str:
     return _DATE_PLACEHOLDER_LINE.sub("", briefing)
 
 
+def _apply_conviction(projected_scan: dict, picks: Iterable[Pick]) -> dict:
+    """Label each projected scan candidate with its Pick's conviction.
+
+    The Pick list is the one place conviction is derived (PDE-150), so the
+    prompt reads the label off it rather than off the candidate dicts. Returns
+    a copy; candidate dicts are shared with the caller's scan results.
+    """
+    by_symbol = {p.symbol: p.conviction for p in picks}
+    if not by_symbol:
+        return projected_scan
+    result = dict(projected_scan)
+    for key in ("high_conviction_setups", "top_bullish", "top_bearish"):
+        candidates = result.get(key)
+        if not isinstance(candidates, list):
+            continue
+        result[key] = [
+            {**c, "conviction": by_symbol[c["symbol"]]}
+            if isinstance(c, dict) and c.get("symbol") in by_symbol
+            else c
+            for c in candidates
+        ]
+    return result
+
+
 def build_briefing_prompt(
     scan_results: dict,
     deep_analyses: list[dict],
     earnings_preamble: str = "",
     briefing_date: date | None = None,
+    picks: Iterable[Pick] = (),
 ) -> str:
     """Build the user message sent to a briefing provider.
 
@@ -587,9 +617,13 @@ def build_briefing_prompt(
     earnings-event-risk preamble. Pairs with :data:`SYSTEM_PROMPT`, which the
     provider adapters supply as the system instruction. When ``briefing_date``
     is given it is stated up front so the model never has to guess it.
+
+    ``picks`` supplies every candidate's conviction label: it is derived once,
+    by ``picks.build_picks``, and read here rather than re-derived (PDE-150).
     """
     projected_scan = _project_scan_results(scan_results)
     projected_scan = _drop_superseded_scan_fields(projected_scan, deep_analyses)
+    projected_scan = _apply_conviction(projected_scan, picks)
     user_content = "Generate a morning options trading briefing from this data:\n\n"
     if briefing_date is not None:
         user_content += (
