@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 REGIME_SMA_PERIOD = 20
 
-_REGIME_DIRECTIONS = ("bullish", "bearish")
+# The two decided verdicts `compute_market_regime` can return ("unknown" is
+# the third, undecided one). Shared with `picks` so both agree on what counts
+# as a directional tape.
+REGIME_DIRECTIONS = ("bullish", "bearish")
 
 
 def compute_market_regime(spy_data: pd.DataFrame | None, today: date | None = None) -> dict:
@@ -92,7 +95,7 @@ def annotate_regime_conflicts(scan_results: dict, regime: dict) -> dict:
     result["high_conviction_setups"] = high_conviction
 
     verdict = regime.get("regime")
-    if verdict not in _REGIME_DIRECTIONS or not high_conviction:
+    if verdict not in REGIME_DIRECTIONS or not high_conviction:
         return result
 
     annotated: list[dict] = []
@@ -136,7 +139,7 @@ def annotate_regime_conflicts(scan_results: dict, regime: dict) -> dict:
 def format_regime_header(regime: dict, conflict_count: int = 0) -> str:
     """Render the regime verdict as a markdown line for the top of the email."""
     verdict = regime.get("regime", "unknown")
-    if verdict not in _REGIME_DIRECTIONS:
+    if verdict not in REGIME_DIRECTIONS:
         reason = regime.get("reason", "no reason recorded")
         return f"**Market Regime: UNKNOWN** — regime check unavailable ({reason})."
 

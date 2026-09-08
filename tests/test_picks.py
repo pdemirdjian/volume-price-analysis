@@ -157,6 +157,27 @@ class TestRegimeFoldedIntoConviction:
         build_picks(_scan(high=[aapl], bull=[aapl]), regime={"regime": "bearish"})
         assert "regime_conflict" not in aapl
 
+    def test_qualifier_beyond_the_scan_cap_is_still_conflict_checked(self):
+        # `annotate_regime_conflicts` only reaches the scan's five-entry
+        # high_conviction_setups list; the gate is re-evaluated here uncapped,
+        # so the sixth qualifier must not slip through as HIGH on a hostile tape.
+        qualifiers = [
+            {"symbol": f"S{i}", "composite_score": 5.0, "adx": 35.0, "iv_percentile": 10.0}
+            for i in range(6)
+        ]
+        scan = _scan(high=qualifiers[:5], bull=qualifiers)
+        picks = build_picks(scan, regime={"regime": "bearish"})
+        assert [p.conviction for p in picks] == ["MEDIUM"] * 6
+        assert all(p.regime_conflict for p in picks)
+
+    def test_non_qualifying_counter_trend_pick_is_not_flagged(self):
+        # Only gate qualifiers are conflict-checked; an ordinary counter-trend
+        # candidate keeps its unflagged row, as before.
+        scan = _scan(bull=[{"symbol": "MSFT", "composite_score": 2.2}])
+        (pick,) = build_picks(scan, regime={"regime": "bearish"})
+        assert pick.regime_conflict is False
+        assert pick.conviction == "LOW"
+
     def test_already_annotated_scan_is_unchanged_by_reannotation(self):
         # Ordering is not load-bearing: annotating twice yields the same picks.
         aapl = {"symbol": "AAPL", "composite_score": 5.0, "adx": 35.0, "hv_percentile": 10.0}
