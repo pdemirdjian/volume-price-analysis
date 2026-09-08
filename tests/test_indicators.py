@@ -4152,6 +4152,10 @@ class TestTrendVerdict:
             == "unknown"
         )
 
+    def test_lookback_of_one_compares_the_latest_value_to_itself(self):
+        # Degenerate but well defined: lookback counts positions, so 1 is the latest bar.
+        assert trend_verdict(pd.Series([1.0, 2.0, 3.0]), 1) == "flat"
+
     def test_lookback_below_one_is_rejected(self):
         with pytest.raises(ValueError, match="lookback"):
             trend_verdict(pd.Series([1.0, 2.0]), 0)
