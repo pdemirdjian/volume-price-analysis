@@ -4122,13 +4122,19 @@ class TestTrendVerdict:
 
     def test_lookback_selects_the_compared_bar(self):
         # Latest is above the value 3 positions back but below the one 5 positions back.
-        series = pd.Series([10.0, 2.0, 3.0, 4.0, 5.0])
+        series = pd.Series([9.0, 10.0, 2.0, 3.0, 4.0, 5.0])
         assert trend_verdict(series, 3) == "increasing"
         assert trend_verdict(series, 5) == "decreasing"
 
-    def test_series_shorter_than_lookback_clamps_to_first_value(self):
+    def test_series_shorter_than_lookback_plus_one_is_flat(self):
+        # No clamping to a nearer bar: without lookback+1 values there is nothing
+        # to compare against, so the flat label wins.
         series = pd.Series([1.0, 2.0, 3.0])
-        assert trend_verdict(series, 10) == "increasing"
+        assert trend_verdict(series, 10) == "flat"
+        assert trend_verdict(series, 3) == "flat"
+
+    def test_exactly_lookback_plus_one_values_is_enough(self):
+        assert trend_verdict(pd.Series([1.0, 0.5, 9.0, 9.0, 2.0]), 4) == "increasing"
 
     def test_single_value_series_is_flat(self):
         assert trend_verdict(pd.Series([1.0]), 5) == "flat"
@@ -4137,16 +4143,16 @@ class TestTrendVerdict:
         assert trend_verdict(pd.Series([], dtype=float), 5) == "flat"
 
     def test_nan_latest_is_flat(self):
-        series = pd.Series([1.0, 2.0, 3.0, np.nan])
+        series = pd.Series([1.0, 2.0, 3.0, 4.0, np.nan])
         assert trend_verdict(series, 4) == "flat"
 
     def test_nan_past_value_is_flat(self):
-        series = pd.Series([np.nan, 2.0, 3.0, 4.0])
+        series = pd.Series([2.0, np.nan, 3.0, 4.0, 5.0])
         assert trend_verdict(series, 4) == "flat"
 
     def test_custom_labels(self):
-        series = pd.Series([1.0, 2.0])
-        assert trend_verdict(series, 2, rising="up", falling="down", flat="unknown") == "up"
+        series = pd.Series([1.0, 5.0, 2.0])
+        assert trend_verdict(series, 2, rising="up", falling="down", flat="unknown") == "down"
         assert (
             trend_verdict(pd.Series([1.0]), 2, rising="up", falling="down", flat="unknown")
             == "unknown"

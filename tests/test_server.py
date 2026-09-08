@@ -1401,14 +1401,21 @@ class TestGenerateEnhancedSummary:
         )
 
     def test_short_history_no_indexerror(self):
-        """Fewer than 5 bars must not raise IndexError on the iloc[-5] lookback (PDE-14)."""
+        """Fewer than 5 bars must not raise IndexError on the iloc[-5] lookback (PDE-14).
+
+        PDE-149: with only 3 bars there is no bar 5 positions back, so both trends are
+        flat and the summary reports mixed signals rather than accumulation. It used to
+        read "Strong accumulation" off a nearer bar.
+        """
         args = list(self._base_args())
         args[0] = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
         args[1] = self._make_series([100000, 200000, 300000])  # OBV, 3 bars
         args[2] = self._make_series([50000, 100000, 150000])  # A/D, 3 bars
 
         summary = generate_enhanced_summary(*args)
-        assert any("accumulation" in s.lower() for s in summary)
+
+        assert any("mixed" in s.lower() or "diverging" in s.lower() for s in summary)
+        assert not any("accumulation" in s.lower() for s in summary)
 
     def test_below_vwap_sentiment(self):
         """Test bearish sentiment when price below VWAP (line 993)."""

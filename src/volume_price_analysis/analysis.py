@@ -740,9 +740,10 @@ def run_options_analysis(
     obv_up = obv_trend == "increasing"
     ad_up = ad_trend == "increasing"
 
-    # Conviction is a magnitude test against the same bar trend_verdict compares to.
-    if len(vpt) >= 2:
-        vpt_past = vpt.iloc[-min(TREND_LOOKBACK, len(vpt))]
+    # Conviction is a magnitude test against the same bar trend_verdict compares to,
+    # so it needs the same amount of history before it can say anything.
+    if len(vpt) >= TREND_LOOKBACK + 1:
+        vpt_past = vpt.iloc[-TREND_LOOKBACK]
         vpt_conviction = (
             abs(vpt.iloc[-1] - vpt_past) > abs(vpt_past * 0.1) if vpt_past != 0 else False
         )

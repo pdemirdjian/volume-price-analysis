@@ -78,10 +78,11 @@ def trend_verdict(
     positions (``series.iloc[-lookback]``), so ``lookback=5`` compares against the
     fifth value from the end, i.e. four bars back.
 
-    A shorter series is not an error: ``lookback`` is clamped to the length of the
-    series, so a 3-value series with ``lookback=5`` compares the latest value to the
-    first. ``flat`` is returned when the series has fewer than two values, when either
-    compared value is NaN, or when the two values are equal.
+    A series too short for the comparison is not an error, and the lookback is *not*
+    silently shortened: a series with fewer than ``lookback + 1`` values has no bar to
+    compare against, so ``flat`` is returned rather than a verdict drawn from a nearer
+    bar. ``flat`` is also returned when either compared value is NaN, or when the two
+    values are equal.
 
     Args:
         series: Indicator values in chronological order.
@@ -99,11 +100,11 @@ def trend_verdict(
     if lookback < 1:
         raise ValueError(f"lookback must be at least 1, got {lookback}")
 
-    if len(series) < 2:
+    if len(series) < lookback + 1:
         return flat
 
     latest = series.iloc[-1]
-    past = series.iloc[-min(lookback, len(series))]
+    past = series.iloc[-lookback]
 
     if pd.isna(latest) or pd.isna(past):
         return flat
