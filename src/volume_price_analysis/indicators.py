@@ -1,9 +1,167 @@
 """Volume-Price analysis indicators and calculations."""
 
+import math
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+# --------------------------------------------------------------------------
+# Verdict helpers
+#
+# Every place that turns an indicator into a word goes through one of the two
+# functions below, so the "latest versus N bars back" rule and the
+# overbought/oversold ladders exist exactly once.
+# --------------------------------------------------------------------------
+
+#: A threshold band: ``(operator, bound, label)``. See :func:`threshold_verdict`.
+ThresholdBand = tuple[str, float, str]
+
+#: MFI overbought/oversold ladder (default label: ``"Neutral"``).
+MFI_CONDITION_BANDS: tuple[ThresholdBand, ...] = (
+    (">", 80.0, "Overbought"),
+    ("<", 20.0, "Oversold"),
+)
+
+#: MFI ladder with the bounds spelled out in the label (default: ``"Neutral (20-80)"``).
+MFI_TOOL_CONDITION_BANDS: tuple[ThresholdBand, ...] = (
+    (">", 80.0, "Overbought (>80)"),
+    ("<", 20.0, "Oversold (<20)"),
+)
+
+#: MFI ladder driving the options directional hint (default: ``"neutral"``).
+MFI_OPTIONS_SIGNAL_BANDS: tuple[ThresholdBand, ...] = (
+    (">", 75.0, "consider_puts"),
+    ("<", 25.0, "consider_calls"),
+)
+
+#: CMF strong-flow ladder (default label: ``"Neutral"``).
+CMF_CONDITION_BANDS: tuple[ThresholdBand, ...] = (
+    (">", 0.25, "Strong buying"),
+    ("<", -0.25, "Strong selling"),
+)
+
+#: CMF strong-flow ladder in snake_case (default label: ``"neutral"``).
+CMF_SIGNAL_BANDS: tuple[ThresholdBand, ...] = (
+    (">", 0.25, "strong_buying"),
+    ("<", -0.25, "strong_selling"),
+)
+
+#: CMF sign ladder used by the CMF tool (default label: ``"Neutral (0)"``).
+CMF_PRESSURE_BANDS: tuple[ThresholdBand, ...] = (
+    (">", 0.0, "Buying Pressure (>0)"),
+    ("<", 0.0, "Selling Pressure (<0)"),
+)
+
+#: CMF ladder for the "extreme" MFI+CMF insight (default label: ``"neutral"``).
+CMF_EXTREME_BANDS: tuple[ThresholdBand, ...] = (
+    (">", 0.2, "elevated"),
+    ("<", -0.2, "depressed"),
+)
+
+#: Default number of positions back that a trend verdict compares against.
+TREND_LOOKBACK = 5
+
+
+def trend_verdict(
+    series: pd.Series,
+    lookback: int = TREND_LOOKBACK,
+    *,
+    rising: str = "increasing",
+    falling: str = "decreasing",
+    flat: str = "flat",
+) -> str:
+    """Compare the latest value of ``series`` to the value ``lookback`` positions back.
+
+    This is the single "latest versus N bars back" rule. ``lookback`` counts
+    positions (``series.iloc[-lookback]``), so ``lookback=5`` compares against the
+    fifth value from the end, i.e. four bars back.
+
+    A series too short for the comparison is not an error, and the lookback is *not*
+    silently shortened: a series with fewer than ``lookback + 1`` values has no bar to
+    compare against, so ``flat`` is returned rather than a verdict drawn from a nearer
+    bar. ``flat`` is also returned when either compared value is NaN, or when the two
+    values are equal.
+
+    Args:
+        series: Indicator values in chronological order.
+        lookback: Positions back to compare against. Must be at least 1.
+        rising: Label returned when the latest value is above the compared value.
+        falling: Label returned when the latest value is below the compared value.
+        flat: Label returned when the values are equal or the comparison is undefined.
+
+    Returns:
+        One of ``rising``, ``falling`` or ``flat``.
+
+    Raises:
+        ValueError: If ``lookback`` is below 1.
+    """
+    if lookback < 1:
+        raise ValueError(f"lookback must be at least 1, got {lookback}")
+
+    if len(series) < lookback + 1:
+        return flat
+
+    latest = series.iloc[-1]
+    past = series.iloc[-lookback]
+
+    if pd.isna(latest) or pd.isna(past):
+        return flat
+    if latest > past:
+        return rising
+    if latest < past:
+        return falling
+    return flat
+
+
+def threshold_verdict(
+    value: float | None,
+    bands: Sequence[ThresholdBand],
+    default: str,
+    *,
+    missing: str | None = None,
+) -> str:
+    """Return the label of the first band whose comparison holds for ``value``.
+
+    Ladders such as MFI's 80/20 overbought/oversold split are data rather than
+    code: each band is ``(operator, bound, label)`` where ``operator`` is one of
+    ``">"``, ``">="``, ``"<"`` or ``"<="``. Bands are evaluated in order, so the
+    first match wins.
+
+    Args:
+        value: The indicator value, or ``None`` when it could not be computed.
+        bands: Ordered bands to test.
+        default: Label returned when no band matches.
+        missing: Label returned when ``value`` is ``None`` or NaN. Defaults to
+            ``default``.
+
+    Returns:
+        The matching band's label, ``missing`` for an absent value, or ``default``.
+
+    Raises:
+        ValueError: If a band carries an unknown operator.
+    """
+    if value is None or (isinstance(value, float) and math.isnan(value)) or pd.isna(value):
+        return default if missing is None else missing
+
+    numeric = float(value)
+    for operator, bound, label in bands:
+        if operator == ">":
+            matched = numeric > bound
+        elif operator == ">=":
+            matched = numeric >= bound
+        elif operator == "<":
+            matched = numeric < bound
+        elif operator == "<=":
+            matched = numeric <= bound
+        else:
+            raise ValueError(f"unknown threshold operator: {operator!r}")
+        if matched:
+            return label
+
+    return default
+
 
 # Bollinger squeeze canonical configuration. Deliberately not parameterized:
 # every analysis path must report the same squeeze verdict for the same data.

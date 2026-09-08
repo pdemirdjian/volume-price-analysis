@@ -190,7 +190,7 @@ class TestCallToolOBV:
         assert data["indicator"] == "On-Balance Volume (OBV)"
         assert "latest_obv" in data
         assert "obv_trend" in data
-        assert data["obv_trend"] in ["increasing", "decreasing"]
+        assert data["obv_trend"] in ["increasing", "decreasing", "flat"]
 
 
 class TestCallToolVWAP:
@@ -323,7 +323,7 @@ class TestCallToolADLine:
         assert "Accumulation/Distribution Line" in data["indicator"]
         assert "latest_ad_line" in data
         assert "ad_trend" in data
-        assert data["ad_trend"] in ["increasing", "decreasing"]
+        assert data["ad_trend"] in ["increasing", "decreasing", "flat"]
 
     @pytest.mark.asyncio
     @patch("volume_price_analysis.server.fetch_stock_data")
@@ -1196,6 +1196,29 @@ class TestCallToolADLineEdgeCases:
 
     @pytest.mark.asyncio
     @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_obv_single_data_point_is_flat(self, mock_fetch):
+        """PDE-149: the OBV tool now shares the A/D tool's short-series guard."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": [pd.Timestamp("2024-01-01")],
+                "Open": [100.0],
+                "High": [102.0],
+                "Low": [98.0],
+                "Close": [101.0],
+                "Volume": [1000000],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_obv",
+            arguments={"symbol": "FLAT", "period": "1d"},
+        )
+        data = json.loads(result.content[0].text)
+        assert data["obv_trend"] == "flat"
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
     async def test_ad_line_decreasing_trend(self, mock_fetch):
         """Test AD Line returns 'decreasing' when A/D is falling (lines 685-686)."""
         # Close near low (negative A/D) to force decreasing A/D line
@@ -1378,14 +1401,21 @@ class TestGenerateEnhancedSummary:
         )
 
     def test_short_history_no_indexerror(self):
-        """Fewer than 5 bars must not raise IndexError on the iloc[-5] lookback (PDE-14)."""
+        """Fewer than 5 bars must not raise IndexError on the iloc[-5] lookback (PDE-14).
+
+        PDE-149: with only 3 bars there is no bar 5 positions back, so both trends are
+        flat and the summary reports mixed signals rather than accumulation. It used to
+        read "Strong accumulation" off a nearer bar.
+        """
         args = list(self._base_args())
         args[0] = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
         args[1] = self._make_series([100000, 200000, 300000])  # OBV, 3 bars
         args[2] = self._make_series([50000, 100000, 150000])  # A/D, 3 bars
 
         summary = generate_enhanced_summary(*args)
-        assert any("accumulation" in s.lower() for s in summary)
+
+        assert any("mixed" in s.lower() or "diverging" in s.lower() for s in summary)
+        assert not any("accumulation" in s.lower() for s in summary)
 
     def test_below_vwap_sentiment(self):
         """Test bearish sentiment when price below VWAP (line 993)."""

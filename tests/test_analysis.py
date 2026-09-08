@@ -99,6 +99,34 @@ class TestRunOptionsAnalysis:
         assert "options_insights" in result
         assert "latest_price" in result
 
+    def test_three_row_frame_yields_flat_trend_verdicts(self):
+        """PDE-149: too little history to look 5 bars back -> the flat/unknown labels.
+
+        The pre-refactor code hard-gated series shorter than 4 rows; trend_verdict now
+        applies the same rule for every call site (fewer than lookback+1 values -> flat),
+        rather than falling back to a nearer bar.
+        """
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range(start="2024-01-01", periods=3, freq="D"),
+                "Open": [100.0, 101.0, 102.0],
+                "High": [103.0, 104.0, 105.0],
+                "Low": [99.0, 100.0, 101.0],
+                "Close": [102.0, 103.0, 104.0],
+                "Volume": [1_000_000, 1_200_000, 1_400_000],
+            }
+        )
+
+        volume_indicators = run_options_analysis("TINY", frame)["volume_indicators"]
+
+        assert volume_indicators["obv"]["trend"] == "flat"
+        assert volume_indicators["accumulation_distribution"]["trend"] == "flat"
+        assert volume_indicators["vpt"]["trend"] == "unknown"
+        # The binary companion fields still take the non-up branch.
+        assert volume_indicators["obv"]["short_term_momentum"] == "bearish"
+        assert volume_indicators["accumulation_distribution"]["signal"] == "institutional_selling"
+        assert volume_indicators["vpt"]["volume_conviction"] == "weak"
+
     def test_iv_percentile_proxy_is_hv_flagged(self, sample_stock_data):
         """The deep-analysis volatility proxy carries the HV basis + hv_percentile."""
         result = run_options_analysis("TEST", sample_stock_data, holding_period=14)
