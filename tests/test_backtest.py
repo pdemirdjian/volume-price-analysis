@@ -383,15 +383,21 @@ def test_score_buckets_exact_partition_at_boundaries():
     assert sum(b["n"] for b in res["by_score_bucket"]) == 5  # exact partition
 
 
-def test_causal_score_adx_matches_production_period_14():
-    """High-conviction gate mirrors the scan, which gates on period-14 ADX."""
-    from volume_price_analysis.indicators import calculate_adx
+def test_causal_score_adx_uses_the_adaptive_production_period():
+    """The gate mirrors the scan, which reads the holding-period-adaptive ADX."""
+    from volume_price_analysis.indicators import calculate_adx, composite_adx_period
 
     data = _synthetic_data(120)
     t = 100
-    snap = causal_score_at(data, t, holding_period=14)
-    expected = calculate_adx(data.iloc[: t + 1], 14)["adx"]
-    assert snap["adx"] == pytest.approx(expected)
+    window = data.iloc[: t + 1]
+    for holding_period in (14, 30):
+        period = composite_adx_period(holding_period)
+        snap = causal_score_at(data, t, holding_period=holding_period)
+        assert snap["adx_period"] == period
+        assert snap["adx"] == pytest.approx(calculate_adx(window, period)["adx"])
+    # The two periods really are different lookbacks, so the 14d case is not
+    # accidentally still ADX(14).
+    assert composite_adx_period(14) == 10 != composite_adx_period(30)
 
 
 def test_compute_observations_drops_dirty_bars():
