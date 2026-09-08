@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.9.5](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.4...v2.9.5) (2026-09-08)
+
+
+### Bug Fixes
+
+* backtest gates on the same ADX period and thresholds as the scan ([#461](https://github.com/pdemirdjian/volume-price-analysis/issues/461)) ([dbebb88](https://github.com/pdemirdjian/volume-price-analysis/commit/dbebb88414d9479abb683d4df42da30e3d5b5991))
+* **deps:** update dependency anthropic to ~=1.4.0 ([#465](https://github.com/pdemirdjian/volume-price-analysis/issues/465)) ([7bafcac](https://github.com/pdemirdjian/volume-price-analysis/commit/7bafcac0b29d4eb1e8a64ab19b41c1714768ef2c))
+
+
+### Documentation
+
+* seed CONTEXT.md with the domain glossary ([#458](https://github.com/pdemirdjian/volume-price-analysis/issues/458)) ([8fb26ef](https://github.com/pdemirdjian/volume-price-analysis/commit/8fb26ef490b3b3ee93390ea590ff6bb7fbefe6a4))
+
 ## [2.9.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.3...v2.9.4) (2026-09-07)
 
 
