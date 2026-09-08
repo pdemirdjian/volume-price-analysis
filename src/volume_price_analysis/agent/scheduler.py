@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import holidays
 
 from .config import AgentConfig
-from .email_sender import send_error_email
+from .email_sender import SmtpCreds, build_error_message, send_email
 from .healthcheck import heartbeat_path, write_heartbeat
 from .morning_agent import run_morning_briefing
 
@@ -238,14 +238,8 @@ async def _run_loop(
             # Try to send error notification (mirrors morning_agent.py behavior)
             if config.email_from and config.email_password and config.email_to:
                 try:
-                    send_error_email(
-                        error_message=str(e),
-                        from_addr=config.email_from,
-                        password=config.email_password,
-                        to_addr=config.email_to,
-                        smtp_host=config.email_smtp_host,
-                        smtp_port=config.email_smtp_port,
-                    )
+                    creds = SmtpCreds.from_config(config)
+                    send_email(build_error_message(creds, str(e)), creds)
                 except Exception:
                     logger.exception("Failed to send error email")
         if heartbeat is not None:

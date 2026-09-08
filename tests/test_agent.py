@@ -1,5 +1,6 @@
 """Tests for the morning briefing agent."""
 
+import email
 import json
 import logging
 import smtplib
@@ -36,10 +37,7 @@ from volume_price_analysis.agent.email_sender import (
     build_briefing_message,
     build_error_message,
     build_raw_data_message,
-    send_briefing_email,
     send_email,
-    send_error_email,
-    send_raw_data_email,
 )
 from volume_price_analysis.agent.morning_agent import (
     _EARNINGS_WARN_DAYS,
@@ -971,6 +969,29 @@ class FakeSmtp:
         self.sent.append((from_addr, to_addrs, message))
 
 
+@pytest.fixture
+def fake_smtp(mocker) -> FakeSmtp:
+    """Intercept real SMTP delivery so send sites can be observed end to end."""
+    smtp = FakeSmtp()
+    mocker.patch("volume_price_analysis.agent.email_sender.smtplib.SMTP", smtp)
+    return smtp
+
+
+def _sent_message(smtp: FakeSmtp):
+    """Parse the single message the fake SMTP captured."""
+    assert len(smtp.sent) == 1, f"expected exactly one sent message, got {len(smtp.sent)}"
+    _from_addr, _to_addrs, raw = smtp.sent[0]
+    return email.message_from_string(raw)
+
+
+def _sent_plain_body(smtp: FakeSmtp) -> str:
+    """The text/plain part of the single message the fake SMTP captured."""
+    for part in _sent_message(smtp).walk():
+        if part.get_content_type() == "text/plain":
+            return part.get_payload(decode=True).decode()
+    raise AssertionError("sent message has no text/plain part")
+
+
 def _creds(to_addr: str = "recipient@test.com", **kwargs) -> SmtpCreds:
     """Build test credentials from a comma-separated recipient string."""
     return SmtpCreds.from_parts(
@@ -1224,90 +1245,6 @@ class TestSendEmail:
         assert "Failed to send email" in caplog.text
 
 
-class TestEmailWrappers:
-    """Test the thin build-and-send wrappers kept for existing call sites."""
-
-    def test_send_briefing_email_builds_and_sends(self, mocker):
-        mock_send = mocker.patch("volume_price_analysis.agent.email_sender.send_email")
-
-        send_briefing_email(
-            subject="Test Briefing",
-            body_markdown="# Hello",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="alice@test.com,bob@test.com",
-            smtp_host="custom.smtp.com",
-            smtp_port=465,
-        )
-
-        message, creds = mock_send.call_args.args
-        assert message["Subject"] == "Test Briefing"
-        assert creds.to_addrs == ["alice@test.com", "bob@test.com"]
-        assert (creds.smtp_host, creds.smtp_port) == ("custom.smtp.com", 465)
-
-    def test_send_raw_data_email_builds_and_sends(self, mocker):
-        mock_send = mocker.patch("volume_price_analysis.agent.email_sender.send_email")
-
-        send_raw_data_email(
-            scan_results={"summary": {"total_candidates": 5}},
-            deep_analyses=[],
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="recipient@test.com",
-            smtp_host="custom.smtp.com",
-            smtp_port=465,
-            date_str="2026-03-02",
-        )
-
-        message, creds = mock_send.call_args.args
-        assert message["Subject"] == "Morning Market Data (Raw) - 2026-03-02"
-        assert "total_candidates" in _body_text(message)
-        assert (creds.smtp_host, creds.smtp_port) == ("custom.smtp.com", 465)
-
-    def test_send_error_email_builds_and_sends(self, mocker):
-        mock_send = mocker.patch("volume_price_analysis.agent.email_sender.send_email")
-
-        send_error_email(
-            error_message="Something failed",
-            from_addr="sender@test.com",
-            password="test-pass",
-            to_addr="alice@test.com,bob@test.com",
-        )
-
-        message, creds = mock_send.call_args.args
-        assert message["Subject"] == "Morning Briefing - ERROR"
-        assert "Something failed" in _body_text(message)
-        assert creds.to_addrs == ["alice@test.com", "bob@test.com"]
-
-    def test_send_error_email_swallows_send_failure(self, mocker, caplog):
-        mocker.patch(
-            "volume_price_analysis.agent.email_sender.send_email",
-            side_effect=smtplib.SMTPException("Network error"),
-        )
-
-        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
-            # Should NOT raise - the exception is caught and logged
-            send_error_email(
-                error_message="Something broke",
-                from_addr="sender@test.com",
-                password="test-pass",
-                to_addr="recipient@test.com",
-            )
-
-        assert "Failed to send error notification email" in caplog.text
-
-    def test_send_error_email_swallows_bad_recipients(self, caplog):
-        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.email_sender"):
-            send_error_email(
-                error_message="Something broke",
-                from_addr="sender@test.com",
-                password="test-pass",
-                to_addr="",
-            )
-
-        assert "Failed to send error notification email" in caplog.text
-
-
 class TestRunMorningBriefing:
     """Test the full orchestrator (all external calls mocked)."""
 
@@ -1355,7 +1292,7 @@ class TestRunMorningBriefing:
         assert "Test Briefing" in captured.out
 
     @pytest.mark.asyncio
-    async def test_no_ai_mode_skips_generation(self, mocker):
+    async def test_no_ai_mode_skips_generation(self, mocker, fake_smtp):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -1375,9 +1312,6 @@ class TestRunMorningBriefing:
         mock_generate = mocker.patch(
             "volume_price_analysis.agent.morning_agent.generate_briefing",
         )
-        mock_raw_email = mocker.patch(
-            "volume_price_analysis.agent.morning_agent.send_raw_data_email",
-        )
 
         config = AgentConfig(
             ai_provider="gemini",
@@ -1390,14 +1324,13 @@ class TestRunMorningBriefing:
         await run_morning_briefing(config, dry_run=False, no_ai=True, data_source=agent_source())
 
         mock_generate.assert_not_called()
-        mock_raw_email.assert_called_once()
+        assert _sent_message(fake_smtp)["Subject"].startswith("Morning Market Data (Raw) - ")
         # The regime verdict reaches the raw email as a preamble (here unknown:
         # the mocked SPY fetch returns no usable frame).
-        preamble = mock_raw_email.call_args.kwargs["preamble"]
-        assert preamble.startswith("**Market Regime: UNKNOWN**")
+        assert _sent_plain_body(fake_smtp).startswith("**Market Regime: UNKNOWN**")
 
     @pytest.mark.asyncio
-    async def test_ai_failure_uses_fallback(self, mocker):
+    async def test_ai_failure_uses_fallback(self, mocker, fake_smtp):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -1421,9 +1354,6 @@ class TestRunMorningBriefing:
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             side_effect=Exception("API Error"),
         )
-        mock_send = mocker.patch(
-            "volume_price_analysis.agent.morning_agent.send_briefing_email",
-        )
 
         config = AgentConfig(
             ai_provider="gemini",
@@ -1438,12 +1368,10 @@ class TestRunMorningBriefing:
             config, dry_run=False, no_ai=False, data_source=agent_source(["AAPL"])
         )
 
-        mock_send.assert_called_once()
-        body = mock_send.call_args.kwargs.get("body_markdown", "")
-        assert "Fallback" in body
+        assert "Fallback" in _sent_plain_body(fake_smtp)
 
     @pytest.mark.asyncio
-    async def test_regime_verdict_flags_picks_and_heads_email(self, mocker):
+    async def test_regime_verdict_flags_picks_and_heads_email(self, mocker, fake_smtp):
         """PDE-66: a bearish tape flags bullish picks as counter-regime (keeping
         their high-conviction billing) and the regime verdict heads the email body."""
         import pandas as pd
@@ -1481,9 +1409,6 @@ class TestRunMorningBriefing:
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             return_value=BriefingResult(text="# Briefing"),
         )
-        mock_send = mocker.patch(
-            "volume_price_analysis.agent.morning_agent.send_briefing_email",
-        )
 
         config = AgentConfig(
             ai_provider="gemini",
@@ -1505,14 +1430,14 @@ class TestRunMorningBriefing:
         assert annotated_scan["high_conviction_setups"][0]["regime_conflict"]
         assert annotated_scan["summary"]["high_conviction"] == 1
 
-        body = mock_send.call_args.kwargs["body_markdown"]
+        body = _sent_plain_body(fake_smtp)
         # The dated title heads the template; the regime verdict follows it.
         assert body.startswith("# Morning Market Briefing — ")
         assert body.splitlines()[2].startswith("**Market Regime: BEARISH**")
         assert "flagged" in body
 
     @pytest.mark.asyncio
-    async def test_earnings_from_source_warn_the_analysis_and_the_prompt(self, mocker):
+    async def test_earnings_from_source_warn_the_analysis_and_the_prompt(self, mocker, fake_smtp):
         """The earnings guard runs end-to-end against the injected data source."""
         bull = {"symbol": "AAPL", "composite_score": 4.5}
         mocker.patch(
@@ -1538,7 +1463,6 @@ class TestRunMorningBriefing:
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             return_value="# Briefing",
         )
-        mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
 
         config = AgentConfig(
             ai_provider="gemini",
@@ -1956,8 +1880,8 @@ class TestMain:
         # else it warns "coroutine was never awaited" at GC time.
         mock_run.call_args[0][0].close()
 
-    def test_main_critical_failure_sends_error_email(self, mocker):
-        """Critical exception triggers send_error_email and sys.exit(1)."""
+    def test_main_critical_failure_sends_error_email(self, mocker, fake_smtp):
+        """Critical exception sends the error report and exits 1."""
         mocker.patch("sys.argv", ["morning-briefing"])
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
@@ -1973,20 +1897,46 @@ class TestMain:
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             side_effect=RuntimeError("Critical failure"),
         )
-        mock_send_error = mocker.patch(
-            "volume_price_analysis.agent.morning_agent.send_error_email",
-        )
 
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
 
-        mock_send_error.assert_called_once()
-        assert "Critical failure" in mock_send_error.call_args.kwargs["error_message"]
+        assert _sent_message(fake_smtp)["Subject"] == "Morning Briefing - ERROR"
+        assert "Critical failure" in _sent_plain_body(fake_smtp)
         # Close the real coroutine main() handed to the mocked asyncio.run.
         mock_run.call_args[0][0].close()
 
-    def test_main_critical_failure_dry_run_no_error_email(self, mocker):
+    def test_main_error_email_failure_is_logged_and_exit_code_kept(self, mocker, caplog):
+        """A failing error-report send is logged; main still exits 1."""
+        mocker.patch("sys.argv", ["morning-briefing"])
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.AgentConfig.from_env",
+            return_value=AgentConfig(
+                ai_provider="gemini",
+                ai_provider_api_key="test-key",
+                email_from="a@b.com",
+                email_password="pass",
+                email_to="c@d.com",
+            ),
+        )
+        mock_run = mocker.patch(
+            "volume_price_analysis.agent.morning_agent.asyncio.run",
+            side_effect=RuntimeError("Critical failure"),
+        )
+        mocker.patch(
+            "volume_price_analysis.agent.email_sender.smtplib.SMTP",
+            FakeSmtp(sendmail_error=smtplib.SMTPException("SMTP down")),
+        )
+
+        with caplog.at_level(logging.ERROR, logger="volume_price_analysis.agent.morning_agent"):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 1
+        assert "Failed to send error email" in caplog.text
+        mock_run.call_args[0][0].close()
+
+    def test_main_critical_failure_dry_run_no_error_email(self, mocker, fake_smtp):
         """dry-run critical failure does NOT send error email."""
         mocker.patch("sys.argv", ["morning-briefing", "--dry-run", "--no-ai"])
         mocker.patch(
@@ -2003,15 +1953,12 @@ class TestMain:
             "volume_price_analysis.agent.morning_agent.asyncio.run",
             side_effect=RuntimeError("Critical failure"),
         )
-        mock_send_error = mocker.patch(
-            "volume_price_analysis.agent.morning_agent.send_error_email",
-        )
 
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
 
-        mock_send_error.assert_not_called()
+        assert fake_smtp.sent == []
         # Close the real coroutine main() handed to the mocked asyncio.run.
         mock_run.call_args[0][0].close()
 
@@ -2111,7 +2058,7 @@ class TestRunMorningBriefingDegradedReturn:
     """run_morning_briefing reports degradation (and why) via BriefingRunResult."""
 
     @pytest.mark.asyncio
-    async def test_ai_failure_returns_degraded_result(self, mocker):
+    async def test_ai_failure_returns_degraded_result(self, mocker, fake_smtp):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -2135,7 +2082,6 @@ class TestRunMorningBriefingDegradedReturn:
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             side_effect=Exception("API Error"),
         )
-        mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
 
         config = AgentConfig(
             ai_provider="gemini",
@@ -2157,7 +2103,7 @@ class TestRunMorningBriefingDegradedReturn:
         assert "regime" in result.regime
 
     @pytest.mark.asyncio
-    async def test_successful_briefing_returns_healthy_result(self, mocker):
+    async def test_successful_briefing_returns_healthy_result(self, mocker, fake_smtp):
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -2177,7 +2123,6 @@ class TestRunMorningBriefingDegradedReturn:
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             return_value=BriefingResult(text="# Briefing"),
         )
-        mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
 
         config = AgentConfig(
             ai_provider="gemini",
@@ -2770,7 +2715,7 @@ class TestBriefingBodyGolden:
 
 class TestRunMorningBriefingDateAndPicks:
     @pytest.mark.asyncio
-    async def test_date_is_eastern_and_body_is_templated(self, mocker):
+    async def test_date_is_eastern_and_body_is_templated(self, mocker, fake_smtp):
         scan = {
             "scan_parameters": {"symbols_scanned": 10},
             "summary": {
@@ -2797,7 +2742,6 @@ class TestRunMorningBriefingDateAndPicks:
             "volume_price_analysis.agent.morning_agent.generate_briefing",
             return_value=BriefingResult(text="## Executive Summary\nok"),
         )
-        mock_send = mocker.patch("volume_price_analysis.agent.morning_agent.send_briefing_email")
         config = AgentConfig(
             ai_provider="gemini",
             ai_provider_api_key="k",
@@ -2816,9 +2760,8 @@ class TestRunMorningBriefingDateAndPicks:
         assert scan_to_model["top_bullish"][0]["conviction"] == "MEDIUM"
         assert mock_generate.call_args.kwargs["deep_analyses"][0]["conviction"] == "MEDIUM"
 
-        kwargs = mock_send.call_args.kwargs
-        assert kwargs["subject"] == "Morning Market Briefing - 2026-09-04"
-        body = kwargs["body_markdown"]
+        assert _sent_message(fake_smtp)["Subject"] == "Morning Market Briefing - 2026-09-04"
+        body = _sent_plain_body(fake_smtp)
         assert body.startswith("# Morning Market Briefing — Friday, September 4, 2026\n")
         assert "## Pick Summary" in body
         assert "| AAPL | bullish | MEDIUM | +4.40 | 10.50 | — |" in body

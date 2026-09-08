@@ -23,7 +23,13 @@ from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
 from .ai_client import PROVIDERS, format_briefing_date, generate_briefing, resolve_model
 from .config import AgentConfig
-from .email_sender import send_briefing_email, send_error_email, send_raw_data_email
+from .email_sender import (
+    SmtpCreds,
+    build_briefing_message,
+    build_error_message,
+    build_raw_data_message,
+    send_email,
+)
 from .picks import annotate_conviction, build_picks, render_picks_table
 from .regime import (
     REGIME_SMA_PERIOD,
@@ -240,30 +246,30 @@ async def run_morning_briefing(
                 print(json.dumps(a, indent=2, default=str))
     elif no_ai:
         logger.info("Step 4: Sending raw data email")
-        send_raw_data_email(
-            scan_results=scan_results,
-            deep_analyses=deep_analyses,
-            from_addr=config.email_from,
-            password=config.email_password,
-            to_addr=config.email_to,
-            smtp_host=config.email_smtp_host,
-            smtp_port=config.email_smtp_port,
-            date_str=date_str,
-            preamble=regime_header,
+        creds = SmtpCreds.from_config(config)
+        send_email(
+            build_raw_data_message(
+                creds,
+                scan_results=scan_results,
+                deep_analyses=deep_analyses,
+                date_str=date_str,
+                preamble=regime_header,
+            ),
+            creds,
         )
     else:
         logger.info("Step 4: Sending briefing email")
         assert body is not None  # Always set when not no_ai
         subject = f"Morning Market Briefing - {date_str}"
-        send_briefing_email(
-            subject=subject,
-            body_markdown=body,
-            from_addr=config.email_from,
-            password=config.email_password,
-            to_addr=config.email_to,
-            smtp_host=config.email_smtp_host,
-            smtp_port=config.email_smtp_port,
-            ticker_symbols=_candidate_symbols(scan_results, deep_analyses),
+        creds = SmtpCreds.from_config(config)
+        send_email(
+            build_briefing_message(
+                creds,
+                subject=subject,
+                body_markdown=body,
+                ticker_symbols=_candidate_symbols(scan_results, deep_analyses),
+            ),
+            creds,
         )
 
     logger.info("Morning briefing complete in %.1fs", elapsed_total)
@@ -505,14 +511,11 @@ def main():
         logger.exception("Morning briefing failed critically")
         # Try to send error notification
         if not args.dry_run and config.email_from and config.email_password and config.email_to:
-            send_error_email(
-                error_message=str(e),
-                from_addr=config.email_from,
-                password=config.email_password,
-                to_addr=config.email_to,
-                smtp_host=config.email_smtp_host,
-                smtp_port=config.email_smtp_port,
-            )
+            try:
+                creds = SmtpCreds.from_config(config)
+                send_email(build_error_message(creds, str(e)), creds)
+            except Exception:
+                logger.exception("Failed to send error email")
         sys.exit(1)
 
 
