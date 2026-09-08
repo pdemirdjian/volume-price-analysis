@@ -4,11 +4,10 @@ from volume_price_analysis.agent.picks import (
     CONVICTIONS,
     PICK_TABLE_HEADER,
     Pick,
-    annotate_conviction,
     build_picks,
-    conviction_for,
     render_picks_table,
 )
+from volume_price_analysis.agent.regime import annotate_regime_conflicts
 
 
 def _scan(high=(), bull=(), bear=()):
@@ -19,77 +18,70 @@ def _scan(high=(), bull=(), bear=()):
     }
 
 
-class TestConvictionFor:
-    def test_high_conviction_gate_wins(self):
-        assert conviction_for({"composite_score": 2.5}, high_conviction=True) == "HIGH"
+def _conviction(candidate, *, high=False, regime=None):
+    """Conviction of one candidate, read off the pick the builder derives."""
+    named = {"symbol": "SYM", **candidate}
+    scan = _scan(high=[named] if high else (), bull=[named])
+    return build_picks(scan, regime=regime)[0].conviction
+
+
+class TestConvictionRules:
+    """The conviction vocabulary, exercised through its only call path."""
+
+    def test_high_conviction_listing_wins(self):
+        assert _conviction({"composite_score": 2.5}, high=True) == "HIGH"
 
     def test_strong_score_is_medium(self):
-        assert conviction_for({"composite_score": -4.2}, high_conviction=False) == "MEDIUM"
+        assert _conviction({"composite_score": -4.2}) == "MEDIUM"
 
     def test_gate_reevaluated_from_fields(self):
         # Not in high_conviction_setups (the scan caps that list at five), but
         # the candidate itself clears the gate.
-        c = {"composite_score": -4.2, "adx": 31.0, "iv_percentile": 22.0}
-        assert conviction_for(c) == "HIGH"
+        assert _conviction({"composite_score": -4.2, "adx": 31.0, "iv_percentile": 22.0}) == "HIGH"
 
     def test_gate_fails_on_any_leg(self):
         base = {"composite_score": 4.5, "adx": 30.0, "hv_percentile": 40.0}
-        assert conviction_for(base) == "HIGH"
-        assert conviction_for({**base, "adx": 27.9}) == "MEDIUM"
-        assert conviction_for({**base, "hv_percentile": 50.1}) == "MEDIUM"
-        assert conviction_for({**base, "composite_score": 3.9, "adx": 40}) == "LOW"
+        assert _conviction(base) == "HIGH"
+        assert _conviction({**base, "adx": 27.9}) == "MEDIUM"
+        assert _conviction({**base, "hv_percentile": 50.1}) == "MEDIUM"
+        assert _conviction({**base, "composite_score": 3.9, "adx": 40}) == "LOW"
 
     def test_non_numeric_score_is_low(self):
-        assert conviction_for({"composite_score": "n/a"}) == "LOW"
+        assert _conviction({"composite_score": "n/a"}) == "LOW"
 
     def test_high_signal_quality_is_medium(self):
-        c = {"composite_score": 2.1, "signal_quality": "high"}
-        assert conviction_for(c, high_conviction=False) == "MEDIUM"
+        assert _conviction({"composite_score": 2.1, "signal_quality": "high"}) == "MEDIUM"
 
     def test_marginal_is_low(self):
-        c = {"composite_score": 2.1, "signal_quality": "medium"}
-        assert conviction_for(c, high_conviction=False) == "LOW"
+        assert _conviction({"composite_score": 2.1, "signal_quality": "medium"}) == "LOW"
 
     def test_missing_fields_is_low(self):
-        assert conviction_for({}, high_conviction=False) == "LOW"
+        assert _conviction({}) == "LOW"
 
     def test_always_one_of_the_fixed_vocabulary(self):
         for c in ({}, {"composite_score": 9}, {"signal_quality": "high"}):
             for high in (True, False):
-                assert conviction_for(c, high_conviction=high) in CONVICTIONS
+                assert _conviction(c, high=high) in CONVICTIONS
 
-
-class TestAnnotateConviction:
     def test_sixth_qualifier_beyond_scan_cap_is_still_high(self):
         qualifiers = [
             {"symbol": f"S{i}", "composite_score": 5.0, "adx": 35.0, "iv_percentile": 10.0}
             for i in range(6)
         ]
         scan = _scan(high=qualifiers[:5], bull=qualifiers)
-        out = annotate_conviction(scan)
-        assert [c["conviction"] for c in out["top_bullish"]] == ["HIGH"] * 6
         assert [p.conviction for p in build_picks(scan)] == ["HIGH"] * 6
 
-    def test_labels_every_candidate_in_every_list(self):
+    def test_one_label_per_symbol_across_lists(self):
         aapl = {"symbol": "AAPL", "composite_score": 5.0}
         scan = _scan(high=[aapl], bull=[aapl, {"symbol": "MSFT", "composite_score": 2.2}])
-        out = annotate_conviction(scan)
-        assert out["high_conviction_setups"][0]["conviction"] == "HIGH"
-        assert out["top_bullish"][0]["conviction"] == "HIGH"
-        assert out["top_bullish"][1]["conviction"] == "LOW"
+        assert [(p.symbol, p.conviction) for p in build_picks(scan)] == [
+            ("AAPL", "HIGH"),
+            ("MSFT", "LOW"),
+        ]
 
-    def test_does_not_mutate_input(self):
-        aapl = {"symbol": "AAPL", "composite_score": 5.0}
-        scan = _scan(high=[aapl], bull=[aapl])
-        annotate_conviction(scan)
-        assert "conviction" not in aapl
-
-    def test_keeps_other_keys_and_tolerates_junk(self):
+    def test_tolerates_junk_lists(self):
         scan = {**_scan(bull=["not-a-dict"]), "summary": {"x": 1}, "top_bearish": None}
-        out = annotate_conviction(scan)
-        assert out["summary"] == {"x": 1}
-        assert out["top_bullish"] == ["not-a-dict"]
-        assert out["top_bearish"] is None
+        assert build_picks(scan) == []
 
 
 class TestBuildPicks:
@@ -138,6 +130,41 @@ class TestBuildPicks:
 
     def test_empty_scan(self):
         assert build_picks({}) == []
+
+
+class TestRegimeFoldedIntoConviction:
+    """PDE-150: the builder takes the regime and derives conviction once."""
+
+    def test_conflict_downgrades_conviction_with_no_prior_annotation(self):
+        # Raw scan results — the orchestrator has NOT run any annotator first.
+        aapl = {"symbol": "AAPL", "composite_score": 5.0, "adx": 35.0, "hv_percentile": 10.0}
+        scan = _scan(high=[aapl], bull=[aapl])
+
+        assert [p.conviction for p in build_picks(scan, regime={"regime": "bullish"})] == ["HIGH"]
+
+        (pick,) = build_picks(scan, regime={"regime": "bearish"})
+        assert pick.conviction == "MEDIUM"
+        assert pick.regime_conflict is True
+
+    def test_unknown_regime_annotates_nothing(self):
+        aapl = {"symbol": "AAPL", "composite_score": 5.0, "adx": 35.0, "hv_percentile": 10.0}
+        (pick,) = build_picks(_scan(high=[aapl]), regime={"regime": "unknown"})
+        assert pick.conviction == "HIGH"
+        assert pick.regime_conflict is False
+
+    def test_does_not_mutate_the_caller_s_candidates(self):
+        aapl = {"symbol": "AAPL", "composite_score": 5.0, "adx": 35.0, "hv_percentile": 10.0}
+        build_picks(_scan(high=[aapl], bull=[aapl]), regime={"regime": "bearish"})
+        assert "regime_conflict" not in aapl
+
+    def test_already_annotated_scan_is_unchanged_by_reannotation(self):
+        # Ordering is not load-bearing: annotating twice yields the same picks.
+        aapl = {"symbol": "AAPL", "composite_score": 5.0, "adx": 35.0, "hv_percentile": 10.0}
+        regime = {"regime": "bearish"}
+        pre = annotate_regime_conflicts(_scan(high=[aapl], bull=[aapl]), regime)
+        assert build_picks(pre, regime=regime) == build_picks(
+            _scan(high=[aapl], bull=[aapl]), regime=regime
+        )
 
 
 class TestRenderPicksTable:

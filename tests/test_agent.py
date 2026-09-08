@@ -54,7 +54,7 @@ from volume_price_analysis.agent.morning_agent import (
     main,
     run_morning_briefing,
 )
-from volume_price_analysis.agent.picks import annotate_conviction, build_picks, render_picks_table
+from volume_price_analysis.agent.picks import build_picks, render_picks_table
 from volume_price_analysis.data_fetcher import InMemoryDataSource
 
 # A minimal frame standing in for fetched history. These tests mock
@@ -2649,7 +2649,7 @@ class TestConvictionReachesTheModel:
             "high_conviction_setups": [{"symbol": "AAPL", "composite_score": 5.0}],
             "top_bullish": [{"symbol": "AAPL", "composite_score": 5.0}],
         }
-        prompt = build_briefing_prompt(annotate_conviction(scan), [])
+        prompt = build_briefing_prompt(scan, [], picks=build_picks(scan))
         assert '"conviction": "HIGH"' in prompt
 
 
@@ -2756,9 +2756,15 @@ class TestRunMorningBriefingDateAndPicks:
         await run_morning_briefing(config, data_source=agent_source(["AAPL"]), now=now)
 
         assert mock_generate.call_args.kwargs["briefing_date"] == date(2026, 9, 4)
-        scan_to_model = mock_generate.call_args.kwargs["scan_results"]
-        assert scan_to_model["top_bullish"][0]["conviction"] == "MEDIUM"
+        # One derivation, three readers (PDE-150): the Pick list, the deep
+        # analysis grafted from it, and the prompt projection fed from it.
+        picks_to_model = mock_generate.call_args.kwargs["picks"]
+        assert [(p.symbol, p.conviction) for p in picks_to_model] == [("AAPL", "MEDIUM")]
         assert mock_generate.call_args.kwargs["deep_analyses"][0]["conviction"] == "MEDIUM"
+        prompt = build_briefing_prompt(
+            mock_generate.call_args.kwargs["scan_results"], [], picks=picks_to_model
+        )
+        assert '"conviction": "MEDIUM"' in prompt
 
         assert _sent_message(fake_smtp)["Subject"] == "Morning Market Briefing - 2026-09-04"
         body = _sent_plain_body(fake_smtp)

@@ -16,6 +16,12 @@ Conviction rule (shares its thresholds with ``analysis.run_scan``):
 - ``MEDIUM``: one strong leg but not the full gate — |score| >= 4 *or* the
   composite's ``signal_quality`` is ``"high"`` (ADX > 30).
 - ``LOW``: everything else that passed the scan filters.
+
+A ``regime_conflict`` note bars HIGH: a setup fighting the prevailing tape
+drops to its next-best leg. :func:`build_picks` takes the regime verdict and
+applies that annotation itself (PDE-150), so conviction is derived exactly
+once, here, from a candidate that is already fully annotated — callers cannot
+get a different answer by calling annotators in a different order.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..analysis import HIGH_CONVICTION_MIN_ABS_SCORE, passes_high_conviction_gate
+from .regime import annotate_regime_conflicts
 
 Conviction = Literal["HIGH", "MEDIUM", "LOW"]
 CONVICTIONS: tuple[Conviction, ...] = ("HIGH", "MEDIUM", "LOW")
@@ -53,15 +60,18 @@ class Pick:
     earnings_warning: str | None = None
 
 
-def conviction_for(candidate: dict, *, high_conviction: bool = False) -> Conviction:
-    """Classify one scan candidate.
+def _conviction_for(candidate: dict, *, high_conviction: bool = False) -> Conviction:
+    """Classify one scan candidate. Private: :func:`build_picks` is the seam.
 
     ``high_conviction`` force-qualifies a candidate the scan already listed
     under ``high_conviction_setups``; otherwise the gate is re-evaluated from
     the candidate's own fields, so qualifiers beyond the scan's five-entry cap
-    still read HIGH.
+    still read HIGH. A candidate carrying a ``regime_conflict`` note cannot
+    read HIGH whichever way it qualified.
     """
-    if high_conviction or passes_high_conviction_gate(candidate):
+    if not candidate.get("regime_conflict") and (
+        high_conviction or passes_high_conviction_gate(candidate)
+    ):
         return "HIGH"
     if _score_of(candidate) >= STRONG_SCORE or candidate.get("signal_quality") == "high":
         return "MEDIUM"
@@ -84,36 +94,27 @@ def _high_conviction_symbols(scan_results: dict) -> set[str]:
     }
 
 
-def annotate_conviction(scan_results: dict) -> dict:
-    """Return a copy of ``scan_results`` with ``conviction`` on every candidate.
-
-    The model is told to echo this field verbatim, so the label it prints and
-    the label in the pick table can never disagree. Input is never mutated;
-    the scan shares candidate dicts between lists, so copies are annotated.
-    """
-    high = _high_conviction_symbols(scan_results)
-    result = dict(scan_results)
-    for key in _CANDIDATE_LISTS:
-        candidates = scan_results.get(key)
-        if not isinstance(candidates, list):
-            continue
-        result[key] = [
-            {**c, "conviction": conviction_for(c, high_conviction=c.get("symbol") in high)}
-            if isinstance(c, dict)
-            else c
-            for c in candidates
-        ]
-    return result
-
-
-def build_picks(scan_results: dict, deep_analyses: Iterable[dict] = ()) -> list[Pick]:
+def build_picks(
+    scan_results: dict,
+    deep_analyses: Iterable[dict] = (),
+    *,
+    regime: dict | None = None,
+) -> list[Pick]:
     """Collect every scan candidate once, in briefing priority order.
 
     Order matches ``_get_top_symbols``: high-conviction setups first, then the
     bullish list, then the bearish list. A deep analysis for a symbol supplies
     its price and score (the consistency rule: deep-analysis values win) and
     any earnings warning attached to it.
+
+    ``regime`` is the verdict from :func:`regime.compute_market_regime`. When
+    given, regime-conflict annotation runs here (PDE-150) rather than in the
+    caller, so conviction is derived from a fully annotated candidate on one
+    call path and no caller-side ordering is load-bearing. Annotation is
+    idempotent, so passing an already-annotated ``scan_results`` is safe.
     """
+    if regime is not None:
+        scan_results = annotate_regime_conflicts(scan_results, regime)
     deep_by_symbol = {
         a["symbol"]: a for a in deep_analyses if isinstance(a, dict) and a.get("symbol")
     }
@@ -141,7 +142,7 @@ def build_picks(scan_results: dict, deep_analyses: Iterable[dict] = ()) -> list[
                 Pick(
                     symbol=symbol,
                     direction="bullish" if score >= 0 else "bearish",
-                    conviction=conviction_for(candidate, high_conviction=symbol in high),
+                    conviction=_conviction_for(candidate, high_conviction=symbol in high),
                     score=round(score, 2),
                     price=None if price is None else float(price),
                     regime_conflict=bool(candidate.get("regime_conflict")),
