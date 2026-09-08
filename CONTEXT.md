@@ -10,12 +10,18 @@ Single-context repo: this file plus `docs/adr/`. See `docs/agents/domain.md`.
 
 The identifier of a tradable instrument, e.g. `"AAPL"`. It is the key everything
 else hangs off: universes are lists of symbols (`analysis.get_universes`), the
-data source fetches per symbol (`data_fetcher.DataSource.get_historical_data`),
-and every candidate, pick, and MCP tool argument carries a `symbol` field.
+data source fetches per symbol (`data_fetcher.DataSource.fetch`, and the
+module-level `data_fetcher.fetch_stock_data`), and every candidate, pick, and MCP
+tool argument carries a `symbol` field.
 
-_Avoided:_ **ticker** and **stock**. Both still appear in prose and in MCP tool
-descriptions in `analysis.py` and `server.py` ("Stock ticker symbol"), but no
-identifier is named after them; new code and docs say symbol.
+_Avoided:_ **ticker** and **stock** as the domain term — say symbol in new code,
+tests, issues, and docs. Both words survive in places that are not free to
+change: the MCP tool name `get_stock_data` and the tool descriptions in
+`server.py` and `analysis.py` ("Stock ticker symbol") are part of the client
+contract, and `data_fetcher.fetch_stock_data` plus the `for stock in
+pts.get_stocks_by_index(...)` loop in `analysis._build_sp500_symbols` are legacy
+identifiers (the latter iterating a third-party payload). Existing names stay;
+new ones say symbol.
 
 ## scan
 
