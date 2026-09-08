@@ -47,4 +47,4 @@ The five canonical state labels exist verbatim in Linear; categories map `bug`â†
 
 ### Domain docs
 
-Single-context: one `CONTEXT.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
+Single-context: the domain glossary is [`CONTEXT.md`](CONTEXT.md) at the repo root, plus `docs/adr/`. Use its terms and avoid the synonyms it marks avoided. See `docs/agents/domain.md`.
