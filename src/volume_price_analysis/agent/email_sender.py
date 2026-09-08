@@ -1,8 +1,8 @@
 """Email delivery for morning briefings.
 
 The module is split into pure message builders (``build_*_message``) and a
-single transport function (:func:`send_email`). The three ``send_*_email``
-functions are thin build-and-send wrappers kept for existing call sites.
+single transport function (:func:`send_email`). Call sites build a message and
+hand it to :func:`send_email` with :class:`SmtpCreds` built from the config.
 """
 
 from __future__ import annotations
@@ -231,16 +231,18 @@ def send_email(
     message: MIMEMultipart,
     creds: SmtpCreds,
     *,
-    smtp_factory: SmtpFactory = smtplib.SMTP,
+    smtp_factory: SmtpFactory | None = None,
 ) -> None:
     """Deliver a built message over SMTP.
 
     ``smtp_factory`` is the injection point for tests; it must return a
-    context-manager SMTP client.
+    context-manager SMTP client. Resolved at call time so that patching
+    ``smtplib.SMTP`` also works as a test seam.
     """
+    factory = smtp_factory if smtp_factory is not None else smtplib.SMTP
     logger.info("Sending email to %s via %s:%d", creds.to_addrs, creds.smtp_host, creds.smtp_port)
     try:
-        with smtp_factory(creds.smtp_host, creds.smtp_port) as server:
+        with factory(creds.smtp_host, creds.smtp_port) as server:
             server.starttls(context=ssl.create_default_context())
             server.login(creds.from_addr, creds.password)
             server.sendmail(creds.from_addr, creds.to_addrs, message.as_string())
@@ -248,55 +250,3 @@ def send_email(
     except smtplib.SMTPException:
         logger.exception("Failed to send email")
         raise
-
-
-def send_briefing_email(
-    subject: str,
-    body_markdown: str,
-    from_addr: str,
-    password: str,
-    to_addr: str,
-    smtp_host: str = "smtp.gmail.com",
-    smtp_port: int = 587,
-    ticker_symbols: Collection[str] | None = None,
-) -> None:
-    """Build and send a briefing email. See :func:`build_briefing_message`."""
-    creds = SmtpCreds.from_parts(from_addr, password, to_addr, smtp_host, smtp_port)
-    send_email(build_briefing_message(creds, subject, body_markdown, ticker_symbols), creds)
-
-
-def send_error_email(
-    error_message: str,
-    from_addr: str,
-    password: str,
-    to_addr: str,
-    smtp_host: str = "smtp.gmail.com",
-    smtp_port: int = 587,
-) -> None:
-    """Send an error notification email when the briefing fails critically.
-
-    Never raises: a failure here must not mask the original error.
-    """
-    try:
-        creds = SmtpCreds.from_parts(from_addr, password, to_addr, smtp_host, smtp_port)
-        send_email(build_error_message(creds, error_message), creds)
-    except Exception:
-        logger.exception("Failed to send error notification email")
-
-
-def send_raw_data_email(
-    scan_results: dict,
-    deep_analyses: list[dict],
-    from_addr: str,
-    password: str,
-    to_addr: str,
-    smtp_host: str = "smtp.gmail.com",
-    smtp_port: int = 587,
-    date_str: str = "",
-    preamble: str = "",
-) -> None:
-    """Build and send the raw data email. See :func:`build_raw_data_message`."""
-    creds = SmtpCreds.from_parts(from_addr, password, to_addr, smtp_host, smtp_port)
-    send_email(
-        build_raw_data_message(creds, scan_results, deep_analyses, date_str, preamble), creds
-    )

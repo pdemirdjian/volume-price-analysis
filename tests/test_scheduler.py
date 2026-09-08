@@ -317,7 +317,7 @@ class TestRunLoop:
                 "volume_price_analysis.agent.scheduler.run_morning_briefing",
                 side_effect=_fake_briefing,
             ),
-            patch("volume_price_analysis.agent.scheduler.send_error_email") as mock_error_email,
+            patch("volume_price_analysis.agent.scheduler.send_email") as mock_error_email,
             patch("volume_price_analysis.agent.scheduler._next_run") as mock_next_run,
         ):
             config = MagicMock()
@@ -532,12 +532,18 @@ class TestRunLoop:
         assert "AI provider exploded" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_error_email_failure_is_logged(self, caplog):
-        """_run_loop logs when send_error_email itself raises after a briefing failure."""
+    async def test_error_email_failure_is_logged(self, caplog, tmp_path):
+        """A failing error-report send is logged and the loop iteration still completes.
+
+        The scheduler owns this guard (the send function no longer swallows), so
+        the post-briefing heartbeat must still be written after the send raises.
+        """
         stop_event = asyncio.Event()
+        heartbeat = tmp_path / "heartbeat"
 
         async def _fake_briefing(*args, **kwargs):
             stop_event.set()
+            heartbeat.unlink(missing_ok=True)
             raise RuntimeError("Briefing exploded")
 
         with (
@@ -548,7 +554,7 @@ class TestRunLoop:
                 side_effect=_fake_briefing,
             ),
             patch(
-                "volume_price_analysis.agent.scheduler.send_error_email",
+                "volume_price_analysis.agent.scheduler.send_email",
                 side_effect=Exception("SMTP down"),
             ),
             patch(
@@ -561,10 +567,14 @@ class TestRunLoop:
             config.email_from = "a@b.com"
             config.email_password = "pass"
             config.email_to = "c@d.com"
+            config.email_smtp_host = "smtp.gmail.com"
+            config.email_smtp_port = 587
             mock_config.return_value = config
-            await _run_loop(time(8, 30), ET, stop_event)
+            await _run_loop(time(8, 30), ET, stop_event, heartbeat=heartbeat)
 
         assert "error email" in caplog.text.lower()
+        # The iteration ran past the failed send: the closing heartbeat is there.
+        assert heartbeat.exists()
 
 
 class TestRunScheduler:
