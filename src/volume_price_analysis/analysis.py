@@ -14,7 +14,12 @@ from pytickersymbols import PyTickerSymbols
 
 from .data_fetcher import DataSource, get_default_data_source
 from .indicators import (
+    CMF_EXTREME_BANDS,
+    CMF_SIGNAL_BANDS,
+    MFI_CONDITION_BANDS,
+    MFI_OPTIONS_SIGNAL_BANDS,
     SQUEEZE_WINDOW,
+    TREND_LOOKBACK,
     analyze_volume_trends,
     calculate_accumulation_distribution,
     calculate_adx,
@@ -36,6 +41,8 @@ from .indicators import (
     composite_adx_period,
     detect_bollinger_squeeze,
     detect_volume_breakout,
+    threshold_verdict,
+    trend_verdict,
 )
 
 logger = logging.getLogger(__name__)
@@ -725,43 +732,29 @@ def run_options_analysis(
     start_dt = data["Date"].iloc[0].strftime("%Y-%m-%d")
     end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
 
-    # Pre-calculate values for options analysis (with bounds checking)
-    if len(obv) >= 4:
-        obv_up = obv.iloc[-1] > obv.iloc[-3]
-    else:
-        obv_up = False
-    if len(ad_line) >= 4:
-        ad_up = ad_line.iloc[-1] > ad_line.iloc[-3]
-    else:
-        ad_up = False
-    if len(vpt) >= 4:
-        vpt_diff = abs(vpt.iloc[-1] - vpt.iloc[-3])
-        vpt_conviction = vpt_diff > abs(vpt.iloc[-3] * 0.1) if vpt.iloc[-3] != 0 else False
+    # Pre-calculate values for options analysis. The trend rule (and its
+    # short-series/NaN handling) lives in indicators.trend_verdict.
+    obv_trend = trend_verdict(obv, TREND_LOOKBACK)
+    ad_trend = trend_verdict(ad_line, TREND_LOOKBACK)
+    vpt_trend = trend_verdict(vpt, TREND_LOOKBACK, flat="unknown")
+    obv_up = obv_trend == "increasing"
+    ad_up = ad_trend == "increasing"
+
+    # Conviction is a magnitude test against the same bar trend_verdict compares to.
+    if len(vpt) >= 2:
+        vpt_past = vpt.iloc[-min(TREND_LOOKBACK, len(vpt))]
+        vpt_conviction = (
+            abs(vpt.iloc[-1] - vpt_past) > abs(vpt_past * 0.1) if vpt_past != 0 else False
+        )
     else:
         vpt_conviction = False
+
     mfi_val = mfi.iloc[-1] if not pd.isna(mfi.iloc[-1]) else 50.0
     cmf_val = cmf.iloc[-1] if not pd.isna(cmf.iloc[-1]) else 0.0
 
-    if mfi_val > 80:
-        mfi_cond = "Overbought"
-    elif mfi_val < 20:
-        mfi_cond = "Oversold"
-    else:
-        mfi_cond = "Neutral"
-
-    if mfi_val > 75:
-        mfi_signal = "consider_puts"
-    elif mfi_val < 25:
-        mfi_signal = "consider_calls"
-    else:
-        mfi_signal = "neutral"
-
-    if cmf_val > 0.25:
-        cmf_signal = "strong_buying"
-    elif cmf_val < -0.25:
-        cmf_signal = "strong_selling"
-    else:
-        cmf_signal = "neutral"
+    mfi_cond = threshold_verdict(mfi_val, MFI_CONDITION_BANDS, "Neutral")
+    mfi_signal = threshold_verdict(mfi_val, MFI_OPTIONS_SIGNAL_BANDS, "neutral")
+    cmf_signal = threshold_verdict(cmf_val, CMF_SIGNAL_BANDS, "neutral")
 
     # Pre-calculate bollinger band values
     bb_upper = bbands["upper"].iloc[-1]
@@ -856,21 +849,17 @@ def run_options_analysis(
         "volume_indicators": {
             "obv": {
                 "value": float(obv.iloc[-1]),
-                "trend": "increasing" if obv_up else "decreasing",
+                "trend": obv_trend,
                 "short_term_momentum": "bullish" if obv_up else "bearish",
             },
             "accumulation_distribution": {
                 "value": float(ad_line.iloc[-1]),
-                "trend": "increasing" if ad_up else "decreasing",
+                "trend": ad_trend,
                 "signal": "institutional_buying" if ad_up else "institutional_selling",
             },
             "vpt": {
                 "value": float(vpt.iloc[-1]),
-                "trend": (
-                    "unknown"
-                    if len(vpt) < 4
-                    else ("increasing" if vpt.iloc[-1] > vpt.iloc[-3] else "decreasing")
-                ),
+                "trend": vpt_trend,
                 "volume_conviction": "strong" if vpt_conviction else "weak",
             },
             "mfi": {
@@ -1155,12 +1144,14 @@ def _generate_options_insights(
         )
 
     # 10. MFI/CMF Extremes
-    if mfi_val > 80 and cmf_val > 0.2:
+    mfi_cond = threshold_verdict(mfi_val, MFI_CONDITION_BANDS, "Neutral")
+    cmf_extreme = threshold_verdict(cmf_val, CMF_EXTREME_BANDS, "neutral")
+    if mfi_cond == "Overbought" and cmf_extreme == "elevated":
         insights.append(
             "EXTREME OVERBOUGHT: MFI + CMF both elevated - "
             "High reversal risk, protect call profits or consider puts"
         )
-    elif mfi_val < 20 and cmf_val < -0.2:
+    elif mfi_cond == "Oversold" and cmf_extreme == "depressed":
         insights.append(
             "EXTREME OVERSOLD: MFI + CMF both depressed - "
             "Bounce potential high, consider calls for mean reversion"

@@ -22,6 +22,11 @@ from mcp.types import (
 from .analysis import build_headline, run_options_analysis, run_scan
 from .data_fetcher import fetch_stock_data
 from .indicators import (
+    CMF_CONDITION_BANDS,
+    CMF_PRESSURE_BANDS,
+    MFI_CONDITION_BANDS,
+    MFI_TOOL_CONDITION_BANDS,
+    TREND_LOOKBACK,
     analyze_volume_trends,
     calculate_accumulation_distribution,
     calculate_atr,
@@ -41,6 +46,8 @@ from .indicators import (
     calculate_vwma,
     detect_bollinger_squeeze,
     detect_volume_breakout,
+    threshold_verdict,
+    trend_verdict,
 )
 
 logger = logging.getLogger(__name__)
@@ -667,13 +674,12 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             obv = calculate_obv(data)
             data["OBV"] = obv
 
-            lookback = min(5, len(obv))
             cols = ["Date", "Close", "Volume", "OBV"]
             result = {
                 "symbol": symbol,
                 "indicator": "On-Balance Volume (OBV)",
                 "latest_obv": float(obv.iloc[-1]),
-                "obv_trend": "increasing" if obv.iloc[-1] > obv.iloc[-lookback] else "decreasing",
+                "obv_trend": trend_verdict(obv, TREND_LOOKBACK),
                 "data_points": len(obv),
                 "recent_values": data[cols].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
             }
@@ -731,13 +737,7 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             data["MFI"] = mfi
 
             latest_mfi = mfi.iloc[-1]
-
-            if latest_mfi > 80:
-                condition = "Overbought (>80)"
-            elif latest_mfi < 20:
-                condition = "Oversold (<20)"
-            else:
-                condition = "Neutral (20-80)"
+            condition = threshold_verdict(latest_mfi, MFI_TOOL_CONDITION_BANDS, "Neutral (20-80)")
 
             result = {
                 "symbol": symbol,
@@ -759,19 +759,7 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                 None if latest_value is None or pd.isna(latest_value) else float(latest_value)
             )
 
-            if data_points <= 1 or latest_ad_line is None:
-                ad_trend = "flat"
-            else:
-                # Compare to an earlier value (up to 5 data points back) to capture recent momentum
-                lookback = min(5, data_points)
-                past_value = ad_line.iloc[-lookback]
-
-                if latest_value > past_value:
-                    ad_trend = "increasing"
-                elif latest_value < past_value:
-                    ad_trend = "decreasing"
-                else:
-                    ad_trend = "flat"
+            ad_trend = trend_verdict(ad_line, TREND_LOOKBACK)
 
             result = {
                 "symbol": symbol,
@@ -799,18 +787,13 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             if latest_valid_cmf is not None and not math.isfinite(latest_valid_cmf):
                 latest_valid_cmf = None
 
-            if latest_valid_cmf is None:
-                condition = "Insufficient Data"
-                latest_cmf_val = None
-            elif latest_valid_cmf > 0:
-                condition = "Buying Pressure (>0)"
-                latest_cmf_val = float(latest_valid_cmf)
-            elif latest_valid_cmf < 0:
-                condition = "Selling Pressure (<0)"
-                latest_cmf_val = float(latest_valid_cmf)
-            else:
-                condition = "Neutral (0)"
-                latest_cmf_val = float(latest_valid_cmf)
+            condition = threshold_verdict(
+                latest_valid_cmf,
+                CMF_PRESSURE_BANDS,
+                "Neutral (0)",
+                missing="Insufficient Data",
+            )
+            latest_cmf_val = None if latest_valid_cmf is None else float(latest_valid_cmf)
 
             result = {
                 "symbol": symbol,
@@ -859,27 +842,15 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
             end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
 
             # Pre-calculate values for clarity
-            lookback = min(5, len(data))
-            obv_increasing = obv.iloc[-1] > obv.iloc[-lookback]
-            ad_increasing = ad_line.iloc[-1] > ad_line.iloc[-lookback]
-            obv_flow = "into" if obv_increasing else "out of"
-            ad_action = "buying" if ad_increasing else "selling"
+            obv_trend = trend_verdict(obv, TREND_LOOKBACK)
+            ad_trend = trend_verdict(ad_line, TREND_LOOKBACK)
+            obv_flow = "into" if obv_trend == "increasing" else "out of"
+            ad_action = "buying" if ad_trend == "increasing" else "selling"
             mfi_val = mfi.iloc[-1]
             cmf_val = cmf.iloc[-1]
 
-            if mfi_val > 80:
-                mfi_condition = "Overbought"
-            elif mfi_val < 20:
-                mfi_condition = "Oversold"
-            else:
-                mfi_condition = "Neutral"
-
-            if cmf_val > 0.25:
-                cmf_condition = "Strong buying"
-            elif cmf_val < -0.25:
-                cmf_condition = "Strong selling"
-            else:
-                cmf_condition = "Neutral"
+            mfi_condition = threshold_verdict(mfi_val, MFI_CONDITION_BANDS, "Neutral")
+            cmf_condition = threshold_verdict(cmf_val, CMF_CONDITION_BANDS, "Neutral")
 
             # Pre-calculate bollinger band values
             bb_upper = bbands["upper"].iloc[-1]
@@ -909,19 +880,17 @@ async def handle_call_tool(name: str, arguments: dict) -> CallToolResult:
                 "volume_indicators": {
                     "obv": {
                         "value": float(obv.iloc[-1]),
-                        "trend": "increasing" if obv_increasing else "decreasing",
+                        "trend": obv_trend,
                         "interpretation": f"Money flowing {obv_flow} the security",
                     },
                     "accumulation_distribution": {
                         "value": float(ad_line.iloc[-1]),
-                        "trend": "increasing" if ad_increasing else "decreasing",
+                        "trend": ad_trend,
                         "interpretation": f"Institutional {ad_action} pressure",
                     },
                     "vpt": {
                         "value": float(vpt.iloc[-1]),
-                        "trend": (
-                            "increasing" if vpt.iloc[-1] > vpt.iloc[-lookback] else "decreasing"
-                        ),
+                        "trend": trend_verdict(vpt, TREND_LOOKBACK),
                     },
                     "mfi": {"value": float(mfi_val), "condition": mfi_condition},
                     "cmf": {
@@ -1100,20 +1069,21 @@ def generate_enhanced_summary(
         summary.append("⚠️  Price trading below VWAP - Bearish institutional sentiment")
 
     # Volume Flow Analysis
-    lookback = min(5, len(data))
-    if obv.iloc[-1] > obv.iloc[-lookback] and ad_line.iloc[-1] > ad_line.iloc[-lookback]:
+    obv_trend = trend_verdict(obv, TREND_LOOKBACK)
+    ad_trend = trend_verdict(ad_line, TREND_LOOKBACK)
+    if obv_trend == "increasing" and ad_trend == "increasing":
         summary.append("✓ Strong accumulation - Both OBV and A/D Line rising")
-    elif obv.iloc[-1] < obv.iloc[-lookback] and ad_line.iloc[-1] < ad_line.iloc[-lookback]:
+    elif obv_trend == "decreasing" and ad_trend == "decreasing":
         summary.append("⚠️  Strong distribution - Both OBV and A/D Line falling")
     else:
         summary.append("⚠️  Mixed volume signals - OBV and A/D Line diverging")
 
     # Money Flow
-    latest_mfi = mfi.iloc[-1]
-    latest_cmf = cmf.iloc[-1]
-    if latest_mfi > 80 or latest_cmf > 0.25:
+    mfi_condition = threshold_verdict(mfi.iloc[-1], MFI_CONDITION_BANDS, "Neutral")
+    cmf_condition = threshold_verdict(cmf.iloc[-1], CMF_CONDITION_BANDS, "Neutral")
+    if mfi_condition == "Overbought" or cmf_condition == "Strong buying":
         summary.append("⚠️  Overbought conditions detected - Potential reversal risk")
-    elif latest_mfi < 20 or latest_cmf < -0.25:
+    elif mfi_condition == "Oversold" or cmf_condition == "Strong selling":
         summary.append("✓ Oversold conditions detected - Potential bounce opportunity")
 
     # Volatility Assessment

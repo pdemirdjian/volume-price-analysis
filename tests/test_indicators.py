@@ -5,6 +5,9 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis.indicators import (
+    CMF_CONDITION_BANDS,
+    CMF_PRESSURE_BANDS,
+    MFI_CONDITION_BANDS,
     _bandwidth_squeeze,
     _wilder_smooth,
     analyze_volume_trends,
@@ -34,6 +37,8 @@ from volume_price_analysis.indicators import (
     detect_volume_breakout,
     find_pivots,
     rsi_divergence_signal_series,
+    threshold_verdict,
+    trend_verdict,
 )
 
 
@@ -4098,3 +4103,120 @@ class TestEnhancedVolumeProfilePOCZero:
         assert result["poc_distance_pct"] == 0.0
         assert result["vah_distance_pct"] == 0.0
         assert result["val_distance_pct"] == 0.0
+
+
+class TestTrendVerdict:
+    """trend_verdict is the single "latest versus N bars back" rule."""
+
+    def test_rising_series(self):
+        series = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        assert trend_verdict(series, 5) == "increasing"
+
+    def test_falling_series(self):
+        series = pd.Series([6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+        assert trend_verdict(series, 5) == "decreasing"
+
+    def test_flat_series(self):
+        series = pd.Series([2.0] * 6)
+        assert trend_verdict(series, 5) == "flat"
+
+    def test_lookback_selects_the_compared_bar(self):
+        # Latest is above the value 3 positions back but below the one 5 positions back.
+        series = pd.Series([10.0, 2.0, 3.0, 4.0, 5.0])
+        assert trend_verdict(series, 3) == "increasing"
+        assert trend_verdict(series, 5) == "decreasing"
+
+    def test_series_shorter_than_lookback_clamps_to_first_value(self):
+        series = pd.Series([1.0, 2.0, 3.0])
+        assert trend_verdict(series, 10) == "increasing"
+
+    def test_single_value_series_is_flat(self):
+        assert trend_verdict(pd.Series([1.0]), 5) == "flat"
+
+    def test_empty_series_is_flat(self):
+        assert trend_verdict(pd.Series([], dtype=float), 5) == "flat"
+
+    def test_nan_latest_is_flat(self):
+        series = pd.Series([1.0, 2.0, 3.0, np.nan])
+        assert trend_verdict(series, 4) == "flat"
+
+    def test_nan_past_value_is_flat(self):
+        series = pd.Series([np.nan, 2.0, 3.0, 4.0])
+        assert trend_verdict(series, 4) == "flat"
+
+    def test_custom_labels(self):
+        series = pd.Series([1.0, 2.0])
+        assert trend_verdict(series, 2, rising="up", falling="down", flat="unknown") == "up"
+        assert (
+            trend_verdict(pd.Series([1.0]), 2, rising="up", falling="down", flat="unknown")
+            == "unknown"
+        )
+
+    def test_lookback_below_one_is_rejected(self):
+        with pytest.raises(ValueError, match="lookback"):
+            trend_verdict(pd.Series([1.0, 2.0]), 0)
+
+
+class TestThresholdVerdict:
+    """threshold_verdict turns every MFI/CMF ladder into data."""
+
+    def test_mfi_overbought(self):
+        assert threshold_verdict(85.0, MFI_CONDITION_BANDS, "Neutral") == "Overbought"
+
+    def test_mfi_oversold(self):
+        assert threshold_verdict(15.0, MFI_CONDITION_BANDS, "Neutral") == "Oversold"
+
+    def test_mfi_neutral(self):
+        assert threshold_verdict(50.0, MFI_CONDITION_BANDS, "Neutral") == "Neutral"
+
+    def test_mfi_bounds_are_exclusive_on_both_ends(self):
+        # 80 is not > 80 and 20 is not < 20, so both edges stay neutral.
+        assert threshold_verdict(80.0, MFI_CONDITION_BANDS, "Neutral") == "Neutral"
+        assert threshold_verdict(20.0, MFI_CONDITION_BANDS, "Neutral") == "Neutral"
+
+    def test_cmf_bands(self):
+        assert threshold_verdict(0.5, CMF_CONDITION_BANDS, "Neutral") == "Strong buying"
+        assert threshold_verdict(-0.5, CMF_CONDITION_BANDS, "Neutral") == "Strong selling"
+        assert threshold_verdict(0.25, CMF_CONDITION_BANDS, "Neutral") == "Neutral"
+        assert threshold_verdict(-0.25, CMF_CONDITION_BANDS, "Neutral") == "Neutral"
+
+    def test_cmf_pressure_bands_are_zero_exclusive(self):
+        assert threshold_verdict(0.01, CMF_PRESSURE_BANDS, "Neutral (0)") == "Buying Pressure (>0)"
+        assert (
+            threshold_verdict(-0.01, CMF_PRESSURE_BANDS, "Neutral (0)") == "Selling Pressure (<0)"
+        )
+        assert threshold_verdict(0.0, CMF_PRESSURE_BANDS, "Neutral (0)") == "Neutral (0)"
+
+    def test_first_matching_band_wins(self):
+        bands = ((">", 10.0, "high"), (">", 5.0, "medium"))
+        assert threshold_verdict(20.0, bands, "low") == "high"
+        assert threshold_verdict(7.0, bands, "low") == "medium"
+        assert threshold_verdict(1.0, bands, "low") == "low"
+
+    def test_inclusive_operators(self):
+        bands = ((">=", 10.0, "high"), ("<=", 0.0, "low"))
+        assert threshold_verdict(10.0, bands, "mid") == "high"
+        assert threshold_verdict(0.0, bands, "mid") == "low"
+        assert threshold_verdict(5.0, bands, "mid") == "mid"
+
+    def test_none_value_returns_default(self):
+        assert threshold_verdict(None, MFI_CONDITION_BANDS, "Neutral") == "Neutral"
+
+    def test_nan_value_returns_default(self):
+        assert threshold_verdict(float("nan"), MFI_CONDITION_BANDS, "Neutral") == "Neutral"
+
+    def test_missing_label_overrides_default_for_none_and_nan(self):
+        assert (
+            threshold_verdict(None, MFI_CONDITION_BANDS, "Neutral", missing="Insufficient Data")
+            == "Insufficient Data"
+        )
+        assert (
+            threshold_verdict(
+                float("nan"), MFI_CONDITION_BANDS, "Neutral", missing="Insufficient Data"
+            )
+            == "Insufficient Data"
+        )
+
+    def test_unknown_operator_is_rejected(self):
+        with pytest.raises(ValueError, match="operator"):
+            threshold_verdict(1.0, (("~", 0.0, "nope"),), "default")

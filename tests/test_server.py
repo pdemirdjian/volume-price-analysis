@@ -190,7 +190,7 @@ class TestCallToolOBV:
         assert data["indicator"] == "On-Balance Volume (OBV)"
         assert "latest_obv" in data
         assert "obv_trend" in data
-        assert data["obv_trend"] in ["increasing", "decreasing"]
+        assert data["obv_trend"] in ["increasing", "decreasing", "flat"]
 
 
 class TestCallToolVWAP:
@@ -323,7 +323,7 @@ class TestCallToolADLine:
         assert "Accumulation/Distribution Line" in data["indicator"]
         assert "latest_ad_line" in data
         assert "ad_trend" in data
-        assert data["ad_trend"] in ["increasing", "decreasing"]
+        assert data["ad_trend"] in ["increasing", "decreasing", "flat"]
 
     @pytest.mark.asyncio
     @patch("volume_price_analysis.server.fetch_stock_data")
@@ -1193,6 +1193,29 @@ class TestCallToolADLineEdgeCases:
         data = json.loads(result.content[0].text)
         assert data["ad_trend"] == "flat"
         assert data["data_points"] == 1
+
+    @pytest.mark.asyncio
+    @patch("volume_price_analysis.server.fetch_stock_data")
+    async def test_obv_single_data_point_is_flat(self, mock_fetch):
+        """PDE-149: the OBV tool now shares the A/D tool's short-series guard."""
+        mock_data = pd.DataFrame(
+            {
+                "Date": [pd.Timestamp("2024-01-01")],
+                "Open": [100.0],
+                "High": [102.0],
+                "Low": [98.0],
+                "Close": [101.0],
+                "Volume": [1000000],
+            }
+        )
+        mock_fetch.return_value = mock_data
+
+        result = await handle_call_tool(
+            name="calculate_obv",
+            arguments={"symbol": "FLAT", "period": "1d"},
+        )
+        data = json.loads(result.content[0].text)
+        assert data["obv_trend"] == "flat"
 
     @pytest.mark.asyncio
     @patch("volume_price_analysis.server.fetch_stock_data")
