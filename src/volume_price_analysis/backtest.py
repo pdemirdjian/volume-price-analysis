@@ -28,23 +28,31 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from .analysis import (
+    HIGH_CONVICTION_MAX_HV_PERCENTILE,
+    HIGH_CONVICTION_MIN_ABS_SCORE,
+    HIGH_CONVICTION_MIN_ADX,
+    passes_high_conviction_gate,
+)
 from .data_fetcher import DataSource, get_default_data_source
-from .indicators import calculate_adx, calculate_composite_score, calculate_iv_percentile
+from .indicators import (
+    calculate_composite_score,
+    calculate_iv_percentile,
+    composite_adx_period,
+)
 
 logger = logging.getLogger(__name__)
 
-# IV percentile window and ADX period used by the production scan
-# (see analysis.analyze_single_symbol). The high-conviction gate must mirror the
-# scan, so the harness uses these same fixed values rather than the scorer's
-# holding-period-adaptive ADX period.
+# IV percentile window used by the production scan (see analysis.score_symbol).
+# The ADX period is NOT fixed here: it comes from composite_adx_period(holding_period),
+# the same single source of truth the scan reports and gates on.
 _IV_WINDOW = 20
-_ADX_PERIOD = 14
 
 # Score-band buckets matching the product's recommendation labels. The
 # predicates form an *exact* partition of the score range (no gaps, no overlaps)
@@ -59,10 +67,40 @@ _SCORE_BUCKETS: tuple[tuple[str, Callable[[np.ndarray], np.ndarray]], ...] = (
     ("strong_bullish", lambda s: s >= 5.0),
 )
 
-# High-conviction gate used by run_scan (|score|>=4, ADX>=28, IV<=50).
-_HC_MIN_ABS_SCORE = 4.0
-_HC_MIN_ADX = 28.0
-_HC_MAX_IV = 50.0
+# Rounding the production scan applies to a candidate before the gate reads it
+# (analysis.score_symbol). Mirrored here so a borderline bar (e.g. ADX 27.96)
+# classifies identically in the harness and the scan.
+_SCORE_DP = 2
+_ADX_DP = 1
+_HV_DP = 1
+
+
+def observation_to_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Shape one observation row like a ``run_scan`` candidate dict.
+
+    Only the three fields the high-conviction gate reads are populated, rounded
+    exactly as ``analysis.score_symbol`` rounds them.
+    """
+    nan = float("nan")
+    return {
+        "composite_score": round(float(row.get("composite_score", nan)), _SCORE_DP),
+        "adx": round(float(row.get("adx", nan)), _ADX_DP),
+        "hv_percentile": round(float(row.get("iv_percentile", nan)), _HV_DP),
+    }
+
+
+def high_conviction_mask(obs: pd.DataFrame) -> np.ndarray:
+    """Boolean mask of the rows the production scan would call high-conviction.
+
+    Delegates to :func:`analysis.passes_high_conviction_gate` — the harness owns
+    no thresholds of its own, so the measured gate is the one that ships.
+    """
+    if obs.empty:
+        return np.zeros(0, dtype=bool)
+    return np.array(
+        [passes_high_conviction_gate(observation_to_candidate(r)) for r in obs.to_dict("records")],
+        dtype=bool,
+    )
 
 
 def forward_returns(data: pd.DataFrame, horizon: int) -> pd.Series:
@@ -103,7 +141,10 @@ def causal_score_at(
         holding_period: Holding period passed through to the scorer.
 
     Returns:
-        Dict with ``composite_score``, ``adx`` and ``iv_percentile`` at ``t``.
+        Dict with ``composite_score``, ``adx``, ``adx_period`` and
+        ``iv_percentile`` at ``t``. ``adx_period`` is
+        :func:`indicators.composite_adx_period` of ``holding_period`` — the same
+        adaptive lookback the production scan reports and gates on.
 
     Raises:
         IndexError: If ``bar_index`` is out of range for ``data``.
@@ -114,9 +155,14 @@ def causal_score_at(
     window = data.iloc[: bar_index + 1]
     composite = calculate_composite_score(window, holding_period)
 
-    # ADX and IV come from the same fixed parameters the production scan gates
-    # on (period-14 ADX, 20-bar IV), so the high-conviction gate is faithful.
-    adx = float(calculate_adx(window, _ADX_PERIOD)["adx"])
+    # ADX and IV come from the same parameters the production scan gates on: the
+    # holding-period-adaptive ADX period (ADX(10) for holds <= 14d) and the 20-bar
+    # IV proxy, so the high-conviction gate measured here is the one that ships.
+    # Reuse the composite's own ADX exactly as analysis.score_symbol does, so the
+    # harness cannot drift from the scan even by a rounding step.
+    adx_period = composite_adx_period(holding_period)
+    adx_summary = composite["adx_summary"]
+    adx = float(adx_summary["adx"])
     try:
         iv_pct = float(calculate_iv_percentile(window, _IV_WINDOW)["iv_percentile"])
     except Exception:  # pragma: no cover - defensive; IV proxy is a soft gate
@@ -125,6 +171,7 @@ def causal_score_at(
     return {
         "composite_score": float(composite["composite_score"]),
         "adx": adx,
+        "adx_period": float(adx_period),
         "iv_percentile": iv_pct,
     }
 
@@ -268,7 +315,7 @@ def evaluate_observations(
     Returns:
         Dict of pooled metrics: overall hit rate, directional return, Spearman
         and Pearson IC, per-score-bucket stats, per-gate-threshold stats, and the
-        production high-conviction gate (|score|>=4 & ADX>=28 & IV<=50).
+        production high-conviction gate (analysis.passes_high_conviction_gate).
     """
     if obs.empty:
         return {
@@ -305,16 +352,8 @@ def evaluate_observations(
         stats = _directional_stats(scores_np[mask], fwd_np[mask])
         by_gate.append({"min_abs_score": float(thr), **stats})
 
-    # Production high-conviction gate
-    adx_np = obs["adx"].to_numpy() if "adx" in obs.columns else np.full(len(obs), np.nan)
-    iv_np = (
-        obs["iv_percentile"].to_numpy()
-        if "iv_percentile" in obs.columns
-        else np.full(len(obs), np.nan)
-    )
-    hc_mask = (
-        (np.abs(scores_np) >= _HC_MIN_ABS_SCORE) & (adx_np >= _HC_MIN_ADX) & (iv_np <= _HC_MAX_IV)
-    )
+    # Production high-conviction gate -- evaluated by the scan's own predicate.
+    hc_mask = high_conviction_mask(obs)
     high_conviction = _directional_stats(scores_np[hc_mask], fwd_np[hc_mask])
 
     return {
@@ -325,19 +364,6 @@ def evaluate_observations(
         "by_gate_threshold": by_gate,
         "high_conviction_gate": high_conviction,
     }
-
-
-def run_symbol_backtest(
-    data: pd.DataFrame,
-    horizon: int,
-    holding_period: int = 14,
-    min_history: int = 50,
-    step: int = 1,
-    symbol: str | None = None,
-) -> dict[str, Any]:
-    """Compute observations and evaluate them for a single symbol's data."""
-    obs = compute_observations(data, horizon, holding_period, min_history, step, symbol=symbol)
-    return {"observations": obs, "evaluation": evaluate_observations(obs)}
 
 
 # --------------------------------------------------------------------------- #
@@ -397,7 +423,12 @@ def format_report(evaluation: dict[str, Any], meta: dict[str, Any]) -> str:
         )
     hc = evaluation["high_conviction_gate"]
     lines.append("")
-    lines.append("HIGH-CONVICTION GATE (|score|>=4 & ADX>=28 & IV<=50)")
+    lines.append(
+        "HIGH-CONVICTION GATE "
+        f"(|score|>={HIGH_CONVICTION_MIN_ABS_SCORE:g} & "
+        f"ADX>={HIGH_CONVICTION_MIN_ADX:g} & "
+        f"HV<={HIGH_CONVICTION_MAX_HV_PERCENTILE:g})"
+    )
     lines.append(
         f"  n={hc['n']}  hit={_fmt_pct(hc['hit_rate_directional'])}  "
         f"dir_ret={_fmt_pct(hc['mean_directional_return'])}  "
