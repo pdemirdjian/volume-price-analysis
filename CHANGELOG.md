@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.7](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.6...v2.9.7) (2026-09-11)
+
+
+### Bug Fixes
+
+* **deps:** update dependency mcp to v2.2.0 ([#469](https://github.com/pdemirdjian/volume-price-analysis/issues/469)) ([47682b2](https://github.com/pdemirdjian/volume-price-analysis/commit/47682b247fdaa4395edeb67fd24f9bde00c5f313))
+
 ## [2.9.6](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.5...v2.9.6) (2026-09-09)
 
 
