@@ -24,6 +24,8 @@ from .config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
+SMTP_TIMEOUT_SECONDS = 30
+
 SmtpFactory = Callable[..., smtplib.SMTP]
 
 
@@ -242,7 +244,7 @@ def send_email(
     factory = smtp_factory if smtp_factory is not None else smtplib.SMTP
     logger.info("Sending email to %s via %s:%d", creds.to_addrs, creds.smtp_host, creds.smtp_port)
     try:
-        with factory(creds.smtp_host, creds.smtp_port) as server:
+        with factory(creds.smtp_host, creds.smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as server:
             server.starttls(context=ssl.create_default_context())
             server.login(creds.from_addr, creds.password)
             server.sendmail(creds.from_addr, creds.to_addrs, message.as_string())

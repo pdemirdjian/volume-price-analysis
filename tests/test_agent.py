@@ -4,8 +4,10 @@ import email
 import json
 import logging
 import smtplib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -814,6 +816,12 @@ class TestGenerateAnthropicAdapter:
         mocker.patch("anthropic.Anthropic", return_value=mock_client)
         return mock_client
 
+    def test_request_has_finite_timeout(self, mocker):
+        mock_client = self._mock_client(mocker)
+        with patch("anthropic.Anthropic", return_value=mock_client) as client:
+            generate_anthropic("user content", "claude-test", "sk-test")
+        client.assert_called_once_with(api_key="sk-test", timeout=120)
+
     def test_calls_messages_api(self, mocker):
         mock_client = self._mock_client(mocker)
 
@@ -859,6 +867,12 @@ class TestGenerateGeminiAdapter:
         mock_client.models.generate_content.return_value = mock_response
         mocker.patch("google.genai.Client", return_value=mock_client)
         return mock_client
+
+    def test_request_has_finite_timeout(self, mocker):
+        mock_client = self._mock_client(mocker)
+        with patch("google.genai.Client", return_value=mock_client) as client:
+            generate_gemini("user content", "gemini-test", "test-key")
+        client.assert_called_once_with(api_key="test-key", http_options={"timeout": 120_000})
 
     def test_calls_generate_content(self, mocker):
         mock_client = self._mock_client(mocker)
@@ -946,7 +960,8 @@ class FakeSmtp:
         self.login_args: tuple[str, str] | None = None
         self.sent: list[tuple[str, list[str], str]] = []
 
-    def __call__(self, host, port):
+    def __call__(self, host, port, *, timeout=None):
+        self.timeout = timeout
         self.host = host
         self.port = port
         return self
@@ -1217,6 +1232,7 @@ class TestSendEmail:
 
         assert smtp.host == "smtp.gmail.com"
         assert smtp.port == 587
+        assert smtp.timeout == 30
         assert smtp.starttls_calls == 1
         assert smtp.login_args == ("sender@test.com", "test-pass")
         from_addr, to_addrs, sent = smtp.sent[0]
@@ -2389,6 +2405,42 @@ class TestFetchEarningsWarnings:
 
         assert set(result) == {"NVDA"}
         assert "EARNINGS in 5 day(s)" in result["NVDA"]
+
+    def test_slow_lookup_times_out_and_keeps_other_symbols(self, mocker, caplog):
+        release = Event()
+        finished = Event()
+
+        class SlowSource(InMemoryDataSource):
+            def earnings_date(self, symbol):
+                if symbol == "AAPL":
+                    try:
+                        release.wait()
+                    finally:
+                        finished.set()
+                return NOW_UTC + timedelta(days=5)
+
+        mocker.patch(
+            "volume_price_analysis.agent.morning_agent.EARNINGS_TIMEOUT_SECONDS",
+            0.01,
+        )
+        caller = ThreadPoolExecutor(max_workers=1)
+        try:
+            with caplog.at_level(logging.DEBUG):
+                future = caller.submit(
+                    _fetch_earnings_warnings, ["AAPL", "NVDA"], NOW_UTC, SlowSource()
+                )
+                result = future.result(timeout=2)
+            assert not finished.is_set(), "briefing waited for the timed-out lookup"
+            assert set(result) == {"NVDA"}
+            assert "Earnings lookup failed for AAPL" in caplog.text
+            assert any(
+                record.exc_info and isinstance(record.exc_info[1], TimeoutError)
+                for record in caplog.records
+            )
+        finally:
+            release.set()
+            caller.shutdown(wait=True)
+            assert finished.wait(timeout=2)
 
     def test_thread_pool_is_bounded(self):
         from concurrent.futures import ThreadPoolExecutor

@@ -287,6 +287,7 @@ _EARNINGS_WARN_DAYS = 14
 
 # Cap concurrent earnings lookups regardless of how many symbols were analysed
 _EARNINGS_MAX_WORKERS = 8
+EARNINGS_TIMEOUT_SECONDS = 30
 
 
 def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | None:
@@ -314,14 +315,24 @@ def _fetch_earnings_warnings(
     """Fetch earnings dates for all symbols concurrently. Returns symbol -> warning string."""
     if not symbols:
         return {}
-    with ThreadPoolExecutor(max_workers=min(len(symbols), _EARNINGS_MAX_WORKERS)) as pool:
+    pool = ThreadPoolExecutor(max_workers=min(len(symbols), _EARNINGS_MAX_WORKERS))
+    try:
         futures = {sym: pool.submit(_check_earnings, sym, now, source) for sym in symbols}
         result: dict[str, str] = {}
         for sym, fut in futures.items():
-            warning = fut.result()
+            try:
+                warning = fut.result(timeout=EARNINGS_TIMEOUT_SECONDS)
+            except TimeoutError:
+                fut.cancel()
+                logger.debug("Earnings lookup failed for %s", sym, exc_info=True)
+                continue
             if warning is not None:
                 result[sym] = warning
         return result
+    finally:
+        # A context manager waits for running lookups, undoing the timeout.
+        # Running threads cannot be cancelled; let the briefing continue.
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _fetch_market_regime(source: DataSource, today: date | None = None) -> dict:
