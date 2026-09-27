@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Maximum output tokens requested from any provider. Shared so both adapters
 # stay in lockstep; override per call with the ``max_tokens`` keyword.
 MAX_OUTPUT_TOKENS = 16384
+AI_REQUEST_TIMEOUT_SECONDS = 120
 
 # A briefing provider turns (user_content, model, api_key) into briefing text.
 # The two production adapters below satisfy it; tests inject plain callables.
@@ -652,7 +653,7 @@ def generate_anthropic(
     """Generate briefing using Anthropic Claude API."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS)
 
     logger.info("Sending briefing request to Anthropic (%s)", model)
 
@@ -683,7 +684,10 @@ def generate_gemini(
     """Generate briefing using Google Gemini API."""
     from google import genai
 
-    client = genai.Client(api_key=api_key)
+    # Gemini uses milliseconds; Anthropic uses seconds.
+    client = genai.Client(
+        api_key=api_key, http_options={"timeout": AI_REQUEST_TIMEOUT_SECONDS * 1000}
+    )
 
     logger.info("Sending briefing request to Gemini (%s)", model)
 
