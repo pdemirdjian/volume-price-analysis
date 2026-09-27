@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.9](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.8...v2.9.9) (2026-09-27)
+
+
+### Bug Fixes
+
+* **PDE-16:** add explicit timeouts to briefing agent network calls ([#493](https://github.com/pdemirdjian/volume-price-analysis/issues/493)) ([498af94](https://github.com/pdemirdjian/volume-price-analysis/commit/498af9448afabcfdb8bfe2693e5f78b0ea944dc8))
+
 ## [2.9.8](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.7...v2.9.8) (2026-09-26)
 
 
