@@ -653,7 +653,8 @@ def generate_anthropic(
     """Generate briefing using Anthropic Claude API."""
     import anthropic
 
-    # The briefing pipeline owns the bounded retry budget.
+    # Give up the SDK's Retry-After handling so the briefing pipeline owns
+    # one bounded retry budget.
     client = anthropic.Anthropic(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS, max_retries=0)
 
     logger.info("Sending briefing request to Anthropic (%s)", model)

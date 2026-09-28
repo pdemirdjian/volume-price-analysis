@@ -215,10 +215,19 @@ def send_email(
     logger.info("Sending email to %s via %s:%d", creds.to_addrs, creds.smtp_host, creds.smtp_port)
 
     def deliver() -> None:
-        with factory(creds.smtp_host, creds.smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as server:
-            server.starttls(context=ssl.create_default_context())
-            server.login(creds.from_addr, creds.password)
-            server.sendmail(creds.from_addr, creds.to_addrs, message.as_string())
+        sent = False
+        try:
+            with factory(creds.smtp_host, creds.smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as server:
+                server.starttls(context=ssl.create_default_context())
+                server.login(creds.from_addr, creds.password)
+                # A timeout awaiting the server's DATA-body reply cannot be
+                # disambiguated client-side: the message may already be accepted.
+                server.sendmail(creds.from_addr, creds.to_addrs, message.as_string())
+                sent = True
+        except Exception as exc:
+            if not sent:
+                raise
+            logger.warning("SMTP cleanup failed after successful send (%s)", type(exc).__name__)
 
     try:
         retry_call(

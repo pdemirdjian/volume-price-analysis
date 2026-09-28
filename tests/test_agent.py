@@ -2617,11 +2617,11 @@ class TestRunMorningBriefingDateAndPicks:
 
 @pytest.fixture(autouse=True)
 def retry_sleep(mocker):
-    return mocker.patch("volume_price_analysis.agent.retry.time.sleep")
+    return mocker.patch("volume_price_analysis.agent.retry._sleep")
 
 
-@pytest.mark.parametrize("failures", [2, 3])
-async def test_ai_transient_failures_before_fallback(mocker, capsys, retry_sleep, failures):
+@pytest.mark.parametrize("failures, status", [(2, None), (3, None), (1, 400), (1, 401)])
+async def test_ai_failures_before_fallback(mocker, capsys, retry_sleep, failures, status):
     mocker.patch(
         "volume_price_analysis.agent.morning_agent.run_scan",
         return_value={
@@ -2637,17 +2637,29 @@ async def test_ai_transient_failures_before_fallback(mocker, capsys, retry_sleep
             "top_bearish": [],
         },
     )
-    provider = mocker.Mock(side_effect=[TimeoutError()] * failures + ["Recovered model prose"])
-    mocker.patch.dict(PROVIDERS, {"gemini": provider})
+    error = TimeoutError()
+    if status is not None:
+        import anthropic
+        import httpx
+
+        error = anthropic.APIStatusError(
+            "test error",
+            response=httpx.Response(status, request=httpx.Request("POST", "https://example.test")),
+            body=None,
+        )
+    provider = mocker.Mock(side_effect=[error] * failures + ["Recovered model prose"])
+    mocker.patch.dict(PROVIDERS, {"anthropic": provider})
     result = await run_morning_briefing(
-        AgentConfig(ai_provider="gemini"), dry_run=True, data_source=agent_source()
+        AgentConfig(ai_provider="anthropic"), dry_run=True, data_source=agent_source()
     )
     body = capsys.readouterr().out
-    assert provider.call_count == 3
-    assert retry_sleep.call_args_list == [mocker.call(2), mocker.call(4)]
-    assert result.degraded is (failures == 3)
-    assert ("## Fallback Briefing (AI unavailable)" in body) is (failures == 3)
-    if failures == 2:
+    assert provider.call_count == (1 if status is not None else 3)
+    expected_delays = [] if status is not None else [mocker.call(2), mocker.call(4)]
+    assert retry_sleep.call_args_list == expected_delays
+    recovered = failures == 2
+    assert result.degraded is (not recovered)
+    assert ("## Fallback Briefing (AI unavailable)" in body) is (not recovered)
+    if recovered:
         assert "Recovered model prose" in body
         assert result.reason is None
     else:
@@ -2672,6 +2684,30 @@ def test_email_recovers_from_transient_failure(mocker, retry_sleep, error):
     assert len(smtp.sent) == 1
     assert factory.call_count == 2
     retry_sleep.assert_called_once_with(2)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        smtplib.SMTPResponseException(421, b"closing connection"),
+        smtplib.SMTPServerDisconnected("lost connection"),
+        OSError("connection dropped"),
+    ],
+)
+def test_email_cleanup_failure_after_send_is_success(mocker, retry_sleep, caplog, error):
+    class CleanupFailureSmtp(FakeSmtp):
+        def __exit__(self, *exc_info):
+            raise error
+
+    smtp = CleanupFailureSmtp()
+    factory = mocker.Mock(return_value=smtp)
+    creds = SmtpCreds.from_parts("a@b.com", "test", "c@d.com")
+    with caplog.at_level(logging.WARNING):
+        send_email(build_error_message(creds, "boom"), creds, smtp_factory=factory)
+    assert len(smtp.sent) == 1
+    factory.assert_called_once()
+    retry_sleep.assert_not_called()
+    assert "SMTP cleanup failed after successful send" in caplog.text
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+_sleep = time.sleep
 
 RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 2
@@ -19,7 +20,7 @@ def retry_call[T](
     sleep: Callable[[float], None] | None = None,
 ) -> T:
     """Retry eligible failures; re-raise the last exception unchanged."""
-    sleep = sleep if sleep is not None else time.sleep
+    sleep = sleep if sleep is not None else _sleep
     for attempt in range(1, attempts + 1):
         try:
             return fn()
