@@ -653,7 +653,8 @@ def generate_anthropic(
     """Generate briefing using Anthropic Claude API."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS)
+    # The briefing pipeline owns the bounded retry budget.
+    client = anthropic.Anthropic(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS, max_retries=0)
 
     logger.info("Sending briefing request to Anthropic (%s)", model)
 
@@ -684,9 +685,13 @@ def generate_gemini(
     """Generate briefing using Google Gemini API."""
     from google import genai
 
-    # Gemini uses milliseconds; Anthropic uses seconds.
+    # Gemini uses milliseconds; Anthropic uses seconds. The pipeline owns retries.
     client = genai.Client(
-        api_key=api_key, http_options={"timeout": AI_REQUEST_TIMEOUT_SECONDS * 1000}
+        api_key=api_key,
+        http_options={
+            "timeout": AI_REQUEST_TIMEOUT_SECONDS * 1000,
+            "retry_options": {"attempts": 1},
+        },
     )
 
     logger.info("Sending briefing request to Gemini (%s)", model)
@@ -720,3 +725,16 @@ PROVIDERS: dict[str, BriefingProvider] = {
     "anthropic": generate_anthropic,
     "gemini": generate_gemini,
 }
+
+
+def is_transient_ai_error(exc: Exception) -> bool:
+    """Retry provider rate limits, server errors, and connection failures."""
+    import anthropic
+    import httpx
+    from google.genai.errors import APIError
+
+    if isinstance(exc, anthropic.APIStatusError):
+        return exc.status_code == 429 or 500 <= exc.status_code < 600
+    if isinstance(exc, APIError):
+        return exc.code == 429 or 500 <= exc.code < 600
+    return isinstance(exc, (anthropic.APIConnectionError, httpx.TransportError, OSError))

@@ -20,6 +20,7 @@ import markdown  # type: ignore[import-untyped]
 import nh3
 
 from .config import AgentConfig
+from .retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 
 logger = logging.getLogger(__name__)
 
@@ -212,12 +213,36 @@ def send_email(
     """
     factory = smtp_factory if smtp_factory is not None else smtplib.SMTP
     logger.info("Sending email to %s via %s:%d", creds.to_addrs, creds.smtp_host, creds.smtp_port)
-    try:
+
+    def deliver() -> None:
         with factory(creds.smtp_host, creds.smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as server:
             server.starttls(context=ssl.create_default_context())
             server.login(creds.from_addr, creds.password)
             server.sendmail(creds.from_addr, creds.to_addrs, message.as_string())
+
+    try:
+        retry_call(
+            deliver,
+            attempts=RETRY_ATTEMPTS,
+            base_delay=RETRY_BASE_DELAY_SECONDS,
+            retry_on=_is_transient_smtp_error,
+        )
         logger.info("Email sent successfully")
     except smtplib.SMTPException:
         logger.exception("Failed to send email")
         raise
+
+
+def _is_transient_smtp_error(exc: Exception) -> bool:
+    # SMTPException inherits OSError: classify SMTP failures before network errors.
+    if isinstance(exc, (smtplib.SMTPAuthenticationError, smtplib.SMTPNotSupportedError)):
+        return False
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return 400 <= exc.smtp_code < 500
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return bool(exc.recipients) and all(
+            400 <= code < 500 for code, _ in exc.recipients.values()
+        )
+    if isinstance(exc, smtplib.SMTPException):
+        return isinstance(exc, smtplib.SMTPServerDisconnected)
+    return isinstance(exc, OSError)

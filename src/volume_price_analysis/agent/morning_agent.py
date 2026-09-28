@@ -20,12 +20,13 @@ from zoneinfo import ZoneInfo
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
-from .ai_client import PROVIDERS, generate_briefing, resolve_model
+from .ai_client import PROVIDERS, generate_briefing, is_transient_ai_error, resolve_model
 from .briefing import BriefingInputs, render, render_raw
 from .config import AgentConfig
 from .email_sender import SmtpCreds, build_briefing_message, build_error_message, send_email
 from .picks import build_picks
 from .regime import REGIME_SMA_PERIOD, annotate_regime_conflicts, compute_market_regime
+from .retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 
 # Configure logging to stdout (Docker best practice)
 logging.basicConfig(
@@ -180,16 +181,23 @@ async def run_morning_briefing(
         )
         earnings_preamble = build_earnings_preamble(earnings_warnings)
         try:
-            model_text = generate_briefing(
-                scan_results=scan_results,
-                deep_analyses=deep_analyses,
-                provider=PROVIDERS[config.ai_provider],
-                model=resolve_model(config.ai_provider, config.ai_model),
-                api_key=config.ai_provider_api_key,
-                earnings_preamble=earnings_preamble,
-                briefing_date=briefing_date,
-                picks=picks,
-            ).text
+            model_text = retry_call(
+                lambda: (
+                    generate_briefing(
+                        scan_results=scan_results,
+                        deep_analyses=deep_analyses,
+                        provider=PROVIDERS[config.ai_provider],
+                        model=resolve_model(config.ai_provider, config.ai_model),
+                        api_key=config.ai_provider_api_key,
+                        earnings_preamble=earnings_preamble,
+                        briefing_date=briefing_date,
+                        picks=picks,
+                    ).text
+                ),
+                attempts=RETRY_ATTEMPTS,
+                base_delay=RETRY_BASE_DELAY_SECONDS,
+                retry_on=is_transient_ai_error,
+            )
         except Exception:
             logger.exception("AI briefing generation failed")
             degraded_reason = (
