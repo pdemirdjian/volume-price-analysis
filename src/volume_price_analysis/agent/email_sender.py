@@ -7,7 +7,6 @@ hand it to :func:`send_email` with :class:`SmtpCreds` built from the config.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import smtplib
@@ -197,36 +196,6 @@ def build_error_message(creds: SmtpCreds, error_message: str) -> MIMEMultipart:
     msg = _new_message("Morning Briefing - ERROR", creds)
     msg.attach(MIMEText(body, "plain"))
     return msg
-
-
-def build_raw_data_message(
-    creds: SmtpCreds,
-    scan_results: dict,
-    deep_analyses: list[dict],
-    date_str: str = "",
-    preamble: str = "",
-) -> MIMEMultipart:
-    """Build the raw scan/analysis data email (for --no-ai mode).
-
-    ``preamble`` is an optional markdown block (e.g. the market-regime verdict)
-    placed above the raw JSON dumps.
-    """
-    body = f"{preamble}\n\n" if preamble else ""
-    body += "# Morning Market Scan Results\n\n"
-    body += f"```json\n{json.dumps(scan_results, indent=2, default=str)}\n```\n\n"
-
-    if deep_analyses:
-        body += "# Deep Analysis Results\n\n"
-        for analysis in deep_analyses:
-            symbol = analysis.get("symbol", "Unknown")
-            body += f"## {symbol}\n"
-            body += f"```json\n{json.dumps(analysis, indent=2, default=str)}\n```\n\n"
-
-    return build_briefing_message(
-        creds,
-        subject=f"Morning Market Data (Raw) - {date_str}",
-        body_markdown=body,
-    )
 
 
 def send_email(
