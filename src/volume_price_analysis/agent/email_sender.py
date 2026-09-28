@@ -222,6 +222,7 @@ def send_email(
                 server.login(creds.from_addr, creds.password)
                 # A timeout awaiting the server's DATA-body reply cannot be
                 # disambiguated client-side: the message may already be accepted.
+                # We still retry it: a duplicate briefing beats a missing one.
                 server.sendmail(creds.from_addr, creds.to_addrs, message.as_string())
                 sent = True
         except Exception as exc:

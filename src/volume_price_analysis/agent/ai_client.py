@@ -735,7 +735,16 @@ def is_transient_ai_error(exc: Exception) -> bool:
     from google.genai.errors import APIError
 
     if isinstance(exc, anthropic.APIStatusError):
-        return exc.status_code == 429 or 500 <= exc.status_code < 600
+        return _is_transient_status(exc.status_code)
     if isinstance(exc, APIError):
-        return exc.code == 429 or 500 <= exc.code < 600
+        return _is_transient_status(exc.code)
     return isinstance(exc, (anthropic.APIConnectionError, httpx.TransportError, OSError))
+
+
+# 408/409 match what the SDKs retried by default before we turned their retries off.
+_TRANSIENT_STATUS_CODES = frozenset({408, 409, 429})
+
+
+def _is_transient_status(code: object) -> bool:
+    # Gemini's APIError.code can be None; never let the classifier mask the real error.
+    return isinstance(code, int) and (code in _TRANSIENT_STATUS_CODES or 500 <= code < 600)

@@ -2730,7 +2730,8 @@ def test_email_permanent_failure_is_not_retried(mocker, retry_sleep, error):
 
 @pytest.mark.parametrize("provider_name", ["anthropic", "gemini"])
 @pytest.mark.parametrize(
-    "status, retryable", [(429, True), (503, True), (400, False), (401, False)]
+    "status, retryable",
+    [(408, True), (409, True), (429, True), (503, True), (400, False), (401, False), (403, False)],
 )
 def test_ai_provider_status_retry_policy(provider_name, status, retryable):
     import anthropic
@@ -2748,6 +2749,16 @@ def test_ai_provider_status_retry_policy(provider_name, status, retryable):
     else:
         error = APIError(status, {"error": {"message": "test error"}})
     assert is_transient_ai_error(error) is retryable
+
+
+def test_ai_error_without_status_code_is_not_retried():
+    from google.genai.errors import APIError
+
+    from volume_price_analysis.agent.ai_client import is_transient_ai_error
+
+    error = APIError(500, {"error": {"message": "test error"}})
+    error.code = None  # type: ignore[assignment]
+    assert is_transient_ai_error(error) is False
 
 
 @pytest.mark.parametrize(
