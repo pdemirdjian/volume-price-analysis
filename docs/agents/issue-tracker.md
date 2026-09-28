@@ -1,7 +1,7 @@
 # Issue tracker: Linear
 
 Issues and specs for this repo live in Linear, workspace team **pdemirdjian** (issue keys `PDE-*`).
-Use the Linear MCP tools (`mcp__plugin_linear_linear__*`) for all operations — there is no CLI.
+Use the Linear MCP tools for all operations — there is no CLI.
 
 ## Conventions
 
