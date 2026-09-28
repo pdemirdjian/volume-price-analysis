@@ -8,7 +8,7 @@ MCP server providing volume-price technical analysis tools for stock market data
 src/volume_price_analysis/
 ├── server.py        # MCP adapter: list-tools + one dispatcher, nothing else
 ├── tools.py         # Tool registry: one ToolSpec (name/schema/run) per MCP tool
-├── indicators.py    # Pure calculation functions (23 indicators)
+├── indicators.py    # Pure indicator calculation functions
 ├── data_fetcher.py  # DataSource protocol; YFinanceDataSource (prod) + InMemoryDataSource (tests)
 ├── analysis.py      # Reusable scan/analysis logic
 └── agent/           # Morning briefing agent (scheduler, AI client, email)

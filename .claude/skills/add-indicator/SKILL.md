@@ -40,28 +40,31 @@ Write tests that cover:
 - Known trend behavior (e.g., uptrend should produce expected signal)
 - Edge cases if applicable
 
-## Step 3: Add MCP Tool definition in `server.py`
+## Step 3: Add MCP Tool definition in `tools.py`
 
-Read `src/volume_price_analysis/server.py` and find `handle_list_tools()`.
+Read `src/volume_price_analysis/tools.py` and find `TOOLS`.
 
-Add a new `Tool()` entry following the existing pattern:
+Append a new `ToolSpec(name, description, input_schema, run)` entry following the existing pattern:
 - Name: `calculate_<name>` (matching the function name)
 - Description: Clear explanation of what the indicator measures
 - Input schema: JSON Schema matching the function parameters
+- Run: `_run_calculate_<name>` defined in Step 4
 
-## Step 4: Add handler case in `handle_call_tool()`
+## Step 4: Add tool run function and registry test case
 
-In the same `server.py`, find `handle_call_tool()` and add a case for the new tool name that:
-1. Extracts parameters from `arguments`
-2. Calls `fetch_stock_data()` for the symbol
+In the same `tools.py`, add an `async def _run_calculate_<name>(ctx: ToolContext)` that:
+1. Extracts parameters from `ctx.args` and the symbol using `ctx.require_symbol()`
+2. Calls `ctx.fetch()` for the symbol's data
 3. Calls the indicator function
-4. Returns the result as JSON text
+4. Returns the result as a dict
+
+Add a case for the new tool to `MINIMAL_ARGS` in `tests/test_tool_registry.py`.
 
 ## Step 5: Verify
 
 Run:
 ```bash
-uv run pytest tests/test_indicators.py -v
+uv run pytest tests/test_indicators.py tests/test_tool_registry.py -v
 uv run ruff check src/ tests/
 uv run mypy src/
 ```

@@ -44,4 +44,4 @@ uv run morning-scheduler
 
 - If yfinance fails, check network access and rate limits
 - Set `MAX_DEEP_ANALYSIS=1` in `.env` to speed up test runs
-- Set `SCAN_UNIVERSE=test` if available, to use a smaller symbol set
+- Set `SCAN_UNIVERSE` to `sp500` or `etfs` for a smaller symbol set than the default `full_market`
