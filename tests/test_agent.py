@@ -757,7 +757,7 @@ class TestGenerateAnthropicAdapter:
         mock_client = self._mock_client(mocker)
         with patch("anthropic.Anthropic", return_value=mock_client) as client:
             generate_anthropic("user content", "claude-test", "sk-test")
-        client.assert_called_once_with(api_key="sk-test", timeout=120)
+        client.assert_called_once_with(api_key="sk-test", timeout=120, max_retries=0)
 
     def test_calls_messages_api(self, mocker):
         mock_client = self._mock_client(mocker)
@@ -809,7 +809,9 @@ class TestGenerateGeminiAdapter:
         mock_client = self._mock_client(mocker)
         with patch("google.genai.Client", return_value=mock_client) as client:
             generate_gemini("user content", "gemini-test", "test-key")
-        client.assert_called_once_with(api_key="test-key", http_options={"timeout": 120_000})
+        client.assert_called_once_with(
+            api_key="test-key", http_options={"timeout": 120_000, "retry_options": {"attempts": 1}}
+        )
 
     def test_calls_generate_content(self, mocker):
         mock_client = self._mock_client(mocker)
@@ -2611,3 +2613,169 @@ class TestRunMorningBriefingDateAndPicks:
         )
 
         assert regime.call_args.kwargs["today"] == date(2026, 9, 4)
+
+
+@pytest.fixture(autouse=True)
+def retry_sleep(mocker):
+    return mocker.patch("volume_price_analysis.agent.retry._sleep")
+
+
+@pytest.mark.parametrize("failures, status", [(2, None), (3, None), (1, 400), (1, 401)])
+async def test_ai_failures_before_fallback(mocker, capsys, retry_sleep, failures, status):
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent.run_scan",
+        return_value={
+            "summary": {
+                "total_candidates": 0,
+                "bullish_setups": 0,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        },
+    )
+    error = TimeoutError()
+    if status is not None:
+        import anthropic
+        import httpx
+
+        error = anthropic.APIStatusError(
+            "test error",
+            response=httpx.Response(status, request=httpx.Request("POST", "https://example.test")),
+            body=None,
+        )
+    provider = mocker.Mock(side_effect=[error] * failures + ["Recovered model prose"])
+    mocker.patch.dict(PROVIDERS, {"anthropic": provider})
+    result = await run_morning_briefing(
+        AgentConfig(ai_provider="anthropic"), dry_run=True, data_source=agent_source()
+    )
+    body = capsys.readouterr().out
+    assert provider.call_count == (1 if status is not None else 3)
+    expected_delays = [] if status is not None else [mocker.call(2), mocker.call(4)]
+    assert retry_sleep.call_args_list == expected_delays
+    recovered = failures == 2
+    assert result.degraded is (not recovered)
+    assert ("## Fallback Briefing (AI unavailable)" in body) is (not recovered)
+    if recovered:
+        assert "Recovered model prose" in body
+        assert result.reason is None
+    else:
+        assert "Recovered model prose" not in body
+        assert "used fallback briefing" in result.reason
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        smtplib.SMTPServerDisconnected("lost connection"),
+        smtplib.SMTPDataError(451, b"try later"),
+        OSError("connection failed"),
+        TimeoutError(),
+    ],
+)
+def test_email_recovers_from_transient_failure(mocker, retry_sleep, error):
+    smtp = FakeSmtp()
+    factory = mocker.Mock(side_effect=[error, smtp])
+    creds = SmtpCreds.from_parts("a@b.com", "test", "c@d.com")
+    send_email(build_error_message(creds, "boom"), creds, smtp_factory=factory)
+    assert len(smtp.sent) == 1
+    assert factory.call_count == 2
+    retry_sleep.assert_called_once_with(2)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        smtplib.SMTPResponseException(421, b"closing connection"),
+        smtplib.SMTPServerDisconnected("lost connection"),
+        OSError("connection dropped"),
+    ],
+)
+def test_email_cleanup_failure_after_send_is_success(mocker, retry_sleep, caplog, error):
+    class CleanupFailureSmtp(FakeSmtp):
+        def __exit__(self, *exc_info):
+            raise error
+
+    smtp = CleanupFailureSmtp()
+    factory = mocker.Mock(return_value=smtp)
+    creds = SmtpCreds.from_parts("a@b.com", "test", "c@d.com")
+    with caplog.at_level(logging.WARNING):
+        send_email(build_error_message(creds, "boom"), creds, smtp_factory=factory)
+    assert len(smtp.sent) == 1
+    factory.assert_called_once()
+    retry_sleep.assert_not_called()
+    assert "SMTP cleanup failed after successful send" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        smtplib.SMTPAuthenticationError(454, b"auth failed"),
+        smtplib.SMTPDataError(550, b"rejected"),
+        smtplib.SMTPNotSupportedError("no TLS"),
+    ],
+)
+def test_email_permanent_failure_is_not_retried(mocker, retry_sleep, error):
+    factory = mocker.Mock(side_effect=error)
+    creds = SmtpCreds.from_parts("a@b.com", "test", "c@d.com")
+    with pytest.raises(type(error)) as raised:
+        send_email(build_error_message(creds, "boom"), creds, smtp_factory=factory)
+    assert raised.value is error
+    factory.assert_called_once()
+    retry_sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("provider_name", ["anthropic", "gemini"])
+@pytest.mark.parametrize(
+    "status, retryable",
+    [(408, True), (409, True), (429, True), (503, True), (400, False), (401, False), (403, False)],
+)
+def test_ai_provider_status_retry_policy(provider_name, status, retryable):
+    import anthropic
+    import httpx
+    from google.genai.errors import APIError
+
+    from volume_price_analysis.agent.ai_client import is_transient_ai_error
+
+    if provider_name == "anthropic":
+        error = anthropic.APIStatusError(
+            "test error",
+            response=httpx.Response(status, request=httpx.Request("POST", "https://example.test")),
+            body=None,
+        )
+    else:
+        error = APIError(status, {"error": {"message": "test error"}})
+    assert is_transient_ai_error(error) is retryable
+
+
+def test_ai_error_without_status_code_is_not_retried():
+    from google.genai.errors import APIError
+
+    from volume_price_analysis.agent.ai_client import is_transient_ai_error
+
+    error = APIError(500, {"error": {"message": "test error"}})
+    error.code = None  # type: ignore[assignment]
+    assert is_transient_ai_error(error) is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        smtplib.SMTPServerDisconnected("disconnected"),
+        smtplib.SMTPDataError(451, b"try later"),
+        smtplib.SMTPRecipientsRefused({"c@d.com": (450, b"busy")}),
+    ],
+)
+def test_email_send_exhaustion_reraises_last_error(mocker, retry_sleep, error):
+    smtp = FakeSmtp(sendmail_error=error)
+    factory = mocker.Mock(return_value=smtp)
+    creds = SmtpCreds.from_parts("a@b.com", "test", "c@d.com")
+    with pytest.raises(type(error)) as raised:
+        send_email(build_error_message(creds, "boom"), creds, smtp_factory=factory)
+    assert raised.value is error
+    assert factory.call_count == 3
+    assert smtp.sent == []
+    assert retry_sleep.call_args_list == [mocker.call(2), mocker.call(4)]

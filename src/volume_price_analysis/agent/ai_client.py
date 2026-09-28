@@ -653,7 +653,9 @@ def generate_anthropic(
     """Generate briefing using Anthropic Claude API."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS)
+    # Give up the SDK's Retry-After handling so the briefing pipeline owns
+    # one bounded retry budget.
+    client = anthropic.Anthropic(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS, max_retries=0)
 
     logger.info("Sending briefing request to Anthropic (%s)", model)
 
@@ -684,9 +686,13 @@ def generate_gemini(
     """Generate briefing using Google Gemini API."""
     from google import genai
 
-    # Gemini uses milliseconds; Anthropic uses seconds.
+    # Gemini uses milliseconds; Anthropic uses seconds. The pipeline owns retries.
     client = genai.Client(
-        api_key=api_key, http_options={"timeout": AI_REQUEST_TIMEOUT_SECONDS * 1000}
+        api_key=api_key,
+        http_options={
+            "timeout": AI_REQUEST_TIMEOUT_SECONDS * 1000,
+            "retry_options": {"attempts": 1},
+        },
     )
 
     logger.info("Sending briefing request to Gemini (%s)", model)
@@ -720,3 +726,25 @@ PROVIDERS: dict[str, BriefingProvider] = {
     "anthropic": generate_anthropic,
     "gemini": generate_gemini,
 }
+
+
+def is_transient_ai_error(exc: Exception) -> bool:
+    """Retry provider rate limits, server errors, and connection failures."""
+    import anthropic
+    import httpx
+    from google.genai.errors import APIError
+
+    if isinstance(exc, anthropic.APIStatusError):
+        return _is_transient_status(exc.status_code)
+    if isinstance(exc, APIError):
+        return _is_transient_status(exc.code)
+    return isinstance(exc, (anthropic.APIConnectionError, httpx.TransportError, OSError))
+
+
+# 408/409 match what the SDKs retried by default before we turned their retries off.
+_TRANSIENT_STATUS_CODES = frozenset({408, 409, 429})
+
+
+def _is_transient_status(code: object) -> bool:
+    # Gemini's APIError.code can be None; never let the classifier mask the real error.
+    return isinstance(code, int) and (code in _TRANSIENT_STATUS_CODES or 500 <= code < 600)
