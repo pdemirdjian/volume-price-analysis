@@ -6,7 +6,6 @@ import logging
 import smtplib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
 
@@ -38,7 +37,6 @@ from volume_price_analysis.agent.email_sender import (
     _parse_recipients,
     build_briefing_message,
     build_error_message,
-    build_raw_data_message,
     send_email,
 )
 from volume_price_analysis.agent.morning_agent import (
@@ -47,16 +45,13 @@ from volume_price_analysis.agent.morning_agent import (
     _candidate_symbols,
     _check_earnings,
     _config_errors,
-    _fallback_briefing,
     _fetch_earnings_warnings,
     _get_top_symbols,
-    build_briefing_body,
     build_earnings_preamble,
-    build_stats_line,
     main,
     run_morning_briefing,
 )
-from volume_price_analysis.agent.picks import build_picks, render_picks_table
+from volume_price_analysis.agent.picks import build_picks
 from volume_price_analysis.data_fetcher import InMemoryDataSource
 
 # A minimal frame standing in for fetched history. These tests mock
@@ -308,64 +303,6 @@ class TestCandidateSymbols:
 
     def test_handles_empty_results(self):
         assert _candidate_symbols({}, []) == set()
-
-
-class TestFallbackBriefing:
-    """Test fallback briefing when AI API fails."""
-
-    def test_includes_summary_stats(self):
-        scan_results = {
-            "summary": {
-                "total_candidates": 15,
-                "bullish_setups": 10,
-                "bearish_setups": 5,
-                "high_conviction": 3,
-            },
-        }
-        briefing = _fallback_briefing(scan_results, [])
-        assert "15" in briefing
-        assert "10" in briefing
-        assert "5" in briefing
-        assert "3" in briefing
-
-    def test_includes_deep_analyses(self):
-        scan_results = {
-            "summary": {
-                "total_candidates": 1,
-                "bullish_setups": 1,
-                "bearish_setups": 0,
-                "high_conviction": 0,
-            }
-        }
-        deep = [
-            {
-                "symbol": "AAPL",
-                "latest_price": 150.0,
-                "composite_signal": {"score": 5.5, "recommendation": "strong_bullish"},
-            },
-        ]
-        briefing = _fallback_briefing(scan_results, deep)
-        assert "AAPL" in briefing
-        assert "150.00" in briefing
-        assert "5.5" in briefing
-
-    def test_flags_regime_conflict_picks(self):
-        scan_results = {
-            "summary": {"total_candidates": 1, "high_conviction": 1},
-            "high_conviction_setups": [
-                {"symbol": "AAPL", "regime_conflict": "bullish setup against a bearish tape"}
-            ],
-        }
-        deep = [
-            {
-                "symbol": "AAPL",
-                "latest_price": 150.0,
-                "composite_signal": {"score": 5.5, "recommendation": "strong_bullish"},
-            },
-        ]
-        briefing = _fallback_briefing(scan_results, deep)
-        aapl_line = next(line for line in briefing.splitlines() if "AAPL" in line)
-        assert "counter-regime" in aapl_line
 
 
 def _full_deep_analysis():
@@ -1165,61 +1102,6 @@ class TestBuildBriefingMessage:
         assert "tradingview.com" not in html_part.get_payload(decode=True).decode()
 
 
-class TestBuildRawDataMessage:
-    """Test raw data message construction."""
-
-    def test_includes_scan_results_as_json(self):
-        msg = build_raw_data_message(
-            _creds(),
-            scan_results={"summary": {"total_candidates": 5, "bullish": 3}},
-            deep_analyses=[],
-            date_str="2026-03-02",
-        )
-
-        assert msg["Subject"] == "Morning Market Data (Raw) - 2026-03-02"
-        body = _body_text(msg)
-        assert "Morning Market Scan Results" in body
-        assert "total_candidates" in body
-        assert "5" in body
-
-    def test_includes_deep_analyses(self):
-        msg = build_raw_data_message(
-            _creds(),
-            scan_results={"summary": {"total_candidates": 1}},
-            deep_analyses=[{"symbol": "AAPL", "score": 4.5}, {"symbol": "MSFT", "score": 3.8}],
-            date_str="2026-03-02",
-        )
-
-        body = _body_text(msg)
-        assert "Deep Analysis Results" in body
-        assert "## AAPL" in body
-        assert "## MSFT" in body
-        assert "4.5" in body
-        assert "3.8" in body
-
-    def test_no_deep_analysis_section_when_empty(self):
-        msg = build_raw_data_message(_creds(), scan_results={"summary": {}}, deep_analyses=[])
-        assert "Deep Analysis Results" not in _body_text(msg)
-
-    def test_handles_unknown_symbol(self):
-        msg = build_raw_data_message(
-            _creds(), scan_results={}, deep_analyses=[{"score": 2.0}]
-        )  # no "symbol" key
-        assert "## Unknown" in _body_text(msg)
-
-    def test_preamble_precedes_scan_results(self):
-        msg = build_raw_data_message(
-            _creds(),
-            scan_results={},
-            deep_analyses=[],
-            preamble="**Market Regime: BEARISH**",
-        )
-
-        body = _body_text(msg)
-        assert body.startswith("**Market Regime: BEARISH**")
-        assert body.index("**Market Regime: BEARISH**") < body.index("Morning Market Scan Results")
-
-
 class TestSendEmail:
     """Test the single SMTP transport function via an injected factory."""
 
@@ -1341,9 +1223,8 @@ class TestRunMorningBriefing:
 
         mock_generate.assert_not_called()
         assert _sent_message(fake_smtp)["Subject"].startswith("Morning Market Data (Raw) - ")
-        # The regime verdict reaches the raw email as a preamble (here unknown:
-        # the mocked SPY fetch returns no usable frame).
-        assert _sent_plain_body(fake_smtp).startswith("**Market Regime: UNKNOWN**")
+        # The raw-data renderer produced the body (layout pinned in test_briefing.py).
+        assert "# Morning Market Scan Results" in _sent_plain_body(fake_smtp)
 
     @pytest.mark.asyncio
     async def test_ai_failure_uses_fallback(self, mocker, fake_smtp):
@@ -1446,11 +1327,8 @@ class TestRunMorningBriefing:
         assert annotated_scan["high_conviction_setups"][0]["regime_conflict"]
         assert annotated_scan["summary"]["high_conviction"] == 1
 
-        body = _sent_plain_body(fake_smtp)
-        # The dated title heads the template; the regime verdict follows it.
-        assert body.startswith("# Morning Market Briefing — ")
-        assert body.splitlines()[2].startswith("**Market Regime: BEARISH**")
-        assert "flagged" in body
+        # Delivery only; the body's layout is pinned in tests/test_briefing.py.
+        assert "## Pick Summary" in _sent_plain_body(fake_smtp)
 
     @pytest.mark.asyncio
     async def test_earnings_from_source_warn_the_analysis_and_the_prompt(self, mocker, fake_smtp):
@@ -1637,7 +1515,8 @@ class TestDryRunNoAi:
         )
 
         captured = capsys.readouterr()
-        # scan_results JSON printed (line 127)
+        # The raw-data body is what dry run prints in --no-ai mode.
+        assert "# Morning Market Scan Results" in captured.out
         assert "total_candidates" in captured.out
         # deep analysis JSON printed (lines 128-129)
         assert "MSFT" in captured.out
@@ -1675,86 +1554,6 @@ class TestDryRunNoAi:
 
         captured = capsys.readouterr()
         assert "total_candidates" in captured.out
-
-
-class TestStatsLineFooter:
-    """The footer must distinguish symbols scanned from candidates found."""
-
-    @pytest.mark.asyncio
-    async def test_footer_reports_scanned_and_found_separately(self, mocker, capsys):
-        scan_data = {
-            "scan_parameters": {"symbols_scanned": 540},
-            "summary": {
-                "total_candidates": 96,
-                "bullish_setups": 47,
-                "bearish_setups": 49,
-                "high_conviction": 4,
-                "errors": 0,
-            },
-            "high_conviction_setups": [],
-            "top_bullish": [],
-            "top_bearish": [],
-        }
-        mocker.patch(
-            "volume_price_analysis.agent.morning_agent.run_scan",
-            return_value=scan_data,
-        )
-        mocker.patch(
-            "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value=BriefingResult(text="Briefing body"),
-        )
-
-        config = AgentConfig(
-            ai_provider="gemini",
-            ai_provider_api_key="test-key",
-            email_from="a@b.com",
-            email_password="pass",
-            email_to="c@d.com",
-        )
-
-        await run_morning_briefing(config, dry_run=True, data_source=agent_source())
-
-        captured = capsys.readouterr()
-        assert "540 symbols scanned" in captured.out
-        assert "96 candidates found" in captured.out
-        assert "candidates scanned" not in captured.out
-
-    @pytest.mark.asyncio
-    async def test_footer_omits_scanned_count_when_absent(self, mocker, capsys):
-        scan_data = {
-            "summary": {
-                "total_candidates": 3,
-                "bullish_setups": 2,
-                "bearish_setups": 1,
-                "high_conviction": 0,
-                "errors": 0,
-            },
-            "high_conviction_setups": [],
-            "top_bullish": [],
-            "top_bearish": [],
-        }
-        mocker.patch(
-            "volume_price_analysis.agent.morning_agent.run_scan",
-            return_value=scan_data,
-        )
-        mocker.patch(
-            "volume_price_analysis.agent.morning_agent.generate_briefing",
-            return_value=BriefingResult(text="Briefing body"),
-        )
-
-        config = AgentConfig(
-            ai_provider="gemini",
-            ai_provider_api_key="test-key",
-            email_from="a@b.com",
-            email_password="pass",
-            email_to="c@d.com",
-        )
-
-        await run_morning_briefing(config, dry_run=True, data_source=agent_source())
-
-        captured = capsys.readouterr()
-        assert "symbols scanned" not in captured.out
-        assert "3 candidates found" in captured.out
 
 
 class TestMain:
@@ -2546,31 +2345,6 @@ class TestBuildEarningsPreamble:
         assert preamble.endswith("\n")
 
 
-class TestBuildStatsLine:
-    """build_stats_line renders the footer appended to delivered briefings."""
-
-    def test_includes_scan_count_when_known(self):
-        line = build_stats_line(
-            elapsed_s=12.34, symbols_scanned=500, total_candidates=7, deep_count=3
-        )
-        assert line.startswith("\n\n---\n")
-        assert "500 symbols scanned |" in line
-        assert "7 candidates found" in line
-        assert "3 deep analyses" in line
-        assert "Generated in 12.3s" in line
-
-    def test_omits_scan_count_when_missing(self):
-        line = build_stats_line(
-            elapsed_s=1.0, symbols_scanned=None, total_candidates=0, deep_count=0
-        )
-        assert "symbols scanned" not in line
-        assert "0 candidates found" in line
-
-    def test_omits_scan_count_when_zero(self):
-        line = build_stats_line(elapsed_s=1.0, symbols_scanned=0, total_candidates=1, deep_count=1)
-        assert "symbols scanned" not in line
-
-
 class TestConfigErrors:
     """_config_errors keeps only the errors that can actually block a run mode."""
 
@@ -2613,8 +2387,6 @@ class TestConfigErrors:
 # ---------------------------------------------------------------------------
 # PDE-69: fixed conviction vocabulary and programmatic date
 # ---------------------------------------------------------------------------
-
-_GOLDEN = Path(__file__).parent / "golden" / "briefing_body.md"
 
 
 class TestSystemPromptDateAndConviction:
@@ -2705,66 +2477,6 @@ class TestConvictionReachesTheModel:
         assert '"conviction": "HIGH"' in prompt
 
 
-def _golden_body():
-    scan = {
-        "high_conviction_setups": [
-            {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1, "regime_conflict": ""}
-        ],
-        "top_bullish": [
-            {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1},
-            {"symbol": "MSFT", "composite_score": 2.4, "signal_quality": "medium"},
-        ],
-        "top_bearish": [
-            {
-                "symbol": "TSLA",
-                "composite_score": -4.1,
-                "latest_price": 240.55,
-                "regime_conflict": "bearish setup against a bullish tape",
-            }
-        ],
-    }
-    deep = [
-        {"symbol": "AAPL", "latest_price": 190.25, "earnings_warning": "EARNINGS in 5 day(s)"},
-    ]
-    return build_briefing_body(
-        briefing_date=date(2026, 9, 4),
-        regime_header=(
-            "**Market Regime: BULLISH** — SPY closed at 500.00, 1.2% above its 20-day SMA "
-            "(494.07) as of 2026-09-03. 1 high-conviction pick flagged as counter-regime."
-        ),
-        picks_table=render_picks_table(build_picks(scan, deep)),
-        briefing=(
-            "## Executive Summary\n\nTape is constructive.\n\n"
-            "## Top Picks\n\n- **AAPL** @ $190.25 | Score +5.2 | bullish | Conviction: HIGH\n"
-        ),
-        stats_line=build_stats_line(
-            elapsed_s=42.0, symbols_scanned=540, total_candidates=3, deep_count=1
-        ),
-    )
-
-
-class TestBriefingBodyGolden:
-    """Pin the delivered email layout: title, regime, pick table, text, footer."""
-
-    def test_matches_golden_file(self):
-        # Normalise CRLF so a Windows checkout with autocrlf still compares.
-        expected = _GOLDEN.read_text(encoding="utf-8").replace("\r\n", "\n")
-        actual = _golden_body()
-        assert actual == expected, (
-            "Email body layout changed. If intentional, regenerate tests/golden/"
-            "briefing_body.md from _golden_body() and review the diff."
-        )
-
-    def test_every_pick_has_exactly_one_conviction(self):
-        body = _golden_body()
-        table_rows = [
-            line for line in body.splitlines() if line.startswith("| ") and "Symbol" not in line
-        ]
-        for row in table_rows:
-            cells = [c.strip() for c in row.strip("|").split("|")]
-            assert cells[2] in ("HIGH", "MEDIUM", "LOW")
-
-
 class TestRunMorningBriefingDateAndPicks:
     @pytest.mark.asyncio
     async def test_date_is_eastern_and_body_is_templated(self, mocker, fake_smtp):
@@ -2819,12 +2531,10 @@ class TestRunMorningBriefingDateAndPicks:
         assert '"conviction": "MEDIUM"' in prompt
 
         assert _sent_message(fake_smtp)["Subject"] == "Morning Market Briefing - 2026-09-04"
+        # The Eastern date reaches the rendered title; the layout itself is
+        # pinned in tests/test_briefing.py.
         body = _sent_plain_body(fake_smtp)
         assert body.startswith("# Morning Market Briefing — Friday, September 4, 2026\n")
-        assert "## Pick Summary" in body
-        assert "| AAPL | bullish | MEDIUM | +4.40 | 10.50 | — |" in body
-        assert body.index("## Pick Summary") < body.index("## Executive Summary")
-        assert body.rstrip().endswith("1 deep analyses*")
 
     @pytest.mark.asyncio
     async def test_fallback_briefing_gets_the_same_template(self, mocker, capsys):
@@ -2856,12 +2566,8 @@ class TestRunMorningBriefingDateAndPicks:
 
         out = capsys.readouterr().out
         assert result.degraded
-        assert out.startswith("# Morning Market Briefing — Friday, September 4, 2026\n")
-        assert "## Pick Summary" in out
-        assert "no candidates passed the scan filters" in out
+        # The fallback renderer ran (layout pinned in tests/test_briefing.py).
         assert "## Fallback Briefing (AI unavailable)" in out
-        # Exactly one H1: the template's.
-        assert sum(line.startswith("# ") for line in out.splitlines()) == 1
 
     @pytest.mark.asyncio
     async def test_naive_now_is_rejected(self):

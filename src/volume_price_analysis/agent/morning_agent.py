@@ -10,7 +10,6 @@ Flags:
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -21,22 +20,12 @@ from zoneinfo import ZoneInfo
 
 from ..analysis import run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
-from .ai_client import PROVIDERS, format_briefing_date, generate_briefing, resolve_model
+from .ai_client import PROVIDERS, generate_briefing, resolve_model
+from .briefing import BriefingInputs, render, render_raw
 from .config import AgentConfig
-from .email_sender import (
-    SmtpCreds,
-    build_briefing_message,
-    build_error_message,
-    build_raw_data_message,
-    send_email,
-)
-from .picks import build_picks, render_picks_table
-from .regime import (
-    REGIME_SMA_PERIOD,
-    annotate_regime_conflicts,
-    compute_market_regime,
-    format_regime_header,
-)
+from .email_sender import SmtpCreds, build_briefing_message, build_error_message, send_email
+from .picks import build_picks
+from .regime import REGIME_SMA_PERIOD, annotate_regime_conflicts, compute_market_regime
 
 # Configure logging to stdout (Docker best practice)
 logging.basicConfig(
@@ -134,14 +123,9 @@ async def run_morning_briefing(
     try:
         regime = _fetch_market_regime(source, today=briefing_date)
         scan_results = annotate_regime_conflicts(scan_results, regime)
-        conflict_count = sum(
-            1 for c in scan_results.get("high_conviction_setups", []) if c.get("regime_conflict")
-        )
-        regime_header = format_regime_header(regime, conflict_count)
     except Exception:
         logger.exception("Regime annotation failed; continuing without it")
         regime = {"regime": "unknown", "reason": "regime check failed"}
-        regime_header = format_regime_header(regime)
     logger.info("Regime verdict: %s", regime.get("regime", "unknown"))
 
     # Step 2: Deep analysis on top N candidates
@@ -183,11 +167,11 @@ async def run_morning_briefing(
         if sym in conviction_by_symbol:
             analysis["conviction"] = conviction_by_symbol[sym]
 
-    # Step 3: Generate briefing
+    # Step 3: Generate briefing. model_text None renders the fallback body.
     degraded_reason: str | None = None
+    model_text: str | None = None
     if no_ai:
         logger.info("Step 3: Skipping AI (--no-ai mode)")
-        briefing = None
     else:
         logger.info(
             "Step 3: Generating AI briefing via %s (%s)...",
@@ -196,7 +180,7 @@ async def run_morning_briefing(
         )
         earnings_preamble = build_earnings_preamble(earnings_warnings)
         try:
-            briefing = generate_briefing(
+            model_text = generate_briefing(
                 scan_results=scan_results,
                 deep_analyses=deep_analyses,
                 provider=PROVIDERS[config.ai_provider],
@@ -208,65 +192,43 @@ async def run_morning_briefing(
             ).text
         except Exception:
             logger.exception("AI briefing generation failed")
-            briefing = _fallback_briefing(scan_results, deep_analyses)
             degraded_reason = (
                 f"AI briefing generation failed via {config.ai_provider}; used fallback briefing"
             )
             logger.warning("Using fallback briefing — AI provider was unavailable")
 
-    # Step 4: Deliver
+    # Step 4: Deliver. The Briefing module owns the whole document; the no-AI
+    # path renders the raw-data body instead.
     elapsed_total = time.monotonic() - start_time
-    stats_line = build_stats_line(
+    inputs = BriefingInputs(
+        scan_results=scan_results,
+        deep_analyses=deep_analyses,
+        regime=regime,
+        briefing_date=briefing_date,
         elapsed_s=elapsed_total,
-        symbols_scanned=scan_results.get("scan_parameters", {}).get("symbols_scanned"),
-        total_candidates=total_candidates,
-        deep_count=len(deep_analyses),
+        model_text=model_text,
     )
-    # Every rendered briefing (AI or fallback) is wrapped in the same dated
-    # template; the no-AI raw email carries the regime inside the JSON instead.
-    body = (
-        None
-        if briefing is None
-        else build_briefing_body(
-            briefing_date=briefing_date,
-            regime_header=regime_header,
-            picks_table=render_picks_table(picks),
-            briefing=briefing,
-            stats_line=stats_line,
-        )
-    )
+    body = render_raw(inputs) if no_ai else render(inputs)
 
     if dry_run:
         logger.info("Step 4: Dry run - printing to stdout")
-        if body:
-            print(body)
-        else:
-            print(regime_header)
-            print(json.dumps(scan_results, indent=2, default=str))
-            for a in deep_analyses:
-                print(json.dumps(a, indent=2, default=str))
+        print(body)
     elif no_ai:
         logger.info("Step 4: Sending raw data email")
         creds = SmtpCreds.from_config(config)
         send_email(
-            build_raw_data_message(
-                creds,
-                scan_results=scan_results,
-                deep_analyses=deep_analyses,
-                date_str=date_str,
-                preamble=regime_header,
+            build_briefing_message(
+                creds, subject=f"Morning Market Data (Raw) - {date_str}", body_markdown=body
             ),
             creds,
         )
     else:
         logger.info("Step 4: Sending briefing email")
-        assert body is not None  # Always set when not no_ai
-        subject = f"Morning Market Briefing - {date_str}"
         creds = SmtpCreds.from_config(config)
         send_email(
             build_briefing_message(
                 creds,
-                subject=subject,
+                subject=f"Morning Market Briefing - {date_str}",
                 body_markdown=body,
                 ticker_symbols=_candidate_symbols(scan_results, deep_analyses),
             ),
@@ -393,39 +355,6 @@ def _candidate_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str
     return symbols
 
 
-def _fallback_briefing(scan_results: dict, deep_analyses: list[dict]) -> str:
-    """Generate a basic text briefing when the AI provider fails.
-
-    Rendered beneath the dated template title, so it opens at H2.
-    """
-    lines = ["## Fallback Briefing (AI unavailable)\n"]
-
-    summary = scan_results.get("summary", {})
-    lines.append(f"**Candidates found:** {summary.get('total_candidates', 0)}")
-    lines.append(f"**Bullish setups:** {summary.get('bullish_setups', 0)}")
-    lines.append(f"**Bearish setups:** {summary.get('bearish_setups', 0)}")
-    lines.append(f"**High conviction:** {summary.get('high_conviction', 0)}\n")
-
-    conflict_symbols = {
-        c.get("symbol")
-        for c in scan_results.get("high_conviction_setups", [])
-        if isinstance(c, dict) and c.get("regime_conflict")
-    }
-    if deep_analyses:
-        lines.append("## Top Candidates\n")
-        for a in deep_analyses:
-            sym = a.get("symbol", "?")
-            score = a.get("composite_signal", {}).get("score", 0)
-            rec = a.get("composite_signal", {}).get("recommendation", "?")
-            price = a.get("latest_price", 0)
-            line = f"- **{sym}** @ ${price:.2f} | Score: {score:.1f} | {rec}"
-            if sym in conflict_symbols:
-                line += " | ⚠️ counter-regime setup"
-            lines.append(line)
-
-    return "\n".join(lines)
-
-
 def build_earnings_preamble(warnings: dict[str, str]) -> str:
     """Render the earnings-risk preamble prepended to the AI prompt.
 
@@ -439,48 +368,6 @@ def build_earnings_preamble(warnings: dict[str, str]) -> str:
         f"within {_EARNINGS_WARN_DAYS} days. Factor event risk into sizing and strategy:\n"
         + "\n".join(lines)
         + "\n"
-    )
-
-
-def build_briefing_body(
-    briefing_date: date,
-    regime_header: str,
-    picks_table: str,
-    briefing: str,
-    stats_line: str,
-) -> str:
-    """Assemble the delivered email body from its programmatic and generated parts.
-
-    The template — dated title, regime verdict, fixed pick table — is rendered
-    here, never by the model, so the date is always real and the pick block
-    always parses (PDE-69). ``tests/golden/briefing_body.md`` pins the layout.
-    """
-    return (
-        f"# Morning Market Briefing — {format_briefing_date(briefing_date)}\n\n"
-        f"{regime_header}\n\n"
-        f"## Pick Summary\n\n{picks_table}\n\n"
-        f"{briefing}"
-        f"{stats_line}"
-    )
-
-
-def build_stats_line(
-    elapsed_s: float,
-    symbols_scanned: int | None,
-    total_candidates: int,
-    deep_count: int,
-) -> str:
-    """Render the footer appended to every delivered briefing."""
-    scanned_part = f"{symbols_scanned} symbols scanned | " if symbols_scanned else ""
-    return (
-        f"\n\n---\n"
-        f"**14-day holding period** - Indicators, expected moves, and strategies "
-        f"are calibrated for approx. 14 DTE options. Shorter-duration plays (0-5 DTE) "
-        f"may need different setups.\n\n"
-        f"*Generated in {elapsed_s:.1f}s | "
-        f"{scanned_part}"
-        f"{total_candidates} candidates found | "
-        f"{deep_count} deep analyses*"
     )
 
 

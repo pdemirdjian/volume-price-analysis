@@ -51,8 +51,20 @@ The morning document delivered by email: `agent/morning_agent.run_morning_briefi
 which fetches the regime, runs the scan, deep-analyses the top symbols, annotates
 conviction, asks the AI client for prose, and sends the result. Its outcome is a
 `BriefingRunResult` (`degraded`, `reason`, `regime`, `symbols_analyzed`,
-`email_sent`). The body is assembled by `build_briefing_body` and, when the AI
-call fails, by `_fallback_briefing`.
+`email_sent`). What the reader sees is rendered by the Briefing module.
+
+## Briefing module
+
+The one owner of the delivered document: `agent/briefing.py`. The orchestrator
+gathers a frozen `BriefingInputs` (scan results, deep analyses, regime, briefing
+date, elapsed seconds, and the model's text or None) and makes one call.
+`render` returns the complete markdown: dated title, regime header, pick table,
+the model's prose (or the fallback body when `model_text` is None), and the
+stats footer. `render_raw` returns the `--no-ai` raw-data body (regime header
+plus the JSON dumps). The regime header's conflict count is the number of
+counter-regime rows in the pick table, so the header and the table agree.
+`email_sender` is only the markdown-to-HTML transport adapter;
+`tests/golden/briefing_body.md` pins `render`'s layout.
 
 ## pick
 
