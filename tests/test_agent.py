@@ -4,9 +4,11 @@ import email
 import json
 import logging
 import smtplib
+import ssl
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -27,6 +29,7 @@ from volume_price_analysis.agent.ai_client import (
     generate_anthropic,
     generate_briefing,
     generate_gemini,
+    is_transient_ai_error,
     resolve_model,
     strip_date_placeholders,
 )
@@ -745,13 +748,39 @@ class TestGenerateAnthropicAdapter:
     def _mock_client(mocker, text="# Morning Briefing", stop_reason="end_turn"):
         mock_client = MagicMock()
         mock_message = MagicMock()
-        mock_message.content = [MagicMock(text=text)]
+        mock_message.content = [SimpleNamespace(type="text", text=text)]
         mock_message.usage.input_tokens = 100
         mock_message.usage.output_tokens = 200
         mock_message.stop_reason = stop_reason
         mock_client.messages.create.return_value = mock_message
         mocker.patch("anthropic.Anthropic", return_value=mock_client)
         return mock_client
+
+    @pytest.mark.parametrize("has_thinking", [False, True])
+    def test_returns_first_text_block(self, mocker, has_thinking):
+        client = self._mock_client(mocker)
+        blocks = [
+            SimpleNamespace(type="text", text="First briefing"),
+            SimpleNamespace(type="text", text="Second briefing"),
+        ]
+        if has_thinking:
+            blocks.insert(0, SimpleNamespace(type="thinking", thinking="Reasoning"))
+        client.messages.create.return_value.content = blocks
+
+        assert generate_anthropic("prompt", "model", "key") == "First briefing"
+
+    @pytest.mark.parametrize(
+        "blocks", [[], [SimpleNamespace(type="thinking", thinking="Reasoning")]]
+    )
+    def test_missing_text_is_non_transient_failure(self, mocker, blocks):
+        client = self._mock_client(mocker)
+        client.messages.create.return_value.content = blocks
+
+        with pytest.raises(ValueError, match="no text block") as raised:
+            generate_anthropic("prompt", "model", "key")
+
+        assert not is_transient_ai_error(raised.value)
+        client.messages.create.assert_called_once()
 
     def test_request_has_finite_timeout(self, mocker):
         mock_client = self._mock_client(mocker)
@@ -2767,9 +2796,13 @@ def test_ai_error_without_status_code_is_not_retried():
         smtplib.SMTPServerDisconnected("disconnected"),
         smtplib.SMTPDataError(451, b"try later"),
         smtplib.SMTPRecipientsRefused({"c@d.com": (450, b"busy")}),
+        OSError("connection failed"),
+        TimeoutError("timed out"),
+        ssl.SSLError("TLS failed"),
+        ConnectionError("connection lost"),
     ],
 )
-def test_email_send_exhaustion_reraises_last_error(mocker, retry_sleep, error):
+def test_email_send_exhaustion_reraises_last_error(mocker, retry_sleep, caplog, error):
     smtp = FakeSmtp(sendmail_error=error)
     factory = mocker.Mock(return_value=smtp)
     creds = SmtpCreds.from_parts("a@b.com", "test", "c@d.com")
@@ -2779,3 +2812,107 @@ def test_email_send_exhaustion_reraises_last_error(mocker, retry_sleep, error):
     assert factory.call_count == 3
     assert smtp.sent == []
     assert retry_sleep.call_args_list == [mocker.call(2), mocker.call(4)]
+
+    records = [r for r in caplog.records if r.message == "Failed to send email"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[1] is error
+
+
+@pytest.mark.parametrize("provider_name", ["anthropic", "gemini"])
+@pytest.mark.parametrize("text", ["", " \n\t", "Date: [Today's Date]\n"])
+@pytest.mark.parametrize("truncated", [False, True])
+async def test_empty_model_text_emails_fallback_without_retry(
+    mocker, fake_smtp, retry_sleep, provider_name, text, truncated
+):
+    if provider_name == "anthropic":
+        client = TestGenerateAnthropicAdapter._mock_client(
+            mocker, text=text, stop_reason="max_tokens" if truncated else "end_turn"
+        )
+        request = client.messages.create
+    else:
+        client = TestGenerateGeminiAdapter._mock_client(
+            mocker, text=text, finish_reason="MAX_TOKENS" if truncated else None
+        )
+        request = client.models.generate_content
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent.run_scan",
+        return_value={
+            "summary": {
+                "total_candidates": 0,
+                "bullish_setups": 0,
+                "bearish_setups": 0,
+                "high_conviction": 0,
+                "errors": 0,
+            },
+            "high_conviction_setups": [],
+            "top_bullish": [],
+            "top_bearish": [],
+        },
+    )
+    config = AgentConfig(
+        ai_provider=provider_name,
+        ai_provider_api_key="test-key",
+        email_from="a@b.com",
+        email_password="test",
+        email_to="c@d.com",
+    )
+
+    result = await run_morning_briefing(config, data_source=agent_source())
+
+    assert result.degraded
+    assert "used fallback briefing" in result.reason
+    assert result.email_sent
+    assert "## Fallback Briefing (AI unavailable)" in _sent_plain_body(fake_smtp)
+    request.assert_called_once()
+    retry_sleep.assert_not_called()
+
+
+def test_gemini_safety_block_is_non_transient_failure(mocker):
+    client = TestGenerateGeminiAdapter._mock_client(mocker, text=None, finish_reason="SAFETY")
+
+    with pytest.raises(ValueError, match="empty briefing") as raised:
+        generate_briefing({}, [], generate_gemini, "model", "key")
+
+    assert not is_transient_ai_error(raised.value)
+    client.models.generate_content.assert_called_once()
+
+
+async def test_earnings_failure_warns_and_briefing_continues(mocker, caplog, capsys):
+    class FailingEarningsSource(InMemoryDataSource):
+        def earnings_date(self, symbol):
+            raise ValueError("unexpected earningsDate shape")
+
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent.run_scan",
+        return_value={
+            "summary": {
+                "total_candidates": 1,
+                "high_conviction": 0,
+                "bullish_setups": 1,
+                "bearish_setups": 0,
+                "errors": 0,
+            },
+            "top_bullish": [{"symbol": "AAPL", "composite_score": 3.0}],
+        },
+    )
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent.run_options_analysis",
+        return_value={"symbol": "AAPL", "composite_signal": {"score": 3.0}},
+    )
+    provider = _FakeProvider(text="Morning briefing prose")
+    mocker.patch.dict(PROVIDERS, {"gemini": provider})
+
+    result = await run_morning_briefing(
+        AgentConfig(ai_provider="gemini"),
+        dry_run=True,
+        data_source=FailingEarningsSource(frames={"AAPL": _STUB_FRAME}),
+    )
+
+    assert not result.degraded
+    assert "Morning briefing prose" in capsys.readouterr().out
+    assert "EARNINGS" not in provider.user_content
+    records = [r for r in caplog.records if r.message == "Earnings lookup failed for AAPL"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert isinstance(records[0].exc_info[1], ValueError)
