@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.9.10](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.9...v2.9.10) (2026-09-29)
+
+
+### Bug Fixes
+
+* **deps:** update dependency markdown to ~=3.11.0 ([#506](https://github.com/pdemirdjian/volume-price-analysis/issues/506)) ([20245c8](https://github.com/pdemirdjian/volume-price-analysis/commit/20245c815bebb2cf500b18bb28ecb69f4f458e7e))
+* **PDE-17:** retry transient AI generation and email send failures ([#500](https://github.com/pdemirdjian/volume-price-analysis/issues/500)) ([fb4cb3f](https://github.com/pdemirdjian/volume-price-analysis/commit/fb4cb3fd4a0b3cd46162a462435ac50105055b19))
+* **PDE-18:** broaden failure logging and reject empty AI briefings ([#507](https://github.com/pdemirdjian/volume-price-analysis/issues/507)) ([5e0c6e5](https://github.com/pdemirdjian/volume-price-analysis/commit/5e0c6e505f29fcf4b97c87684696195503b61069))
+
+
+### Documentation
+
+* **agents:** drop the Linear plugin tool prefix; remove triage-labels template leftover ([#505](https://github.com/pdemirdjian/volume-price-analysis/issues/505)) ([26bf803](https://github.com/pdemirdjian/volume-price-analysis/commit/26bf8030ab5ab7a87bf3cac0cbb37352604a1416))
+
 ## [2.9.9](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.8...v2.9.9) (2026-09-28)
 
 

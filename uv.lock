@@ -1656,7 +1656,7 @@ wheels = [
 
 [[package]]
 name = "volume-price-analysis-mcp"
-version = "2.9.9"
+version = "2.9.10"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
