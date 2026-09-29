@@ -378,6 +378,8 @@ def generate_briefing(
     )
 
     briefing = strip_date_placeholders(provider(user_content, model, api_key))
+    if not briefing.strip():
+        raise ValueError("AI provider returned an empty briefing")
 
     # Anti-hallucination guardrail: every ticker named in the briefing should
     # exist in the scan/analysis data we passed to the model. Log (don't block)
@@ -666,7 +668,12 @@ def generate_anthropic(
         messages=[{"role": "user", "content": user_content}],
     )
 
-    briefing = message.content[0].text  # type: ignore[union-attr]
+    for block in message.content:
+        if block.type == "text":
+            briefing = block.text
+            break
+    else:
+        raise ValueError("Anthropic response contained no text block")
     logger.info(
         "Briefing generated: %d chars, %d input tokens, %d output tokens",
         len(briefing),
@@ -675,7 +682,9 @@ def generate_anthropic(
     )
     if message.stop_reason == "max_tokens":
         logger.warning("Briefing was TRUNCATED — output hit max_tokens limit")
-        briefing += _TRUNCATION_WARNING
+        # Keep empty model output empty so generate_briefing rejects it.
+        if strip_date_placeholders(briefing).strip():
+            briefing += _TRUNCATION_WARNING
 
     return briefing
 
@@ -714,7 +723,9 @@ def generate_gemini(
     finish_reason_value = getattr(finish_reason, "name", finish_reason)
     if finish_reason_value and str(finish_reason_value) == "MAX_TOKENS":
         logger.warning("Briefing was TRUNCATED — output hit max_output_tokens limit")
-        briefing += _TRUNCATION_WARNING
+        # Keep empty model output empty so generate_briefing rejects it.
+        if strip_date_placeholders(briefing).strip():
+            briefing += _TRUNCATION_WARNING
 
     return briefing
 

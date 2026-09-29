@@ -238,7 +238,7 @@ def send_email(
             retry_on=_is_transient_smtp_error,
         )
         logger.info("Email sent successfully")
-    except smtplib.SMTPException:
+    except smtplib.SMTPException, OSError:
         logger.exception("Failed to send email")
         raise
 

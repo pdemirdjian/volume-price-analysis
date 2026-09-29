@@ -275,7 +275,7 @@ def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | Non
             return f"EARNINGS in {days_out} day(s) ({earnings_dt.strftime('%Y-%m-%d')})"
         return None
     except Exception:
-        logger.debug("Earnings lookup failed for %s", symbol, exc_info=True)
+        logger.warning("Earnings lookup failed for %s", symbol, exc_info=True)
         return None
 
 
