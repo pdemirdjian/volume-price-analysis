@@ -269,8 +269,10 @@ def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | Non
         earnings_dt = source.earnings_date(symbol)
         if earnings_dt is None:
             return None
-        # Earnings may be date-only (midnight). Include the whole briefing
-        # day and final holding day, preserving the source's calendar date.
+        # Use the market day for aware timestamps; preserve naive date-only values.
+        # Include the whole briefing day and final holding day.
+        if earnings_dt.utcoffset() is not None:
+            earnings_dt = earnings_dt.astimezone(MARKET_TZ)
         days_out = (earnings_dt.date() - now.astimezone(MARKET_TZ).date()).days
         if 0 <= days_out <= _HOLDING_PERIOD_DAYS:
             return f"EARNINGS in {days_out} day(s) ({earnings_dt.strftime('%Y-%m-%d')})"

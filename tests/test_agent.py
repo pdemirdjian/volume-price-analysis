@@ -2207,10 +2207,17 @@ class TestCheckEarnings:
         edge = NOW_UTC + timedelta(days=_HOLDING_PERIOD_DAYS)
         assert _check_earnings("AAPL", NOW_UTC, self._source(edge)) is not None
 
-    def test_naive_datetime_treated_as_utc(self):
-        naive_upcoming = datetime(2026, 7, 3, 12, 0)  # naive, 5 days out
+    def test_after_hours_earnings_uses_market_calendar_day(self):
+        now = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
+        earnings = datetime(2026, 8, 18, 0, 30, tzinfo=UTC)  # August 17 at 20:30 ET
+        result = _check_earnings("AAPL", now, self._source(earnings))
+        assert result == "EARNINGS in 14 day(s) (2026-08-17)"
+
+    def test_naive_datetime_uses_calendar_day_as_is(self):
+        """A naive earnings date keeps its calendar day without timezone conversion."""
+        naive_upcoming = datetime(2026, 7, 3)  # naive midnight, 5 days out
         result = _check_earnings("AAPL", NOW_UTC, self._source(naive_upcoming))
-        assert result is not None
+        assert result == "EARNINGS in 5 day(s) (2026-07-03)"
 
     def test_data_source_failure_returns_none(self):
         """A provider blowing up must not sink the briefing."""
@@ -2952,7 +2959,7 @@ async def test_tjx_earnings_demoted_in_prompt_and_briefing(
     )
     source = agent_source(
         ["TJX"] if analysis_status == "success" else [],
-        earnings={"TJX": datetime(2026, 8, 6, tzinfo=UTC)},
+        earnings={"TJX": datetime(2026, 8, 6)},
     )
     await run_morning_briefing(
         AgentConfig(max_deep_analysis=0 if analysis_status == "capped" else 2),
@@ -2991,9 +2998,9 @@ async def test_tjx_earnings_demoted_in_prompt_and_briefing(
 @pytest.mark.parametrize(
     ("earnings", "expected"),
     [
-        (datetime(2026, 8, 3, tzinfo=UTC), "MEDIUM"),  # date-only, same day
+        (datetime(2026, 8, 3), "MEDIUM"),  # date-only, same day
         (datetime(2026, 8, 17, 23, tzinfo=UTC), "MEDIUM"),  # final holding day
-        (datetime(2026, 8, 18, tzinfo=UTC), "HIGH"),  # just outside
+        (datetime(2026, 8, 18), "HIGH"),  # date-only, just outside
         (datetime(2026, 8, 2, tzinfo=UTC), "HIGH"),  # past
         (None, "HIGH"),
         (ValueError("lookup unavailable"), "HIGH"),
