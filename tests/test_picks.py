@@ -207,3 +207,15 @@ class TestRenderPicksTable:
         assert table[0] == PICK_TABLE_HEADER
         assert len(table) == 3
         assert "no candidates" in table[2]
+
+
+def test_earnings_warning_bars_high_conviction():
+    candidate = {"symbol": "TJX", "composite_score": 5.0, "adx": 35, "hv_percentile": 20}
+    warning = "EARNINGS in 3 day(s) (2026-08-06)"
+    deep = [{"symbol": "TJX", "earnings_warning": warning}]
+
+    (pick,) = build_picks(_scan(high=[candidate], bull=[candidate]), deep)
+
+    assert pick.conviction == "MEDIUM"
+    assert pick.earnings_warning == warning
+    assert candidate == {"symbol": "TJX", "composite_score": 5.0, "adx": 35, "hv_percentile": 20}

@@ -43,7 +43,7 @@ from volume_price_analysis.agent.email_sender import (
     send_email,
 )
 from volume_price_analysis.agent.morning_agent import (
-    _EARNINGS_WARN_DAYS,
+    _HOLDING_PERIOD_DAYS,
     BriefingRunResult,
     _candidate_symbols,
     _check_earnings,
@@ -2204,7 +2204,7 @@ class TestCheckEarnings:
 
     def test_boundary_exactly_14_days_out_warns(self):
         """The window is inclusive at both ends."""
-        edge = NOW_UTC + timedelta(days=_EARNINGS_WARN_DAYS)
+        edge = NOW_UTC + timedelta(days=_HOLDING_PERIOD_DAYS)
         assert _check_earnings("AAPL", NOW_UTC, self._source(edge)) is not None
 
     def test_naive_datetime_treated_as_utc(self):
@@ -2916,3 +2916,125 @@ async def test_earnings_failure_warns_and_briefing_continues(mocker, caplog, cap
     assert len(records) == 1
     assert records[0].levelno == logging.WARNING
     assert isinstance(records[0].exc_info[1], ValueError)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("score", [5.0, -5.0])
+@pytest.mark.parametrize("placement", ["high_only", "both", "regular_only"])
+@pytest.mark.parametrize("analysis_status", ["capped", "failed", "success"])
+async def test_tjx_earnings_demoted_in_prompt_and_briefing(
+    mocker, capsys, score, placement, analysis_status
+):
+    candidate = {"symbol": "TJX", "composite_score": score, "adx": 35, "hv_percentile": 20}
+    direction = "bullish" if score > 0 else "bearish"
+    safe = {"symbol": "SAFE", "composite_score": 5.0}
+    scan = {
+        "summary": {
+            "total_candidates": 2,
+            "bullish_setups": 1,
+            "bearish_setups": 0,
+            "high_conviction": 2,
+        },
+        "high_conviction_setups": [safe] if placement == "regular_only" else [candidate, safe],
+        "top_bullish": [],
+        "top_bearish": [],
+    }
+    if placement != "high_only":
+        scan[f"top_{direction}"] = [candidate]
+    mocker.patch("volume_price_analysis.agent.morning_agent.run_scan", return_value=scan)
+    generate = mocker.patch(
+        "volume_price_analysis.agent.morning_agent.generate_briefing",
+        return_value=SimpleNamespace(text="Briefing prose"),
+    )
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent.run_options_analysis",
+        return_value={"symbol": "TJX", "composite_signal": {"score": score}},
+    )
+    source = agent_source(
+        ["TJX"] if analysis_status == "success" else [],
+        earnings={"TJX": datetime(2026, 8, 6, tzinfo=UTC)},
+    )
+    await run_morning_briefing(
+        AgentConfig(max_deep_analysis=0 if analysis_status == "capped" else 2),
+        dry_run=True,
+        data_source=source,
+        now=datetime(2026, 8, 3, 12, tzinfo=UTC),
+    )
+
+    args = generate.call_args.kwargs
+    assert args["scan_results"]["high_conviction_setups"] == [safe]
+    assert args["scan_results"]["summary"]["high_conviction"] == 1
+    assert args["scan_results"][f"top_{direction}"][0]["symbol"] == "TJX"
+    picks = {pick.symbol: pick for pick in args["picks"]}
+    assert picks["TJX"].conviction == "MEDIUM"
+    assert picks["SAFE"].conviction == "HIGH"
+    assert "2026-08-06" in picks["TJX"].earnings_warning
+    assert "never present them as high conviction" in args["earnings_preamble"]
+    prompt = build_briefing_prompt(
+        args["scan_results"], args["deep_analyses"], args["earnings_preamble"], picks=args["picks"]
+    )
+    projected_scan = json.loads(prompt.split("```json\n", 1)[1].split("```", 1)[0])
+    assert [c["symbol"] for c in projected_scan["high_conviction_setups"]] == ["SAFE"]
+    assert projected_scan[f"top_{direction}"][0]["conviction"] == "MEDIUM"
+    body = capsys.readouterr().out
+    assert f"| TJX | {direction} | MEDIUM |" in body
+    assert "2026-08-06" in body
+    if analysis_status == "success":
+        assert args["deep_analyses"][0]["conviction"] == "MEDIUM"
+    assert scan["high_conviction_setups"] == (
+        [safe] if placement == "regular_only" else [candidate, safe]
+    )
+    assert "earnings_warning" not in candidate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("earnings", "expected"),
+    [
+        (datetime(2026, 8, 3, tzinfo=UTC), "MEDIUM"),  # date-only, same day
+        (datetime(2026, 8, 17, 23, tzinfo=UTC), "MEDIUM"),  # final holding day
+        (datetime(2026, 8, 18, tzinfo=UTC), "HIGH"),  # just outside
+        (datetime(2026, 8, 2, tzinfo=UTC), "HIGH"),  # past
+        (None, "HIGH"),
+        (ValueError("lookup unavailable"), "HIGH"),
+    ],
+)
+async def test_earnings_holding_window_and_missing_dates(mocker, capsys, earnings, expected):
+    class EarningsSource(InMemoryDataSource):
+        def earnings_date(self, symbol):
+            if isinstance(earnings, Exception):
+                raise earnings
+            return super().earnings_date(symbol)
+
+    candidate = {"symbol": "TJX", "composite_score": 5.0, "adx": 35, "hv_percentile": 20}
+    mocker.patch(
+        "volume_price_analysis.agent.morning_agent.run_scan",
+        return_value={
+            "summary": {
+                "total_candidates": 1,
+                "bullish_setups": 1,
+                "bearish_setups": 0,
+                "high_conviction": 1,
+            },
+            "high_conviction_setups": [candidate],
+            "top_bullish": [candidate],
+            "top_bearish": [],
+        },
+    )
+    generate = mocker.patch(
+        "volume_price_analysis.agent.morning_agent.generate_briefing",
+        side_effect=ValueError("AI unavailable"),
+    )
+    source = EarningsSource(earnings={"TJX": None if isinstance(earnings, Exception) else earnings})
+    await run_morning_briefing(
+        AgentConfig(max_deep_analysis=0),
+        dry_run=True,
+        data_source=source,
+        now=datetime(2026, 8, 3, 12, tzinfo=UTC),
+    )
+    args = generate.call_args.kwargs
+    assert args["picks"][0].conviction == expected
+    assert bool(args["scan_results"]["high_conviction_setups"]) == (expected == "HIGH")
+    body = capsys.readouterr().out
+    assert f"| TJX | bullish | {expected} |" in body
+    assert f"**High conviction:** {1 if expected == 'HIGH' else 0}" in body

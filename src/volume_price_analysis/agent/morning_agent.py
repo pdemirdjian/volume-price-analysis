@@ -15,10 +15,10 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from ..analysis import run_options_analysis, run_scan
+from ..analysis import passes_high_conviction_gate, run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
 from .ai_client import PROVIDERS, generate_briefing, is_transient_ai_error, resolve_model
 from .briefing import BriefingInputs, render, render_raw
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # Briefings are dated in market time: the scheduler fires at 08:30 ET, and a
 # UTC date would roll over at 20:00 ET the evening before.
 MARKET_TZ = ZoneInfo("America/New_York")
+_HOLDING_PERIOD_DAYS = 14
 
 
 @dataclass
@@ -97,7 +98,7 @@ async def run_morning_briefing(
     scan_results = await run_scan(
         universe=config.scan_universe,
         period="3mo",
-        holding_period=14,
+        holding_period=_HOLDING_PERIOD_DAYS,
         min_score=2.0,
         min_adx=20,
         max_iv_percentile=70,
@@ -116,8 +117,8 @@ async def run_morning_briefing(
         scan_results["summary"]["high_conviction"],
     )
 
-    # Step 1b: Market-regime check (PDE-66) — context only: counter-regime
-    # picks are flagged but keep their high-conviction billing and priority.
+    # Step 1b: Market-regime check (PDE-66). Counter-regime picks are flagged;
+    # build_picks later demotes their conviction along with earnings-risk picks.
     # The briefing must never die on this path, so any failure degrades to an
     # unknown verdict with the scan results left unannotated.
     logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
@@ -137,7 +138,7 @@ async def run_morning_briefing(
     for symbol in top_symbols:
         try:
             data = source.fetch(symbol, period="3mo")
-            analysis = run_options_analysis(symbol, data, holding_period=14)
+            analysis = run_options_analysis(symbol, data, holding_period=_HOLDING_PERIOD_DAYS)
             deep_analyses.append(analysis)
             logger.info("  %s: score=%.1f", symbol, analysis["composite_signal"]["score"])
         except Exception:
@@ -146,9 +147,13 @@ async def run_morning_briefing(
     elapsed_analysis = time.monotonic() - start_time
     logger.info("Analysis complete in %.1fs", elapsed_analysis)
 
-    # Step 2b: Earnings guard — batch-fetch for all analysed symbols
+    # Step 2b: Earnings guard — check every displayed candidate, including those
+    # beyond the deep-analysis cap or whose deep analysis failed.
     analysed_symbols = [a["symbol"] for a in deep_analyses if "symbol" in a]
-    earnings_warnings = _fetch_earnings_warnings(analysed_symbols, now, source)
+    earnings_warnings = _fetch_earnings_warnings(
+        sorted(_candidate_symbols(scan_results, deep_analyses)), now, source
+    )
+    scan_results = _exclude_earnings_candidates(scan_results, earnings_warnings)
     if earnings_warnings:
         logger.info("Earnings warnings: %s", earnings_warnings)
         for analysis in deep_analyses:
@@ -253,9 +258,7 @@ async def run_morning_briefing(
     )
 
 
-_EARNINGS_WARN_DAYS = 14
-
-# Cap concurrent earnings lookups regardless of how many symbols were analysed
+# Cap concurrent earnings lookups regardless of how many candidates are displayed
 _EARNINGS_MAX_WORKERS = 8
 EARNINGS_TIMEOUT_SECONDS = 30
 
@@ -266,12 +269,10 @@ def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | Non
         earnings_dt = source.earnings_date(symbol)
         if earnings_dt is None:
             return None
-        if earnings_dt.tzinfo is None:
-            earnings_dt = earnings_dt.replace(tzinfo=UTC)
-
-        delta = earnings_dt - now
-        if timedelta(0) <= delta <= timedelta(days=_EARNINGS_WARN_DAYS):
-            days_out = delta.days
+        # Earnings may be date-only (midnight). Include the whole briefing
+        # day and final holding day, preserving the source's calendar date.
+        days_out = (earnings_dt.date() - now.astimezone(MARKET_TZ).date()).days
+        if 0 <= days_out <= _HOLDING_PERIOD_DAYS:
             return f"EARNINGS in {days_out} day(s) ({earnings_dt.strftime('%Y-%m-%d')})"
         return None
     except Exception:
@@ -303,6 +304,42 @@ def _fetch_earnings_warnings(
         # A context manager waits for running lookups, undoing the timeout.
         # Running threads cannot be cancelled; let the briefing continue.
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _exclude_earnings_candidates(scan_results: dict, warnings: dict[str, str]) -> dict:
+    """Keep earnings plays in the directional lists, outside high conviction.
+
+    Copy candidates because scan result lists share their dictionaries. The
+    summary counts qualifiers beyond the capped high-conviction list too.
+    """
+    if not warnings:
+        return scan_results
+    result = dict(scan_results)
+    excluded = set()
+    for key in ("high_conviction_setups", "top_bullish", "top_bearish"):
+        result[key] = []
+        for candidate in scan_results.get(key, []):
+            symbol = candidate["symbol"]
+            if symbol in warnings:
+                candidate = {**candidate, "earnings_warning": warnings[symbol]}
+                if key == "high_conviction_setups" or passes_high_conviction_gate(candidate):
+                    excluded.add(symbol)
+            result[key].append(candidate)
+    retained = []
+    for candidate in result["high_conviction_setups"]:
+        if candidate["symbol"] not in warnings:
+            retained.append(candidate)
+            continue
+        key = "top_bullish" if candidate.get("composite_score", 0) >= 0 else "top_bearish"
+        if not any(c["symbol"] == candidate["symbol"] for c in result[key]):
+            result[key].append(candidate)
+    result["high_conviction_setups"] = retained
+    summary = scan_results.get("summary", {})
+    result["summary"] = {
+        **summary,
+        "high_conviction": max(0, summary.get("high_conviction", 0) - len(excluded)),
+    }
+    return result
 
 
 def _fetch_market_regime(source: DataSource, today: date | None = None) -> dict:
@@ -366,14 +403,15 @@ def _candidate_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str
 def build_earnings_preamble(warnings: dict[str, str]) -> str:
     """Render the earnings-risk preamble prepended to the AI prompt.
 
-    Returns an empty string when no analysed symbol has upcoming earnings.
+    Returns an empty string when no displayed candidate has upcoming earnings.
     """
     if not warnings:
         return ""
     lines = [f"  - {sym}: {warn}" for sym, warn in sorted(warnings.items())]
     return (
         "\n\n**EARNINGS EVENT RISK** — the following candidates have earnings "
-        f"within {_EARNINGS_WARN_DAYS} days. Factor event risk into sizing and strategy:\n"
+        f"within {_HOLDING_PERIOD_DAYS} days. These are earnings plays — binary risk; "
+        "never present them as high conviction. Keep them flagged in the regular list:\n"
         + "\n".join(lines)
         + "\n"
     )
