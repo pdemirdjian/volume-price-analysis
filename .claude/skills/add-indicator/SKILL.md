@@ -40,22 +40,20 @@ Write tests that cover:
 - Known trend behavior (e.g., uptrend should produce expected signal)
 - Edge cases if applicable
 
-## Step 3: Add MCP Tool definition in `server.py`
+## Step 3: Register the tool in `tools.py`
 
-Read `src/volume_price_analysis/server.py` and find `handle_list_tools()`.
+Read `src/volume_price_analysis/tools.py` and the existing `ToolSpec` entries in `TOOLS`.
 
-Add a new `Tool()` entry following the existing pattern:
+Add an `async def _run_calculate_<name>(ctx: ToolContext) -> dict` handler that reads parameters from `ctx.args`, gets the DataFrame via `ctx.fetch()`, calls the indicator function, and returns a result dict. Then add a `ToolSpec` for it to `TOOLS`, following the existing entries:
 - Name: `calculate_<name>` (matching the function name)
 - Description: Clear explanation of what the indicator measures
 - Input schema: JSON Schema matching the function parameters
 
-## Step 4: Add handler case in `handle_call_tool()`
+`server.py` needs no change: the list-tools response and the dispatcher both derive from `TOOLS`.
 
-In the same `server.py`, find `handle_call_tool()` and add a case for the new tool name that:
-1. Extracts parameters from `arguments`
-2. Calls `fetch_stock_data()` for the symbol
-3. Calls the indicator function
-4. Returns the result as JSON text
+## Step 4: Cover it in the registry sweep
+
+Add an entry for the new tool name to `MINIMAL_ARGS` in `tests/test_tool_registry.py`; a guard test fails if the registry and `MINIMAL_ARGS` diverge.
 
 ## Step 5: Verify
 

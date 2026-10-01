@@ -9,7 +9,7 @@ Your job:
 
 Focus only on src/volume_price_analysis/data_fetcher.py and tests/test_data_fetcher.py. Do not modify any files.
 
-When finished, send your findings to the team lead using SendMessage. Structure your report with:
+Return your findings as your final report, structured as:
 - Critical/Medium/Low issues (file path, line number, description, impact)
 - What looks good
 - Overall assessment
