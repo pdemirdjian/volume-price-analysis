@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.10.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.10...v2.10.0) (2026-10-03)
+
+
+### Features
+
+* **PDE-67:** exclude earnings risk from high-conviction picks ([#508](https://github.com/pdemirdjian/volume-price-analysis/issues/508)) ([a7f4831](https://github.com/pdemirdjian/volume-price-analysis/commit/a7f483134242b3e8e5a71e8b683bfc6ea3281d66))
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=1.9.0 ([#512](https://github.com/pdemirdjian/volume-price-analysis/issues/512)) ([1f03b9e](https://github.com/pdemirdjian/volume-price-analysis/commit/1f03b9eb6047c482c5ae8781824a07b5c38988e7))
+
 ## [2.9.10](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.9.9...v2.9.10) (2026-09-29)
 
 
