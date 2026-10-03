@@ -51,7 +51,7 @@ def golden_inputs(**overrides) -> BriefingInputs:
         elapsed_s=42.0,
         model_text=(
             "## Executive Summary\n\nTape is constructive.\n\n"
-            "## Top Picks\n\n- **AAPL** @ $190.25 | Score +5.2 | bullish | Conviction: HIGH\n"
+            "## Top Picks\n\n- **AAPL** @ $190.25 | Score +5.2 | bullish | Conviction: MEDIUM\n"
         ),
     )
     return dataclasses.replace(inputs, **overrides)

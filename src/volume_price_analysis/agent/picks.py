@@ -17,7 +17,7 @@ Conviction rule (shares its thresholds with ``analysis.run_scan``):
   composite's ``signal_quality`` is ``"high"`` (ADX > 30).
 - ``LOW``: everything else that passed the scan filters.
 
-A ``regime_conflict`` note bars HIGH: a setup fighting the prevailing tape
+An ``earnings_warning`` or ``regime_conflict`` note bars HIGH: the candidate
 drops to its next-best leg. :func:`build_picks` takes the regime verdict and
 applies that annotation itself (PDE-150), so conviction is derived exactly
 once, here, from a candidate that is already fully annotated — callers cannot
@@ -86,14 +86,22 @@ def _fights_regime(candidate: dict, verdict: str | None) -> bool:
 
 
 def _conviction_for(
-    candidate: dict, *, high_conviction: bool = False, conflicted: bool = False
+    candidate: dict,
+    *,
+    high_conviction: bool = False,
+    conflicted: bool = False,
+    earnings_warning: str | None = None,
 ) -> Conviction:
     """Classify one scan candidate. Private: :func:`build_picks` is the seam.
 
     ``conflicted`` says the candidate fights the prevailing tape; such a
     candidate cannot read HIGH whichever way it would otherwise qualify.
     """
-    if not conflicted and _qualifies_high(candidate, listed=high_conviction):
+    if (
+        not conflicted
+        and not earnings_warning
+        and _qualifies_high(candidate, listed=high_conviction)
+    ):
         return "HIGH"
     if _score_of(candidate) >= STRONG_SCORE or candidate.get("signal_quality") == "high":
         return "MEDIUM"
@@ -169,17 +177,21 @@ def build_picks(
                 _qualifies_high(candidate, listed=symbol in high)
                 and _fights_regime(candidate, verdict)
             )
+            earnings_warning = deep.get("earnings_warning") or candidate.get("earnings_warning")
             picks.append(
                 Pick(
                     symbol=symbol,
                     direction="bullish" if score >= 0 else "bearish",
                     conviction=_conviction_for(
-                        candidate, high_conviction=symbol in high, conflicted=conflicted
+                        candidate,
+                        high_conviction=symbol in high,
+                        conflicted=conflicted,
+                        earnings_warning=earnings_warning,
                     ),
                     score=round(score, 2),
                     price=None if price is None else float(price),
                     regime_conflict=conflicted,
-                    earnings_warning=deep.get("earnings_warning"),
+                    earnings_warning=earnings_warning,
                 )
             )
     return picks
