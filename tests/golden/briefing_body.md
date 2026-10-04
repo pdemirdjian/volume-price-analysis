@@ -4,11 +4,11 @@
 
 ## Pick Summary
 
-| Symbol | Direction | Conviction | Score | Price | Flags |
-|---|---|---|---|---|---|
-| AAPL | bullish | MEDIUM | +5.20 | 190.25 | EARNINGS in 5 day(s) |
-| MSFT | bullish | LOW | +2.40 | — | — |
-| TSLA | bearish | MEDIUM | -4.10 | 240.55 | counter-regime |
+| Symbol | Direction | Conviction | Score | Price | Flags | Stop | Target |
+|---|---|---|---|---|---|---|---|
+| AAPL | bullish | MEDIUM | +5.20 | 190.10 | EARNINGS in 5 day(s) | 184.10 | 202.10 |
+| MSFT | bullish | LOW | +2.40 | — | — | — | — |
+| TSLA | bearish | MEDIUM | -4.10 | 240.55 | counter-regime | 250.55 | 220.55 |
 
 ## Executive Summary
 
@@ -16,7 +16,7 @@ Tape is constructive.
 
 ## Top Picks
 
-- **AAPL** @ $190.25 | Score +5.2 | bullish | Conviction: MEDIUM
+- **AAPL** @ $190.10 | Score +5.2 | bullish | Conviction: MEDIUM
 
 
 ---

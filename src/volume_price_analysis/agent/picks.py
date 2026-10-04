@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from math import isfinite
 from typing import Literal
 
 from ..analysis import HIGH_CONVICTION_MIN_ABS_SCORE, passes_high_conviction_gate
@@ -39,12 +40,14 @@ CONVICTIONS: tuple[Conviction, ...] = ("HIGH", "MEDIUM", "LOW")
 # |composite_score| at or above which a pick counts as strongly scored (the
 # score leg of the high-conviction gate).
 STRONG_SCORE = HIGH_CONVICTION_MIN_ABS_SCORE
+STOP_ATR_MULTIPLIER = 2.0
+TARGET_RISK_MULTIPLIER = 2.0
 
 _CANDIDATE_LISTS = ("high_conviction_setups", "top_bullish", "top_bearish")
 
 # Column order of the rendered table. Fixed on purpose: audits parse it.
-PICK_TABLE_HEADER = "| Symbol | Direction | Conviction | Score | Price | Flags |"
-_PICK_TABLE_RULE = "|---|---|---|---|---|---|"
+PICK_TABLE_HEADER = "| Symbol | Direction | Conviction | Score | Price | Flags | Stop | Target |"
+_PICK_TABLE_RULE = "|---|---|---|---|---|---|---|---|"
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,8 @@ class Pick:
     price: float | None = None
     regime_conflict: bool = False
     earnings_warning: str | None = None
+    stop: float | None = None
+    target: float | None = None
 
 
 def _qualifies_high(candidate: dict, *, listed: bool) -> bool:
@@ -134,8 +139,8 @@ def build_picks(
 
     Order matches ``_get_top_symbols``: high-conviction setups first, then the
     bullish list, then the bearish list. A deep analysis for a symbol supplies
-    its price and score (the consistency rule: deep-analysis values win) and
-    any earnings warning attached to it.
+    its score and any earnings warning attached to it. Entry uses the scan
+    price so it shares the ATR bar; deep price is a display-only fallback.
 
     ``regime`` is the verdict from :func:`regime.compute_market_regime`. When
     given, regime-conflict annotation runs here (PDE-150) rather than in the
@@ -168,7 +173,8 @@ def build_picks(
                 score = float(raw_score or 0.0)
             except TypeError, ValueError:
                 score = 0.0
-            price = deep.get("latest_price", candidate.get("latest_price"))
+            price = candidate.get("latest_price", deep.get("latest_price"))
+            stop, target = _exit_levels(candidate.get("latest_price"), candidate.get("atr"), score)
             # `annotate_regime_conflicts` only reaches the scan's five-entry
             # `high_conviction_setups` list, but the gate is re-evaluated here
             # uncapped -- so a sixth-or-later qualifier fighting the tape is
@@ -192,9 +198,33 @@ def build_picks(
                     price=None if price is None else float(price),
                     regime_conflict=conflicted,
                     earnings_warning=earnings_warning,
+                    stop=stop,
+                    target=target,
                 )
             )
     return picks
+
+
+def _exit_levels(
+    price: float | None, atr: float | None, score: float
+) -> tuple[float | None, float | None]:
+    """Use the scan's ATR for a structural stop and a two-to-one target."""
+    if price is None or atr is None:
+        return None, None
+    try:
+        entry = float(price)
+        volatility = float(atr)
+    except TypeError, ValueError:
+        return None, None
+    if not isfinite(entry) or not isfinite(volatility) or volatility <= 0:
+        return None, None
+    distance = STOP_ATR_MULTIPLIER * volatility
+    direction = 1 if score >= 0 else -1
+    stop = entry - direction * distance
+    target = entry + direction * TARGET_RISK_MULTIPLIER * distance
+    if not isfinite(stop) or not isfinite(target):
+        return None, None
+    return stop, target
 
 
 def _flags(pick: Pick) -> str:
@@ -215,10 +245,12 @@ def render_picks_table(picks: Iterable[Pick]) -> str:
     rows = [PICK_TABLE_HEADER, _PICK_TABLE_RULE]
     for p in picks:
         price = "—" if p.price is None else f"{p.price:.2f}"
+        stop = "—" if p.stop is None else f"{p.stop:.2f}"
+        target = "—" if p.target is None else f"{p.target:.2f}"
         rows.append(
             f"| {p.symbol} | {p.direction} | {p.conviction} | {p.score:+.2f} | {price} "
-            f"| {_flags(p)} |"
+            f"| {_flags(p)} | {stop} | {target} |"
         )
     if len(rows) == 2:
-        rows.append("| — | — | — | — | — | no candidates passed the scan filters |")
+        rows.append("| — | — | — | — | — | no candidates passed the scan filters | — | — |")
     return "\n".join(rows)
