@@ -7,9 +7,8 @@ used by both the MCP server and the morning agent without duplication.
 import asyncio
 import functools
 import logging
-from datetime import datetime
+from datetime import date
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 from pytickersymbols import PyTickerSymbols
@@ -313,6 +312,7 @@ def analyze_single_symbol(
     direction: str,
     min_avg_volume: float = 0,
     data_source: DataSource | None = None,
+    as_of: date | None = None,
 ) -> dict | None:
     """
     Analyze a single symbol for scan_candidates.
@@ -323,12 +323,12 @@ def analyze_single_symbol(
 
     Args:
         data_source: Market-data seam; None uses the production adapter.
+        as_of: Exclude bars dated on or after this date; None keeps all fetched bars.
     """
     source = data_source if data_source is not None else get_default_data_source()
     sym_data = source.fetch(symbol, period=period)
-    # Daily bars dated today may still be partial; entry and ATR use prior sessions.
-    today = datetime.now(ZoneInfo("America/New_York")).date()
-    sym_data = sym_data[pd.to_datetime(sym_data["Date"]).dt.date < today]
+    if as_of is not None:
+        sym_data = sym_data[pd.to_datetime(sym_data["Date"]).dt.date < as_of]
     return score_symbol(
         sym_data,
         symbol,
@@ -356,8 +356,8 @@ def score_symbol(
 
     Pure function: no I/O. Mirrors ``run_options_analysis``, which also takes a
     DataFrame, so scan scoring can be tested with synthetic data and no mocking.
-    Callers supply completed bars through the entry close; the live scan excludes
-    same-day bars in ``analyze_single_symbol`` before calling this function.
+    Callers control which bars are scored; ``analyze_single_symbol`` applies
+    the optional ``as_of`` cutoff before calling this function.
 
     Returns a candidate dict if it passes filters, None if it was scored but did
     not qualify. Raises ``InsufficientDataError`` when there is too little
@@ -418,7 +418,7 @@ def score_symbol(
         "expected_move_pct": round(expected_move["expected_move_percent"], 2),
         "rvol": round(rvol["current_rvol"], 2),
         "latest_price": round(float(sym_data["Close"].iloc[-1]), 2),
-        "atr": float(calculate_atr(sym_data, STOP_ATR_PERIOD).iloc[-1]),
+        "atr": round(float(calculate_atr(sym_data, STOP_ATR_PERIOD).iloc[-1]), 2),
         "key_levels": {
             "upper_target": round(expected_move["upper_target_1std"], 2),
             "lower_target": round(expected_move["lower_target_1std"], 2),
@@ -437,6 +437,7 @@ async def _analyze_symbol_async(
     semaphore: asyncio.Semaphore,
     min_avg_volume: float = 0,
     data_source: DataSource | None = None,
+    as_of: date | None = None,
 ) -> tuple[str, dict | None, str | None, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
@@ -457,6 +458,7 @@ async def _analyze_symbol_async(
                 direction,
                 min_avg_volume,
                 data_source,
+                as_of,
             )
             return (symbol, result, None, False)
         except InsufficientDataError:
@@ -480,6 +482,7 @@ async def run_scan(
     universes: dict[str, list[str]] | None = None,
     timeout_seconds: float = 600,
     data_source: DataSource | None = None,
+    as_of: date | None = None,
 ) -> dict:
     """
     Scan the market for options trading candidates.
@@ -499,6 +502,7 @@ async def run_scan(
         universes: Universe name -> symbols mapping (defaults to ``get_universes()``).
         timeout_seconds: Overall wall-clock budget for the scan.
         data_source: Market-data seam; None uses the production adapter.
+        as_of: Exclude bars dated on or after this date; None keeps all fetched bars.
 
     Returns:
         Dictionary with scan results including candidates, summary, and errors.
@@ -558,6 +562,7 @@ async def run_scan(
             semaphore,
             min_avg_daily_volume,
             data_source,
+            as_of,
         )
         for sym in scan_symbols
     ]

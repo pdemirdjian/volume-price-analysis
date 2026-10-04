@@ -106,6 +106,7 @@ async def run_morning_briefing(
         direction="any",
         max_results=15,
         data_source=source,
+        as_of=briefing_date,
     )
 
     total_candidates = scan_results["summary"]["total_candidates"]

@@ -246,3 +246,14 @@ def test_unavailable_atr_renders_unavailable_levels(atr):
     assert pick.stop is None
     assert pick.target is None
     assert render_picks_table([pick]).splitlines()[-1].endswith("| — | — |")
+
+
+@pytest.mark.parametrize("entry", [{}, {"latest_price": None}])
+def test_deep_price_cannot_supply_stop_entry(entry):
+    candidate = {"symbol": "TEST", "composite_score": 4, "atr": 3.0, **entry}
+    (pick,) = build_picks(_scan(bull=[candidate]), [{"symbol": "TEST", "latest_price": 999.0}])
+    assert pick.stop is None
+    assert pick.target is None
+    assert render_picks_table([pick]).splitlines()[-1].endswith("| — | — |")
+    if not entry:
+        assert pick.price == 999.0

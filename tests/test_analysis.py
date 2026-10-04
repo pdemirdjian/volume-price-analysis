@@ -834,31 +834,72 @@ class TestRunScanInjectedUniverses:
             await run_scan(symbols=["AAPL"], timeout_seconds=5)
 
 
-def test_scan_atr_uses_entry_bar_and_excludes_same_day(mocker):
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+@pytest.mark.asyncio
+async def test_briefing_excludes_same_day_bar_from_stop_and_target(mocker):
+    from datetime import UTC, datetime
 
+    from volume_price_analysis.agent.config import AgentConfig
+    from volume_price_analysis.agent.morning_agent import run_morning_briefing
     from volume_price_analysis.agent.picks import build_picks
 
-    now = datetime(2024, 3, 1, 10, tzinfo=ZoneInfo("America/New_York"))
-    mocker.patch("volume_price_analysis.analysis.datetime").now.return_value = now
     data = _synthetic_ohlcv()
     # True ranges are 3 until the entry bar, whose range is 17.
     # Wilder ATR(14) on that bar is 4, proving the entry bar is included.
     data.loc[data.index[-1], "High"] = 175.5
-    source = InMemoryDataSource({"TEST": data})
-    candidate = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any", data_source=source)
-    assert candidate is not None
-    assert candidate["atr"] == pytest.approx(4.0)
-    assert candidate["latest_price"] == 160.0
+    scans = []
+
+    async def scan(**kwargs):
+        result = await run_scan(
+            **{
+                **kwargs,
+                "symbols": ["TEST"],
+                "min_score": 0,
+                "min_adx": 0,
+                "max_iv_percentile": 100,
+            }
+        )
+        scans.append(result)
+        return result
+
+    mocker.patch("volume_price_analysis.agent.morning_agent.run_scan", side_effect=scan)
+    config = AgentConfig()
+    now = datetime(2024, 3, 1, 13, 30, tzinfo=UTC)
+    await run_morning_briefing(
+        config,
+        dry_run=True,
+        no_ai=True,
+        data_source=InMemoryDataSource({"TEST": data}),
+        now=now,
+    )
     extreme = data.iloc[[-1]].copy()
     extreme["Date"] = pd.Timestamp("2024-03-01")
     extreme[["Open", "High", "Close"]] = 100_000.0
     extreme["Low"] = 0.01
-    source = InMemoryDataSource({"TEST": pd.concat([data, extreme], ignore_index=True)})
-    with_today = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any", data_source=source)
-    assert with_today == candidate
-    (pick,) = build_picks({"top_bullish": [candidate]})
-    assert pick.stop is not None
-    assert abs(pick.price - pick.stop) == pytest.approx(8.0)
-    assert build_picks({"top_bullish": [with_today]}) == build_picks({"top_bullish": [candidate]})
+    await run_morning_briefing(
+        config,
+        dry_run=True,
+        no_ai=True,
+        data_source=InMemoryDataSource({"TEST": pd.concat([data, extreme], ignore_index=True)}),
+        now=now,
+    )
+    candidate = scans[0]["top_bullish"][0]
+    assert candidate["atr"] == 4.0
+    assert candidate["latest_price"] == 160.0
+    (pick,) = build_picks(scans[0])
+    assert pick.stop == 152.0
+    assert pick.target == 176.0
+    assert build_picks(scans[1]) == [pick]
+
+
+@pytest.mark.asyncio
+async def test_default_scan_keeps_all_bars():
+    from datetime import date
+
+    data = _synthetic_ohlcv()
+    data["Date"] = pd.date_range(end=date.today(), periods=len(data))
+    data.loc[data.index[-1], "High"] = 175.6
+    source = InMemoryDataSource({"TEST": data})
+    result = await run_scan(symbols=["TEST"], min_score=0, min_adx=0, data_source=source)
+    candidate = result["top_bullish"][0]
+    assert candidate["latest_price"] == 160.0
+    assert candidate["atr"] == 4.01

@@ -140,7 +140,7 @@ def build_picks(
     Order matches ``_get_top_symbols``: high-conviction setups first, then the
     bullish list, then the bearish list. A deep analysis for a symbol supplies
     its score and any earnings warning attached to it. Entry uses the scan
-    price so it shares the ATR bar; deep price is a fallback for legacy inputs.
+    price so it shares the ATR bar; deep price is a display-only fallback.
 
     ``regime`` is the verdict from :func:`regime.compute_market_regime`. When
     given, regime-conflict annotation runs here (PDE-150) rather than in the
@@ -174,7 +174,7 @@ def build_picks(
             except TypeError, ValueError:
                 score = 0.0
             price = candidate.get("latest_price", deep.get("latest_price"))
-            stop, target = _exit_levels(price, candidate.get("atr"), score)
+            stop, target = _exit_levels(candidate.get("latest_price"), candidate.get("atr"), score)
             # `annotate_regime_conflicts` only reaches the scan's five-entry
             # `high_conviction_setups` list, but the gate is re-evaluated here
             # uncapped -- so a sixth-or-later qualifier fighting the tape is
