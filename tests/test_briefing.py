@@ -25,7 +25,13 @@ def golden_inputs(**overrides) -> BriefingInputs:
         "scan_parameters": {"symbols_scanned": 540},
         "summary": {"total_candidates": 3},
         "high_conviction_setups": [
-            {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1, "regime_conflict": ""}
+            {
+                "symbol": "AAPL",
+                "composite_score": 5.2,
+                "latest_price": 190.1,
+                "atr": 3.0,
+                "regime_conflict": "",
+            }
         ],
         "top_bullish": [
             {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1},
@@ -36,6 +42,7 @@ def golden_inputs(**overrides) -> BriefingInputs:
                 "symbol": "TSLA",
                 "composite_score": -4.1,
                 "latest_price": 240.55,
+                "atr": 5.0,
                 "regime_conflict": "bearish setup against a bullish tape",
             }
         ],
@@ -51,7 +58,7 @@ def golden_inputs(**overrides) -> BriefingInputs:
         elapsed_s=42.0,
         model_text=(
             "## Executive Summary\n\nTape is constructive.\n\n"
-            "## Top Picks\n\n- **AAPL** @ $190.25 | Score +5.2 | bullish | Conviction: MEDIUM\n"
+            "## Top Picks\n\n- **AAPL** @ $190.10 | Score +5.2 | bullish | Conviction: MEDIUM\n"
         ),
     )
     return dataclasses.replace(inputs, **overrides)

@@ -79,11 +79,17 @@ reader, not a proven edge filter — never drop or reorder picks because of it.
 
 CONSISTENCY: Cite exactly ONE value per metric per symbol. If a symbol appears
 in both the scan results and the deep analysis, use the deep-analysis values
-for prices, targets, and levels — never quote a second, conflicting number for
-the same metric elsewhere in the briefing. The "upper_target" / "lower_target"
-fields are a ±1 standard deviation expected move over the holding period;
+for indicator readings and levels, except the pick entry/stop/target below. Never
+quote a second, conflicting number for the same metric elsewhere in the briefing.
+The "upper_target" / "lower_target" fields are a ±1 standard deviation expected
+move over the holding period;
 label them as such (e.g., "14-day ±1σ upper target"), not as predictions or
 price objectives.
+
+STRUCTURAL EXITS: The scan candidates carry programmatic "entry", "stop", and "target"
+fields from the pick table. Use these verbatim for pick prices and exits, even when
+deep-analysis prices differ. They use prior-session ATR(14), a 2×ATR stop and a
+2:1 reward/risk target. Null levels are unavailable; never invent replacements.
 
 DATE: The briefing date is stated in the data ("Briefing date: ..."). The
 email template already renders a dated title above your text, so do NOT write
@@ -581,14 +587,17 @@ def strip_date_placeholders(briefing: str) -> str:
     return _DATE_PLACEHOLDER_LINE.sub("", briefing)
 
 
-def _apply_conviction(projected_scan: dict, picks: Iterable[Pick]) -> dict:
-    """Label each projected scan candidate with its Pick's conviction.
+def _apply_pick_fields(projected_scan: dict, picks: Iterable[Pick]) -> dict:
+    """Attach each Pick's conviction and structural exit levels to its candidate.
 
     The Pick list is the one place conviction is derived (PDE-150), so the
     prompt reads the label off it rather than off the candidate dicts. Returns
     a copy; candidate dicts are shared with the caller's scan results.
     """
-    by_symbol = {p.symbol: p.conviction for p in picks}
+    by_symbol = {
+        p.symbol: {"conviction": p.conviction, "entry": p.price, "stop": p.stop, "target": p.target}
+        for p in picks
+    }
     if not by_symbol:
         return projected_scan
     result = dict(projected_scan)
@@ -597,7 +606,7 @@ def _apply_conviction(projected_scan: dict, picks: Iterable[Pick]) -> dict:
         if not isinstance(candidates, list):
             continue
         result[key] = [
-            {**c, "conviction": by_symbol[c["symbol"]]}
+            {**c, **by_symbol[c["symbol"]]}
             if isinstance(c, dict) and c.get("symbol") in by_symbol
             else c
             for c in candidates
@@ -626,7 +635,7 @@ def build_briefing_prompt(
     """
     projected_scan = _project_scan_results(scan_results)
     projected_scan = _drop_superseded_scan_fields(projected_scan, deep_analyses)
-    projected_scan = _apply_conviction(projected_scan, picks)
+    projected_scan = _apply_pick_fields(projected_scan, picks)
     user_content = "Generate a morning options trading briefing from this data:\n\n"
     if briefing_date is not None:
         user_content += (
