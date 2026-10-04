@@ -3045,3 +3045,19 @@ async def test_earnings_holding_window_and_missing_dates(mocker, capsys, earning
     body = capsys.readouterr().out
     assert f"| TJX | bullish | {expected} |" in body
     assert f"**High conviction:** {1 if expected == 'HIGH' else 0}" in body
+
+
+def test_prompt_carries_pick_entry_stop_and_target_without_mutating_candidates():
+    from copy import deepcopy
+
+    from volume_price_analysis.agent.picks import build_picks
+
+    candidate = {"symbol": "TEST", "latest_price": 100.0, "composite_score": -4.0, "atr": 3.0}
+    scan = {"top_bearish": [candidate]}
+    original = deepcopy(scan)
+    deep = [{"symbol": "TEST", "latest_price": 999.0}]
+    prompt = build_briefing_prompt(scan, deep, picks=build_picks(scan, deep))
+    projected = json.loads(prompt.split("```json\n", 1)[1].split("```", 1)[0])
+    row = projected["top_bearish"][0]
+    assert (row["entry"], row["stop"], row["target"]) == (100.0, 106.0, 88.0)
+    assert scan == original

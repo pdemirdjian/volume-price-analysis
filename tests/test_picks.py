@@ -1,5 +1,7 @@
 """Tests for the deterministic pick block (PDE-69)."""
 
+import pytest
+
 from volume_price_analysis.agent.picks import (
     CONVICTIONS,
     PICK_TABLE_HEADER,
@@ -94,7 +96,7 @@ class TestBuildPicks:
         assert [p.conviction for p in picks] == ["HIGH", "LOW", "MEDIUM"]
         assert [p.direction for p in picks] == ["bullish", "bullish", "bearish"]
 
-    def test_deep_analysis_supplies_price_score_and_earnings(self):
+    def test_scan_entry_wins_while_deep_analysis_supplies_score_and_earnings(self):
         scan = _scan(bull=[{"symbol": "AAPL", "composite_score": 3.0, "latest_price": 100.0}])
         deep = [
             {
@@ -105,7 +107,7 @@ class TestBuildPicks:
             }
         ]
         (pick,) = build_picks(scan, deep)
-        assert pick.price == 101.5
+        assert pick.price == 100.0
         assert pick.score == 3.46
         assert pick.earnings_warning == "EARNINGS in 3 day(s)"
 
@@ -191,20 +193,23 @@ class TestRegimeFoldedIntoConviction:
 class TestRenderPicksTable:
     def test_fixed_header_and_rows(self):
         picks = [
-            Pick("AAPL", "bullish", "HIGH", 5.0, 101.5, True, "EARNINGS in 3 day(s)"),
+            Pick("AAPL", "bullish", "HIGH", 5.0, 101.5, True, "EARNINGS in 3 day(s)", 95.5, 113.5),
             Pick("TSLA", "bearish", "LOW", -2.25),
         ]
         table = render_picks_table(picks).splitlines()
         assert table[0] == PICK_TABLE_HEADER
-        assert table[1] == "|---|---|---|---|---|---|"
+        assert table[0].endswith("| Flags | Stop | Target |")
+        assert table[1] == "|---|---|---|---|---|---|---|---|"
         assert table[2] == (
             "| AAPL | bullish | HIGH | +5.00 | 101.50 | counter-regime; EARNINGS in 3 day(s) |"
+            " 95.50 | 113.50 |"
         )
-        assert table[3] == "| TSLA | bearish | LOW | -2.25 | — | — |"
+        assert table[3] == "| TSLA | bearish | LOW | -2.25 | — | — | — | — |"
 
     def test_empty_still_emits_block(self):
         table = render_picks_table([]).splitlines()
         assert table[0] == PICK_TABLE_HEADER
+        assert table[0].endswith("| Flags | Stop | Target |")
         assert len(table) == 3
         assert "no candidates" in table[2]
 
@@ -219,3 +224,25 @@ def test_earnings_warning_bars_high_conviction():
     assert pick.conviction == "MEDIUM"
     assert pick.earnings_warning == warning
     assert candidate == {"symbol": "TJX", "composite_score": 5.0, "adx": 35, "hv_percentile": 20}
+
+
+@pytest.mark.parametrize("score, stop, target", [(4.0, 94.0, 112.0), (-4.0, 106.0, 88.0)])
+def test_every_pick_has_atr_stop_and_two_to_one_target(score, stop, target):
+    candidate = {"symbol": "TEST", "composite_score": score, "latest_price": 100.0, "atr": 3.0}
+    scan = _scan(high=[candidate], bull=[candidate], bear=[candidate])
+    (pick,) = build_picks(scan, [{"symbol": "TEST", "latest_price": 999.0}])
+    assert pick.price == 100.0
+    assert pick.stop == stop
+    assert pick.target == target
+    assert "stop" not in candidate
+
+
+@pytest.mark.parametrize("atr", [None, float("nan"), float("inf"), -float("inf"), "bad", 0, -1])
+def test_unavailable_atr_renders_unavailable_levels(atr):
+    candidate = {"symbol": "TEST", "composite_score": 4, "latest_price": 100.0}
+    if atr is not None:
+        candidate["atr"] = atr
+    (pick,) = build_picks(_scan(bull=[candidate]))
+    assert pick.stop is None
+    assert pick.target is None
+    assert render_picks_table([pick]).splitlines()[-1].endswith("| — | — |")

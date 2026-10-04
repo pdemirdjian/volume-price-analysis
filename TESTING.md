@@ -337,6 +337,7 @@ chmod +x .git/hooks/pre-commit
 import pytest
 from volume_price_analysis.indicators import calculate_obv
 
+
 class TestNewIndicator:
     """Tests for new indicator."""
 
@@ -362,6 +363,7 @@ class TestNewIndicator:
 ```python
 import pytest
 
+
 class TestAsyncFunction:
     @pytest.mark.asyncio
     async def test_async_function(self):
@@ -373,11 +375,14 @@ class TestAsyncFunction:
 ### Parametrized Tests
 
 ```python
-@pytest.mark.parametrize("symbol,expected", [
-    ("AAPL", True),
-    ("MSFT", True),
-    ("INVALID123", False),
-])
+@pytest.mark.parametrize(
+    "symbol,expected",
+    [
+        ("AAPL", True),
+        ("MSFT", True),
+        ("INVALID123", False),
+    ],
+)
 def test_validate_multiple_symbols(symbol, expected):
     result = validate_symbol(symbol)
     assert result == expected
