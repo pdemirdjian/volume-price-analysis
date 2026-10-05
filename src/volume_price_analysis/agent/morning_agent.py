@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 # UTC date would roll over at 20:00 ET the evening before.
 MARKET_TZ = ZoneInfo("America/New_York")
 _HOLDING_PERIOD_DAYS = 14
+MAX_CONCURRENT_DEEP_ANALYSES = 4
 
 
 @dataclass
@@ -124,7 +125,7 @@ async def run_morning_briefing(
     # unknown verdict with the scan results left unannotated.
     logger.info("Step 1b: Market regime check (SPY close vs %d-day SMA)...", REGIME_SMA_PERIOD)
     try:
-        regime = _fetch_market_regime(source, today=briefing_date)
+        regime = await asyncio.to_thread(_fetch_market_regime, source, today=briefing_date)
         scan_results = annotate_regime_conflicts(scan_results, regime)
     except Exception:
         logger.exception("Regime annotation failed; continuing without it")
@@ -135,15 +136,24 @@ async def run_morning_briefing(
     top_symbols = _get_top_symbols(scan_results, config.max_deep_analysis)
     logger.info("Step 2: Deep analysis on %d symbols: %s", len(top_symbols), top_symbols)
 
-    deep_analyses = []
-    for symbol in top_symbols:
-        try:
-            data = source.fetch(symbol, period="3mo")
-            analysis = run_options_analysis(symbol, data, holding_period=_HOLDING_PERIOD_DAYS)
-            deep_analyses.append(analysis)
-            logger.info("  %s: score=%.1f", symbol, analysis["composite_signal"]["score"])
-        except Exception:
-            logger.exception("  Failed to analyze %s", symbol)
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_DEEP_ANALYSES)
+
+    def analyze_symbol(symbol: str) -> dict:
+        data = source.fetch(symbol, period="3mo")
+        return run_options_analysis(symbol, data, holding_period=_HOLDING_PERIOD_DAYS)
+
+    async def analyze_symbol_async(symbol: str) -> dict | None:
+        async with semaphore:
+            try:
+                analysis = await asyncio.to_thread(analyze_symbol, symbol)
+                logger.info("  %s: score=%.1f", symbol, analysis["composite_signal"]["score"])
+                return analysis
+            except Exception:
+                logger.exception("  Failed to analyze %s", symbol)
+                return None
+
+    results = await asyncio.gather(*(analyze_symbol_async(symbol) for symbol in top_symbols))
+    deep_analyses = [analysis for analysis in results if analysis is not None]
 
     elapsed_analysis = time.monotonic() - start_time
     logger.info("Analysis complete in %.1fs", elapsed_analysis)
@@ -151,8 +161,11 @@ async def run_morning_briefing(
     # Step 2b: Earnings guard — check every displayed candidate, including those
     # beyond the deep-analysis cap or whose deep analysis failed.
     analysed_symbols = [a["symbol"] for a in deep_analyses if "symbol" in a]
-    earnings_warnings = _fetch_earnings_warnings(
-        sorted(_candidate_symbols(scan_results, deep_analyses)), now, source
+    earnings_warnings = await asyncio.to_thread(
+        _fetch_earnings_warnings,
+        sorted(_candidate_symbols(scan_results, deep_analyses)),
+        now,
+        source,
     )
     scan_results = _exclude_earnings_candidates(scan_results, earnings_warnings)
     if earnings_warnings:
@@ -187,7 +200,8 @@ async def run_morning_briefing(
         )
         earnings_preamble = build_earnings_preamble(earnings_warnings)
         try:
-            model_text = retry_call(
+            model_text = await asyncio.to_thread(
+                retry_call,
                 lambda: (
                     generate_briefing(
                         scan_results=scan_results,
@@ -230,7 +244,8 @@ async def run_morning_briefing(
     elif no_ai:
         logger.info("Step 4: Sending raw data email")
         creds = SmtpCreds.from_config(config)
-        send_email(
+        await asyncio.to_thread(
+            send_email,
             build_briefing_message(
                 creds, subject=f"Morning Market Data (Raw) - {date_str}", body_markdown=body
             ),
@@ -239,7 +254,8 @@ async def run_morning_briefing(
     else:
         logger.info("Step 4: Sending briefing email")
         creds = SmtpCreds.from_config(config)
-        send_email(
+        await asyncio.to_thread(
+            send_email,
             build_briefing_message(
                 creds,
                 subject=f"Morning Market Briefing - {date_str}",
