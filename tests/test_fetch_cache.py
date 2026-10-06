@@ -1,8 +1,11 @@
 """Price history caching at the production data source boundary."""
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from volume_price_analysis.data_fetcher import YFinanceDataSource
 
@@ -38,7 +41,6 @@ def test_each_fetch_parameter_has_a_distinct_key(sample_stock_data):
         ("AAPL", {}),
         ("MSFT", {}),
         ("AAPL", {"period": "3mo"}),
-        ("AAPL", {"timeout": 12}),
         ("AAPL", {"start": "2024-01-01", "end": "2024-02-01"}),
         ("AAPL", {"start": "2024-01-02", "end": "2024-02-01"}),
         ("AAPL", {"start": "2024-01-01", "end": "2024-02-02"}),
@@ -52,8 +54,6 @@ def test_each_fetch_parameter_has_a_distinct_key(sample_stock_data):
 
 
 def test_failures_and_empty_results_are_retried(sample_stock_data):
-    import pytest
-
     source = YFinanceDataSource()
     with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
         provider.return_value.history.side_effect = [
@@ -70,9 +70,6 @@ def test_failures_and_empty_results_are_retried(sample_stock_data):
 
 
 def test_concurrent_fetches_share_history_and_return_independent_frames(sample_stock_data):
-    from concurrent.futures import ThreadPoolExecutor
-    from threading import Barrier
-
     source = YFinanceDataSource()
     barrier = Barrier(4)
 
@@ -99,3 +96,32 @@ def test_ttl_environment_configuration_can_disable_cache(monkeypatch, sample_sto
         source.fetch("AAPL")
         source.fetch("AAPL")
         assert provider.call_count == 2
+
+
+@pytest.mark.parametrize("raw", ["", "15m", "-1", "inf", "nan"])
+def test_invalid_ttl_environment_falls_back_to_900_seconds(
+    monkeypatch, caplog, sample_stock_data, raw
+):
+    monkeypatch.setenv("DATA_CACHE_TTL_SECONDS", raw)
+    now = [0.0]
+    source = YFinanceDataSource(clock=lambda: now[0])
+    assert "DATA_CACHE_TTL_SECONDS" in caplog.text
+    assert "900" in caplog.text
+    with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
+        provider.return_value.history.return_value = sample_stock_data.set_index("Date")
+        source.fetch("AAPL")
+        now[0] = 899
+        source.fetch("AAPL")
+        assert provider.call_count == 1
+        now[0] = 900
+        source.fetch("AAPL")
+        assert provider.call_count == 2
+
+
+def test_timeout_does_not_change_cache_key(sample_stock_data):
+    source = YFinanceDataSource()
+    with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
+        provider.return_value.history.return_value = sample_stock_data.set_index("Date")
+        source.fetch("AAPL", timeout=12)
+        pd.testing.assert_frame_equal(source.fetch("AAPL", timeout=30), sample_stock_data)
+        provider.return_value.history.assert_called_once_with(period="1mo", timeout=12)

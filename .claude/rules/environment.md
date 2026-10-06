@@ -1,6 +1,7 @@
 # Environment Variables
 
-Required for the morning briefing agent only. Not needed for the MCP server. See `src/volume_price_analysis/agent/config.py` `AgentConfig.from_env()` for full list.
+AI and email variables are required for the morning briefing agent only.
+`DATA_CACHE_TTL_SECONDS` applies to both the MCP server and briefing agent. See `src/volume_price_analysis/agent/config.py` `AgentConfig.from_env()` for full list.
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
@@ -12,6 +13,7 @@ Required for the morning briefing agent only. Not needed for the MCP server. See
 | `EMAIL_TO` | Yes | — | Comma-separated recipients |
 | `EMAIL_SMTP_HOST` | No | `smtp.gmail.com` | SMTP server |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP port |
+| `DATA_CACHE_TTL_SECONDS` | No | `900` | History cache TTL in seconds; `0` disables caching; invalid values fall back to `900` |
 | `SCAN_UNIVERSE` | No | `full_market` | Symbol universe |
 | `MAX_DEEP_ANALYSIS` | No | `5` | Max candidates for deep analysis (1–20; out-of-range values fall back/clamp) |
 | `SCHEDULER_HEARTBEAT_FILE` | No | `<tempdir>/morning-scheduler.heartbeat` | Liveness file the scheduler writes (monotonic stamp); read by `morning-healthcheck` |

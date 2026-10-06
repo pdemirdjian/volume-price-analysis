@@ -162,7 +162,12 @@ def _cached_universes() -> dict[str, list[str]]:
 
 
 def clear_universe_cache() -> None:
-    """Rebuild universes on next access, e.g. after updating constituent data."""
+    """Rebuild universes on next access from installed pytickersymbols data.
+
+    Picks up changes to the package's loaded constituent data without a process
+    restart. The data is static and imported into memory: this does not fetch live
+    constituents or reload package files updated on disk.
+    """
     _cached_universes.cache_clear()
 
 

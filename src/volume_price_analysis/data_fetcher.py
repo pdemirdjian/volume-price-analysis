@@ -105,17 +105,24 @@ class YFinanceDataSource:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Cache history for DATA_CACHE_TTL_SECONDS (default 900; zero disables it)."""
-        self._cache_ttl = (
-            float(os.environ.get("DATA_CACHE_TTL_SECONDS", "900"))
-            if cache_ttl is None
-            else cache_ttl
-        )
-        if not 0 <= self._cache_ttl < float("inf"):
-            raise ValueError("DATA_CACHE_TTL_SECONDS must be a finite non-negative number")
+        if cache_ttl is None:
+            raw = os.environ.get("DATA_CACHE_TTL_SECONDS", "900")
+            try:
+                cache_ttl = float(raw)
+                if not 0 <= cache_ttl < float("inf"):
+                    raise ValueError
+            except ValueError:
+                logger.warning(
+                    "DATA_CACHE_TTL_SECONDS=%r must be a finite non-negative number, "
+                    "using default 900",
+                    raw,
+                )
+                cache_ttl = 900
+        elif not 0 <= cache_ttl < float("inf"):
+            raise ValueError("cache_ttl must be a finite non-negative number")
+        self._cache_ttl = cache_ttl
         self._clock = clock
-        self._cache: dict[
-            tuple[str, str, str | None, str | None, int], tuple[float, pd.DataFrame]
-        ] = {}
+        self._cache: dict[tuple[str, str, str | None, str | None], tuple[float, pd.DataFrame]] = {}
         self._cache_lock = threading.Lock()
         # Bounded lock stripes coalesce identical requests without serializing all symbols.
         self._fetch_locks = [threading.Lock() for _ in range(64)]
@@ -141,7 +148,7 @@ class YFinanceDataSource:
         timeout: int = DEFAULT_TIMEOUT,
     ) -> pd.DataFrame:
         """Return independent OHLCV history, reusing successful fetches within the TTL."""
-        key = (symbol, period, start, end, timeout)
+        key = (symbol, period, start, end)
         with self._fetch_locks[hash(key) % len(self._fetch_locks)]:
             with self._cache_lock:
                 cached = self._cache.get(key)
