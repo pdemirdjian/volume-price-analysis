@@ -7,7 +7,11 @@ is the test adapter, so tests can inject data instead of patching import paths.
 
 import datetime
 import logging
+import os
 import re
+import threading
+import time
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
@@ -66,8 +70,8 @@ class DataSource(Protocol):
     - Every failure — bad symbol, network error, missing OHLCV columns, no
       data — surfaces as ``ValueError``. Callers catch ``ValueError`` alone and
       never see provider-specific exception types.
-    - No retries and no caching: one call is one fetch. Callers needing either
-      implement it themselves.
+    - No retries. Production history may be cached briefly; returned frames
+      are independent copies so callers can safely mutate them.
 
     :meth:`earnings_date` returns a timezone-aware ``datetime`` for the next
     known earnings event, or ``None`` when the provider has no usable date.
@@ -94,7 +98,76 @@ class DataSource(Protocol):
 class YFinanceDataSource:
     """Production ``DataSource`` backed by yfinance."""
 
+    def __init__(
+        self,
+        *,
+        cache_ttl: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Cache history for DATA_CACHE_TTL_SECONDS (default 900; zero disables it)."""
+        if cache_ttl is None:
+            raw = os.environ.get("DATA_CACHE_TTL_SECONDS", "900")
+            try:
+                cache_ttl = float(raw)
+                if not 0 <= cache_ttl < float("inf"):
+                    raise ValueError
+            except ValueError:
+                logger.warning(
+                    "DATA_CACHE_TTL_SECONDS=%r must be a finite non-negative number, "
+                    "using default 900",
+                    raw,
+                )
+                cache_ttl = 900
+        elif not 0 <= cache_ttl < float("inf"):
+            raise ValueError("cache_ttl must be a finite non-negative number")
+        self._cache_ttl = cache_ttl
+        self._clock = clock
+        self._cache: dict[tuple[str, str, str | None, str | None], tuple[float, pd.DataFrame]] = {}
+        self._cache_lock = threading.Lock()
+        # Bounded lock stripes coalesce identical requests without serializing all symbols.
+        self._fetch_locks = [threading.Lock() for _ in range(64)]
+
+    def clear_cache(self) -> None:
+        """Discard cached history, waiting for in-flight fetches to finish."""
+        for lock in self._fetch_locks:
+            lock.acquire()
+        try:
+            with self._cache_lock:
+                self._cache.clear()
+        finally:
+            for lock in reversed(self._fetch_locks):
+                lock.release()
+
     def fetch(
+        self,
+        symbol: str,
+        *,
+        period: str = "1mo",
+        start: str | None = None,
+        end: str | None = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> pd.DataFrame:
+        """Return independent OHLCV history, reusing successful fetches within the TTL."""
+        key = (symbol, period, start, end)
+        with self._fetch_locks[hash(key) % len(self._fetch_locks)]:
+            with self._cache_lock:
+                cached = self._cache.get(key)
+                if cached is not None and self._clock() < cached[0]:
+                    return cached[1].copy()
+            data = self._fetch_uncached(
+                symbol, period=period, start=start, end=end, timeout=timeout
+            )
+            if self._cache_ttl > 0:
+                with self._cache_lock:
+                    now = self._clock()
+                    self._cache = {k: v for k, v in self._cache.items() if now < v[0]}
+                    # Bound memory even when callers request many date ranges.
+                    if len(self._cache) >= 1024:
+                        del self._cache[next(iter(self._cache))]
+                    self._cache[key] = (now + self._cache_ttl, data.copy())
+            return data
+
+    def _fetch_uncached(
         self,
         symbol: str,
         *,

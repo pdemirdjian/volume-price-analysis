@@ -161,11 +161,21 @@ def _cached_universes() -> dict[str, list[str]]:
     }
 
 
+def clear_universe_cache() -> None:
+    """Rebuild universes on next access from installed pytickersymbols data.
+
+    Picks up changes to the package's loaded constituent data without a process
+    restart. The data is static and imported into memory: this does not fetch live
+    constituents or reload package files updated on disk.
+    """
+    _cached_universes.cache_clear()
+
+
 def get_universes() -> dict[str, list[str]]:
     """Return the pre-built symbol universes for scanning.
 
     Built lazily on first call (PyTickerSymbols parsing is not free) and cached
-    for the process lifetime, so importing this module stays cheap. Callers get a
+    until ``clear_universe_cache()`` is called, so importing stays cheap. Callers get a
     shallow copy of the mapping; ``run_scan`` accepts a ``universes`` override so
     tests never have to mutate module state.
     """

@@ -903,3 +903,20 @@ async def test_default_scan_keeps_all_bars():
     candidate = result["top_bullish"][0]
     assert candidate["latest_price"] == 160.0
     assert candidate["atr"] == 4.01
+
+
+def test_universes_can_be_refreshed(mocker):
+    from volume_price_analysis.analysis import clear_universe_cache
+
+    clear_universe_cache()
+    builder = mocker.patch(
+        "volume_price_analysis.analysis._build_sp500_symbols", return_value=["AAA"]
+    )
+    try:
+        assert get_universes()["sp500"] == ["AAA"]
+        builder.return_value = ["BBB"]
+        assert get_universes()["sp500"] == ["AAA"]
+        clear_universe_cache()
+        assert get_universes()["sp500"] == ["BBB"]
+    finally:
+        clear_universe_cache()

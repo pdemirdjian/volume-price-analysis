@@ -100,3 +100,14 @@ def flat_price_data():
     )
 
     return data
+
+
+@pytest.fixture(autouse=True)
+def clear_history_cache():
+    """Keep the shared production history cache isolated between tests."""
+    from volume_price_analysis.data_fetcher import get_default_data_source
+
+    source = get_default_data_source()
+    source.clear_cache()
+    yield
+    source.clear_cache()

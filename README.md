@@ -470,6 +470,7 @@ uv run python -m volume_price_analysis.agent.morning_agent --no-ai
 | `EMAIL_TO` | (required) | Recipient email address |
 | `SCAN_UNIVERSE` | `full_market` | Symbol universe to scan |
 | `MAX_DEEP_ANALYSIS` | `5` | Top N candidates for deep analysis |
+| `DATA_CACHE_TTL_SECONDS` | `900` | History cache TTL in seconds for MCP and briefing; `0` disables caching; invalid values fall back to `900` |
 | `TZ` | `America/New_York` | Container timezone |
 
 ## Data Source
