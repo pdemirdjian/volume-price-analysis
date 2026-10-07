@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.12.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.11.1...v2.12.0) (2026-10-07)
+
+
+### Features
+
+* **PDE-21:** cache Yahoo Finance history with a configurable TTL ([#526](https://github.com/pdemirdjian/volume-price-analysis/issues/526)) ([4d348e2](https://github.com/pdemirdjian/volume-price-analysis/commit/4d348e2367128be48d8da81e9f80da30009a4db2))
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=2.28.0 ([#523](https://github.com/pdemirdjian/volume-price-analysis/issues/523)) ([ce8a1f0](https://github.com/pdemirdjian/volume-price-analysis/commit/ce8a1f0710a8cdb1a4f126654d82c10d3266d6de))
+* **deps:** update dependency mcp to v2.3.0 ([#525](https://github.com/pdemirdjian/volume-price-analysis/issues/525)) ([2c7e8b5](https://github.com/pdemirdjian/volume-price-analysis/commit/2c7e8b5c5b921ad98d0acf62bdfdc5cedfd2ee4a))
+
 ## [2.11.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.11.0...v2.11.1) (2026-10-05)
 
 
