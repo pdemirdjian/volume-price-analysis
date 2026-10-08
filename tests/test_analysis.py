@@ -24,6 +24,13 @@ from volume_price_analysis.indicators import (
     detect_bollinger_squeeze,
 )
 
+
+@pytest.fixture(autouse=True)
+def no_retry_waits(mocker):
+    """Backoff is a time boundary; scan unit tests must never sleep."""
+    mocker.patch("volume_price_analysis.agent.retry._sleep")
+
+
 # A frame with too little history to analyze (< MIN_SCAN_HISTORY), so scans skip it fast.
 SMALL_FRAME = pd.DataFrame(
     {
@@ -920,3 +927,152 @@ def test_universes_can_be_refreshed(mocker):
         assert get_universes()["sp500"] == ["BBB"]
     finally:
         clear_universe_cache()
+
+
+@pytest.mark.asyncio
+async def test_scan_retries_transient_fetch_before_scoring():
+    class FlakySource(InMemoryDataSource):
+        calls = 0
+
+        def fetch(self, symbol, **kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise ValueError("Temporary network failure")
+            return super().fetch(symbol, **kwargs)
+
+    source = FlakySource({"AAA": _synthetic_ohlcv()})
+    delays = []
+    result = await run_scan(
+        symbols=["AAA"], min_score=0, min_adx=0, data_source=source, retry_sleep=delays.append
+    )
+    assert result["top_bullish"][0]["symbol"] == "AAA"
+    assert result["summary"]["errors"] == 0
+    assert source.calls == 3
+    assert delays == [0.25, 0.5]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["Too Many Requests", "Rate limited", "HTTP 429"])
+async def test_scan_surfaces_rate_limits_beyond_error_sample(message):
+    symbols = [f"SYM{i}" for i in range(12)]
+    source = InMemoryDataSource(errors=dict.fromkeys(symbols, ValueError(message)))
+    delays = []
+    result = await run_scan(symbols=symbols, data_source=source, retry_sleep=delays.append)
+    assert result["rate_limited"] is True
+    assert result["summary"]["rate_limit_errors"] == 12
+    assert result["summary"]["errors"] == 12
+    assert len(result["errors"]) == 10
+    assert all(error["error"] == message for error in result["errors"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_scan_detects_provider_rate_limit_type(wrapped):
+    from yfinance.exceptions import YFRateLimitError
+
+    error = YFRateLimitError()
+    error.args = ("Provider refused request",)
+    if wrapped:
+        outer = ValueError("Adapter fetch failed")
+        outer.__cause__ = error
+        error = outer
+    result = await run_scan(
+        symbols=["AAA"],
+        data_source=InMemoryDataSource(errors={"AAA": error}),
+        retry_sleep=lambda _: None,
+    )
+    assert result["rate_limited"] is True
+    assert result["summary"]["rate_limit_errors"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("insufficient_in_fetch", [False, True])
+async def test_scan_never_retries_insufficient_history(insufficient_in_fetch):
+    class CountingSource(InMemoryDataSource):
+        calls = 0
+
+        def fetch(self, symbol, **kwargs):
+            self.calls += 1
+            return super().fetch(symbol, **kwargs)
+
+    source = CountingSource(
+        {"AAA": SMALL_FRAME},
+        errors={"AAA": InsufficientDataError("Too little history")}
+        if insufficient_in_fetch
+        else None,
+    )
+    delays = []
+    result = await run_scan(symbols=["AAA"], data_source=source, retry_sleep=delays.append)
+    assert source.calls == 1
+    assert delays == []
+    assert result["summary"]["skipped"] == 1
+    assert result["summary"]["errors"] == 0
+    assert result["rate_limited"] is False
+
+
+def test_simultaneous_scans_share_fetch_limit_across_event_loops():
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    class BlockingSource(InMemoryDataSource):
+        def __init__(self):
+            super().__init__({"AAA": SMALL_FRAME})
+            self.lock = threading.Lock()
+            self.filled = threading.Event()
+            self.overflow = threading.Event()
+            self.release = threading.Event()
+            self.active = 0
+            self.peak = 0
+
+        def fetch(self, symbol, **kwargs):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                if self.active == 10:
+                    self.filled.set()
+                if self.active > 10:
+                    self.overflow.set()
+            try:
+                assert self.release.wait(5), "Test did not release fetches"
+                return super().fetch(symbol, **kwargs)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    source = BlockingSource()
+    start = threading.Barrier(2)
+
+    def scan():
+        start.wait(timeout=5)
+        return asyncio.run(run_scan(symbols=["AAA"] * 10, data_source=source))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(scan) for _ in range(2)]
+        try:
+            assert source.filled.wait(5), "Scans did not fill available slots"
+            assert not source.overflow.wait(0.1), "Aggregate fetch concurrency exceeded 10"
+        finally:
+            source.release.set()
+        results = [future.result(timeout=5) for future in futures]
+    assert source.peak == 10
+    assert all(result["summary"]["skipped"] == 10 for result in results)
+
+
+@pytest.mark.asyncio
+async def test_scan_stops_retrying_after_three_failed_fetches():
+    class FailingSource(InMemoryDataSource):
+        calls = 0
+
+        def fetch(self, symbol, **kwargs):
+            self.calls += 1
+            raise ValueError("Network unavailable")
+
+    source = FailingSource()
+    delays = []
+    result = await run_scan(symbols=["AAA"], data_source=source, retry_sleep=delays.append)
+    assert source.calls == 3
+    assert delays == [0.25, 0.5]
+    assert result["errors"] == [{"symbol": "AAA", "error": "Network unavailable"}]
+    assert result["summary"]["errors"] == 1
+    assert result["rate_limited"] is False
