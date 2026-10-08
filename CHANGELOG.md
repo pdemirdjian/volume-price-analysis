@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.12.0...v2.13.0) (2026-10-08)
+
+
+### Features
+
+* **PDE-22:** retry transient Yahoo fetches and surface scan rate limits ([#527](https://github.com/pdemirdjian/volume-price-analysis/issues/527)) ([825e292](https://github.com/pdemirdjian/volume-price-analysis/commit/825e292ae081bab459b151d5c62d71fcfc5f1597))
+
 ## [2.12.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.11.1...v2.12.0) (2026-10-07)
 
 
