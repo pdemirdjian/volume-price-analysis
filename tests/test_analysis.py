@@ -28,7 +28,7 @@ from volume_price_analysis.indicators import (
 @pytest.fixture(autouse=True)
 def no_retry_waits(mocker):
     """Backoff is a time boundary; scan unit tests must never sleep."""
-    mocker.patch("volume_price_analysis.agent.retry._sleep")
+    mocker.patch("volume_price_analysis.retry._sleep")
 
 
 # A frame with too little history to analyze (< MIN_SCAN_HISTORY), so scans skip it fast.
@@ -937,7 +937,7 @@ async def test_scan_retries_transient_fetch_before_scoring():
         def fetch(self, symbol, **kwargs):
             self.calls += 1
             if self.calls < 3:
-                raise ValueError("Temporary network failure")
+                raise TimeoutError("Temporary network failure")
             return super().fetch(symbol, **kwargs)
 
     source = FlakySource({"AAA": _synthetic_ohlcv()})
@@ -958,6 +958,8 @@ async def test_scan_surfaces_rate_limits_beyond_error_sample(message):
     source = InMemoryDataSource(errors=dict.fromkeys(symbols, ValueError(message)))
     delays = []
     result = await run_scan(symbols=symbols, data_source=source, retry_sleep=delays.append)
+    assert sorted(source.fetch_calls) == sorted(symbols)
+    assert delays == []
     assert result["rate_limited"] is True
     assert result["summary"]["rate_limit_errors"] == 12
     assert result["summary"]["errors"] == 12
@@ -976,18 +978,19 @@ async def test_scan_detects_provider_rate_limit_type(wrapped):
         outer = ValueError("Adapter fetch failed")
         outer.__cause__ = error
         error = outer
+    source = InMemoryDataSource(errors={"AAA": error})
     result = await run_scan(
         symbols=["AAA"],
-        data_source=InMemoryDataSource(errors={"AAA": error}),
+        data_source=source,
         retry_sleep=lambda _: None,
     )
+    assert source.fetch_calls == ["AAA"]
     assert result["rate_limited"] is True
     assert result["summary"]["rate_limit_errors"] == 1
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("insufficient_in_fetch", [False, True])
-async def test_scan_never_retries_insufficient_history(insufficient_in_fetch):
+async def test_scan_never_retries_insufficient_history():
     class CountingSource(InMemoryDataSource):
         calls = 0
 
@@ -995,12 +998,7 @@ async def test_scan_never_retries_insufficient_history(insufficient_in_fetch):
             self.calls += 1
             return super().fetch(symbol, **kwargs)
 
-    source = CountingSource(
-        {"AAA": SMALL_FRAME},
-        errors={"AAA": InsufficientDataError("Too little history")}
-        if insufficient_in_fetch
-        else None,
-    )
+    source = CountingSource({"AAA": SMALL_FRAME})
     delays = []
     result = await run_scan(symbols=["AAA"], data_source=source, retry_sleep=delays.append)
     assert source.calls == 1
@@ -1024,9 +1022,11 @@ def test_simultaneous_scans_share_fetch_limit_across_event_loops():
             self.release = threading.Event()
             self.active = 0
             self.peak = 0
+            self.worker_names = set()
 
         def fetch(self, symbol, **kwargs):
             with self.lock:
+                self.worker_names.add(threading.current_thread().name)
                 self.active += 1
                 self.peak = max(self.peak, self.active)
                 if self.active == 10:
@@ -1056,6 +1056,8 @@ def test_simultaneous_scans_share_fetch_limit_across_event_loops():
             source.release.set()
         results = [future.result(timeout=5) for future in futures]
     assert source.peak == 10
+    assert len(source.worker_names) == 10
+    assert all(name.startswith("symbol-scan") for name in source.worker_names)
     assert all(result["summary"]["skipped"] == 10 for result in results)
 
 
@@ -1066,7 +1068,7 @@ async def test_scan_stops_retrying_after_three_failed_fetches():
 
         def fetch(self, symbol, **kwargs):
             self.calls += 1
-            raise ValueError("Network unavailable")
+            raise ConnectionError("Network unavailable")
 
     source = FailingSource()
     delays = []
@@ -1076,3 +1078,32 @@ async def test_scan_stops_retrying_after_three_failed_fetches():
     assert result["errors"] == [{"symbol": "AAA", "error": "Network unavailable"}]
     assert result["summary"]["errors"] == 1
     assert result["rate_limited"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "No data found for symbol AAA",
+        "Invalid period: bad",
+        "Invalid calendar date for start_date: bad",
+    ],
+)
+async def test_scan_does_not_retry_permanent_fetch_errors(message):
+    source = InMemoryDataSource(errors={"AAA": ValueError(message)})
+    delays = []
+    result = await run_scan(symbols=["AAA"], data_source=source, retry_sleep=delays.append)
+    assert source.fetch_calls == ["AAA"]
+    assert delays == []
+    assert result["summary"]["errors"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_retries_adapter_wrapped_timeout():
+    error = ValueError("Failed to fetch data for AAA")
+    error.__cause__ = TimeoutError("Request timed out")
+    source = InMemoryDataSource(errors={"AAA": error})
+    delays = []
+    await run_scan(symbols=["AAA"], data_source=source, retry_sleep=delays.append)
+    assert source.fetch_calls == ["AAA"] * 3
+    assert delays == [0.25, 0.5]

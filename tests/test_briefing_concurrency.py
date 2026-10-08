@@ -128,9 +128,7 @@ async def test_network_stages_and_ai_backoff_run_off_event_loop(mocker, sample_s
         return "Briefing prose"
 
     mocker.patch.dict(PROVIDERS, {"anthropic": provider})
-    mocker.patch(
-        "volume_price_analysis.agent.retry._sleep", side_effect=lambda _: record("backoff")
-    )
+    mocker.patch("volume_price_analysis.retry._sleep", side_effect=lambda _: record("backoff"))
     mocker.patch(
         "volume_price_analysis.agent.morning_agent.send_email",
         side_effect=lambda *args: record("SMTP"),

@@ -19,8 +19,8 @@ from email.mime.text import MIMEText
 import markdown  # type: ignore[import-untyped]
 import nh3
 
+from ..retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 from .config import AgentConfig
-from .retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 
 logger = logging.getLogger(__name__)
 

@@ -8,16 +8,17 @@ import asyncio
 import functools
 import logging
 import re
-import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
+from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
+from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 from pytickersymbols import PyTickerSymbols
 from yfinance.exceptions import YFRateLimitError
 
-from .agent.retry import retry_call
 from .data_fetcher import DEFAULT_TIMEOUT, DataSource, get_default_data_source
 from .indicators import (
     CMF_EXTREME_BANDS,
@@ -50,15 +51,17 @@ from .indicators import (
     threshold_verdict,
     trend_verdict,
 )
+from .retry import retry_call
 
 logger = logging.getLogger(__name__)
 
 # Concurrency limit for parallel scanning
 MAX_CONCURRENT_SCANS = 10
 
-# Thread-based so all scans share the limit, even across different event loops.
-# Held only during fetch attempts, never during backoff or scoring.
-_FETCH_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_SCANS)
+# Shared across event loops: bound worker threads as well as fetches, including backoff.
+_SCAN_EXECUTOR = ThreadPoolExecutor(
+    max_workers=MAX_CONCURRENT_SCANS, thread_name_prefix="symbol-scan"
+)
 
 # Minimum bars of history required to analyze a symbol in a scan.
 MIN_SCAN_HISTORY = 30
@@ -462,16 +465,13 @@ class _ScanDataSource:
         timeout: int = DEFAULT_TIMEOUT,
     ) -> pd.DataFrame:
         def attempt() -> pd.DataFrame:
-            with _FETCH_SLOTS:
-                return self.source.fetch(
-                    symbol, period=period, start=start, end=end, timeout=timeout
-                )
+            return self.source.fetch(symbol, period=period, start=start, end=end, timeout=timeout)
 
         return retry_call(
             attempt,
             attempts=3,
             base_delay=0.25,
-            retry_on=lambda exc: not isinstance(exc, InsufficientDataError),
+            retry_on=_is_transient_fetch_error,
             sleep=self.sleep,
         )
 
@@ -490,6 +490,22 @@ def _is_rate_limit(exc: Exception) -> bool:
         ):
             return True
         current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_transient_fetch_error(exc: Exception) -> bool:
+    """Retry connection/timeouts, including explicit adapter ValueError wrappers."""
+    if _is_rate_limit(exc):
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (ConnectionError, TimeoutError, CurlConnectionError, CurlTimeout)):
+            return True
+        if not isinstance(current, ValueError):
+            return False
+        current = current.__cause__
     return False
 
 
@@ -514,7 +530,8 @@ async def _analyze_symbol_async(
     """
     async with semaphore:
         try:
-            result = await asyncio.to_thread(
+            result = await asyncio.get_running_loop().run_in_executor(
+                _SCAN_EXECUTOR,
                 analyze_single_symbol,
                 symbol,
                 period,

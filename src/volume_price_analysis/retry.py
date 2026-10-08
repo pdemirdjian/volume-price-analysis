@@ -1,4 +1,4 @@
-"""Small bounded retry policy shared by briefing delivery operations."""
+"""Small bounded retry policy shared by core and agent operations."""
 
 import logging
 import time
