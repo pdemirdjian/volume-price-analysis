@@ -20,13 +20,13 @@ from zoneinfo import ZoneInfo
 
 from ..analysis import passes_high_conviction_gate, run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
+from ..retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 from .ai_client import PROVIDERS, generate_briefing, is_transient_ai_error, resolve_model
 from .briefing import BriefingInputs, render, render_raw
 from .config import AgentConfig
 from .email_sender import SmtpCreds, build_briefing_message, build_error_message, send_email
 from .picks import build_picks
 from .regime import REGIME_SMA_PERIOD, annotate_regime_conflicts, compute_market_regime
-from .retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 
 # Configure logging to stdout (Docker best practice)
 logging.basicConfig(

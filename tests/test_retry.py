@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock, call
 
-from volume_price_analysis.agent.retry import retry_call
+from volume_price_analysis.retry import retry_call
 
 
 def test_recovers_with_exponential_backoff(caplog):

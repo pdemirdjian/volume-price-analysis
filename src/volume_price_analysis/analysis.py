@@ -7,13 +7,19 @@ used by both the MCP server and the morning agent without duplication.
 import asyncio
 import functools
 import logging
-from datetime import date
+import re
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
+from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
+from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 from pytickersymbols import PyTickerSymbols
+from yfinance.exceptions import YFRateLimitError
 
-from .data_fetcher import DataSource, get_default_data_source
+from .data_fetcher import DEFAULT_TIMEOUT, DataSource, get_default_data_source
 from .indicators import (
     CMF_EXTREME_BANDS,
     CMF_SIGNAL_BANDS,
@@ -45,11 +51,17 @@ from .indicators import (
     threshold_verdict,
     trend_verdict,
 )
+from .retry import retry_call
 
 logger = logging.getLogger(__name__)
 
 # Concurrency limit for parallel scanning
 MAX_CONCURRENT_SCANS = 10
+
+# Shared across event loops: bound worker threads as well as fetches, including backoff.
+_SCAN_EXECUTOR = ThreadPoolExecutor(
+    max_workers=MAX_CONCURRENT_SCANS, thread_name_prefix="symbol-scan"
+)
 
 # Minimum bars of history required to analyze a symbol in a scan.
 MIN_SCAN_HISTORY = 30
@@ -436,6 +448,67 @@ def score_symbol(
     }
 
 
+class _ScanDataSource:
+    """Scan-only retry policy around the adapter's single fetch attempt."""
+
+    def __init__(self, source: DataSource, sleep: Callable[[float], None] | None):
+        self.source = source
+        self.sleep = sleep
+
+    def fetch(
+        self,
+        symbol: str,
+        *,
+        period: str = "1mo",
+        start: str | None = None,
+        end: str | None = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> pd.DataFrame:
+        def attempt() -> pd.DataFrame:
+            return self.source.fetch(symbol, period=period, start=start, end=end, timeout=timeout)
+
+        return retry_call(
+            attempt,
+            attempts=3,
+            base_delay=0.25,
+            retry_on=_is_transient_fetch_error,
+            sleep=self.sleep,
+        )
+
+    def earnings_date(self, symbol: str) -> datetime | None:
+        return self.source.earnings_date(symbol)
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """Recognize provider errors even when the adapter wraps them in ValueError."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, YFRateLimitError) or re.search(
+            r"too many requests|rate[ -]limit(?:ed)?|\b429\b", str(current), re.IGNORECASE
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_transient_fetch_error(exc: Exception) -> bool:
+    """Retry connection/timeouts, including explicit adapter ValueError wrappers."""
+    if _is_rate_limit(exc):
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (ConnectionError, TimeoutError, CurlConnectionError, CurlTimeout)):
+            return True
+        if not isinstance(current, ValueError):
+            return False
+        current = current.__cause__
+    return False
+
+
 async def _analyze_symbol_async(
     symbol: str,
     period: str,
@@ -448,16 +521,17 @@ async def _analyze_symbol_async(
     min_avg_volume: float = 0,
     data_source: DataSource | None = None,
     as_of: date | None = None,
-) -> tuple[str, dict | None, str | None, bool]:
+) -> tuple[str, dict | None, str | None, bool, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
 
-    Returns (symbol, candidate_or_none, error_or_none, skipped). ``skipped`` is
+    Returns (symbol, candidate_or_none, error_or_none, skipped, rate_limited). ``skipped`` is
     True when the symbol had insufficient history (a non-error skip).
     """
     async with semaphore:
         try:
-            result = await asyncio.to_thread(
+            result = await asyncio.get_running_loop().run_in_executor(
+                _SCAN_EXECUTOR,
                 analyze_single_symbol,
                 symbol,
                 period,
@@ -470,11 +544,11 @@ async def _analyze_symbol_async(
                 data_source,
                 as_of,
             )
-            return (symbol, result, None, False)
+            return (symbol, result, None, False, False)
         except InsufficientDataError:
-            return (symbol, None, None, True)
+            return (symbol, None, None, True, False)
         except Exception as e:
-            return (symbol, None, str(e), False)
+            return (symbol, None, str(e), False, _is_rate_limit(e))
 
 
 async def run_scan(
@@ -493,6 +567,7 @@ async def run_scan(
     timeout_seconds: float = 600,
     data_source: DataSource | None = None,
     as_of: date | None = None,
+    retry_sleep: Callable[[float], None] | None = None,
 ) -> dict:
     """
     Scan the market for options trading candidates.
@@ -507,7 +582,8 @@ async def run_scan(
         max_iv_percentile: Maximum IV percentile filter.
         direction: "bullish", "bearish", or "any".
         max_results: Maximum results per direction.
-        max_concurrent: Maximum concurrent symbol analyses.
+        retry_sleep: Injectable backoff sleep; defaults to time.sleep in worker threads.
+        max_concurrent: Per-scan analyses; active fetches also share a process-wide limit.
         min_avg_daily_volume: Minimum average daily share volume (0 = no filter).
         universes: Universe name -> symbols mapping (defaults to ``get_universes()``).
         timeout_seconds: Overall wall-clock budget for the scan.
@@ -552,6 +628,10 @@ async def run_scan(
             f"Valid values: {', '.join(sorted(universes))}"
         )
 
+    data_source = _ScanDataSource(
+        data_source if data_source is not None else get_default_data_source(), retry_sleep
+    )
+
     # Parallel scanning with concurrency limit
     logger.info(
         "Starting parallel scan of %d symbols (max concurrent: %d)",
@@ -592,7 +672,10 @@ async def run_scan(
     scanned = 0
     skipped = 0
 
-    for sym, candidate, error, was_skipped in results:
+    rate_limit_errors = 0
+
+    for sym, candidate, error, was_skipped, rate_limited in results:
+        rate_limit_errors += int(rate_limited)
         if error:
             errors.append({"symbol": sym, "error": error})
         elif was_skipped:
@@ -649,12 +732,14 @@ async def run_scan(
             # Symbols skipped for insufficient history, distinct from errors.
             "skipped": skipped,
             "errors": len(errors),
+            "rate_limit_errors": rate_limit_errors,
         },
         "high_conviction_setups": high_conviction[:5] if high_conviction else [],
         "top_bullish": bullish[:max_results] if bullish else [],
         "top_bearish": bearish[:max_results] if bearish else [],
         # Always a list (capped at 10) so consumers never special-case None.
         "errors": errors[:10],
+        "rate_limited": rate_limit_errors > 0,
     }
 
 

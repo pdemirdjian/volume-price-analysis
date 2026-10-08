@@ -2653,7 +2653,7 @@ class TestRunMorningBriefingDateAndPicks:
 
 @pytest.fixture(autouse=True)
 def retry_sleep(mocker):
-    return mocker.patch("volume_price_analysis.agent.retry._sleep")
+    return mocker.patch("volume_price_analysis.retry._sleep")
 
 
 @pytest.mark.parametrize("failures, status", [(2, None), (3, None), (1, 400), (1, 401)])
