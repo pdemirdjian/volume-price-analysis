@@ -3,17 +3,17 @@
 import socket
 
 import pytest
-from pytest_socket import SocketBlockedError
+from pytest_socket import SocketConnectBlockedError
 
 
 def test_outbound_connection_is_blocked():
     """A real TCP connection attempt fails at the suite's socket guard."""
-    with pytest.raises(SocketBlockedError):
-        socket.create_connection(("127.0.0.1", 0), timeout=0.1)
+    with pytest.raises(SocketConnectBlockedError):
+        socket.create_connection(("203.0.113.1", 443), timeout=0.1)
 
 
-def test_unix_sockets_remain_available():
-    """Asyncio can still use Unix sockets for its event loop wakeups."""
+def test_socketpair_remains_available():
+    """Asyncio wakeups work with Unix or Windows loopback socket pairs."""
     sender, receiver = socket.socketpair()
     with sender, receiver:
         sender.sendall(b"wake")

@@ -35,12 +35,22 @@ ET = ZoneInfo("America/New_York")
 
 
 # ---------------------------------------------------------------------------
-# _next_run() unit tests — pure function, no mocking needed
+# _next_run() unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestNextRunWeekday:
     """Test scheduling on regular weekdays."""
+
+    def test_default_now_uses_current_time(self):
+        """Omitting now reads the clock in the requested timezone."""
+        now = datetime(2026, 2, 16, 9, 0, tzinfo=ET)
+        with patch("volume_price_analysis.agent.scheduler.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            result = _next_run(time(8, 30), ET)
+
+        clock.now.assert_called_once_with(ET)
+        assert result == datetime(2026, 2, 17, 8, 30, tzinfo=ET)
 
     def test_before_target_same_day(self):
         """Before target time on a weekday → same day."""

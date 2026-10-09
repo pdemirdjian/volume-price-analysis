@@ -44,7 +44,8 @@ python_functions = ["test_*"]
 addopts = [
     "-v",
     "--strict-markers",
-    "--disable-socket",
+    # Allow loopback connections for Windows asyncio/xdist; block non-loopback hosts.
+    "--allow-hosts=127.0.0.1,::1",
     "--allow-unix-socket",
     # Parallelize across CPU cores (pytest-xdist). Coverage still aggregates
     # correctly across workers via pytest-cov. Override with `-p no:xdist` or

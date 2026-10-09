@@ -3,8 +3,9 @@
 import pandas as pd
 import pytest
 
-# Environment keys read by AgentConfig.from_env() and healthcheck.heartbeat_path().
-_AGENT_CONFIG_ENV_VARS = (
+# Environment keys read by app configuration, healthcheck, and the data source.
+_APP_ENV_VARS = (
+    "DATA_CACHE_TTL_SECONDS",
     "AI_PROVIDER",
     "AI_PROVIDER_API_KEY",
     "AI_MODEL",
@@ -20,9 +21,9 @@ _AGENT_CONFIG_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def clear_agent_config_env(monkeypatch):
+def clear_app_config_env(monkeypatch):
     """Keep app configuration independent of the developer's shell."""
-    for key in _AGENT_CONFIG_ENV_VARS:
+    for key in _APP_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
 
 
