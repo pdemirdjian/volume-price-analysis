@@ -3,6 +3,28 @@
 import pandas as pd
 import pytest
 
+# Environment keys read by AgentConfig.from_env() and healthcheck.heartbeat_path().
+_AGENT_CONFIG_ENV_VARS = (
+    "AI_PROVIDER",
+    "AI_PROVIDER_API_KEY",
+    "AI_MODEL",
+    "EMAIL_FROM",
+    "EMAIL_PASSWORD",
+    "EMAIL_TO",
+    "EMAIL_SMTP_HOST",
+    "EMAIL_SMTP_PORT",
+    "SCAN_UNIVERSE",
+    "MAX_DEEP_ANALYSIS",
+    "SCHEDULER_HEARTBEAT_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def clear_agent_config_env(monkeypatch):
+    """Keep app configuration independent of the developer's shell."""
+    for key in _AGENT_CONFIG_ENV_VARS:
+        monkeypatch.delenv(key, raising=False)
+
 
 @pytest.fixture
 def sample_stock_data():

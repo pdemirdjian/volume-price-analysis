@@ -136,11 +136,11 @@ class TestNextRunEdgeCases:
         result = _next_run(time(9, 0), ET, now=now)
         assert result == datetime(2026, 2, 16, 9, 0, tzinfo=ET)
 
-    def test_defaults_to_now(self):
-        """When now is None, uses current time."""
-        result = _next_run(time(8, 30), ET)
-        assert result.tzinfo is not None
-        assert result > datetime.now(ET) - timedelta(seconds=1)
+    def test_run_is_after_now(self):
+        """The next run is after the supplied current time."""
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=ET)
+        result = _next_run(time(8, 30), ET, now=now)
+        assert result == datetime(2026, 3, 3, 8, 30, tzinfo=ET)
 
     def test_spring_forward_transition(self):
         """Across the spring-forward weekend the target stays 08:30 wall clock."""
