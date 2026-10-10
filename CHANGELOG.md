@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.13.0...v2.13.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **deps:** update python docker tag to v3.14.8 ([#530](https://github.com/pdemirdjian/volume-price-analysis/issues/530)) ([d0a2f52](https://github.com/pdemirdjian/volume-price-analysis/commit/d0a2f529b0b68766050d4c78c5f9cf685095b8c4))
+
 ## [2.13.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.12.0...v2.13.0) (2026-10-08)
 
 
