@@ -30,7 +30,7 @@ dev = [
     "pytest-cov==7.1.0",
     "pytest-asyncio==1.4.0",
     "pytest-mock==3.16.0",
-    "ruff==0.16.10",
+    "ruff==0.17.0",
     "mypy==2.4.0",
     "pytest-xdist==3.8.0",
     "pytest-socket==0.7.0",
