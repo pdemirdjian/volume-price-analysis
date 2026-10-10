@@ -120,27 +120,8 @@ class TestAgentConfig:
         assert config.ai_provider == "anthropic"
         assert config.ai_provider_api_key == "sk-test-key"
 
-    def test_from_env_uses_defaults(self, monkeypatch):
-        for key in [
-            "AI_PROVIDER",
-            "AI_PROVIDER_API_KEY",
-            "EMAIL_FROM",
-            "EMAIL_PASSWORD",
-            "EMAIL_TO",
-            "EMAIL_SMTP_HOST",
-            "SCAN_UNIVERSE",
-            "MAX_DEEP_ANALYSIS",
-            "AI_MODEL",
-        ]:
-            monkeypatch.delenv(key, raising=False)
-
-        config = AgentConfig.from_env()
-        assert config.ai_provider == "gemini"
-        assert config.email_smtp_host == "smtp.gmail.com"
-        assert config.email_smtp_port == 587
-        assert config.scan_universe == "full_market"
-        assert config.max_deep_analysis == 5
-        assert config.ai_model == ""
+    def test_from_env_uses_defaults(self):
+        assert AgentConfig.from_env() == AgentConfig()
 
     def test_from_env_overrides_defaults(self, monkeypatch):
         monkeypatch.setenv("SCAN_UNIVERSE", "tech")

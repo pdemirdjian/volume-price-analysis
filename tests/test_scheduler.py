@@ -35,12 +35,22 @@ ET = ZoneInfo("America/New_York")
 
 
 # ---------------------------------------------------------------------------
-# _next_run() unit tests — pure function, no mocking needed
+# _next_run() unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestNextRunWeekday:
     """Test scheduling on regular weekdays."""
+
+    def test_default_now_uses_current_time(self):
+        """Omitting now reads the clock in the requested timezone."""
+        now = datetime(2026, 2, 16, 9, 0, tzinfo=ET)
+        with patch("volume_price_analysis.agent.scheduler.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            result = _next_run(time(8, 30), ET)
+
+        clock.now.assert_called_once_with(ET)
+        assert result == datetime(2026, 2, 17, 8, 30, tzinfo=ET)
 
     def test_before_target_same_day(self):
         """Before target time on a weekday → same day."""
@@ -136,11 +146,11 @@ class TestNextRunEdgeCases:
         result = _next_run(time(9, 0), ET, now=now)
         assert result == datetime(2026, 2, 16, 9, 0, tzinfo=ET)
 
-    def test_defaults_to_now(self):
-        """When now is None, uses current time."""
-        result = _next_run(time(8, 30), ET)
-        assert result.tzinfo is not None
-        assert result > datetime.now(ET) - timedelta(seconds=1)
+    def test_run_is_after_now(self):
+        """The next run is after the supplied current time."""
+        now = datetime(2026, 3, 2, 9, 0, tzinfo=ET)
+        result = _next_run(time(8, 30), ET, now=now)
+        assert result == datetime(2026, 3, 3, 8, 30, tzinfo=ET)
 
     def test_spring_forward_transition(self):
         """Across the spring-forward weekend the target stays 08:30 wall clock."""

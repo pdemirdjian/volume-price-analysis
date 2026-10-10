@@ -3,6 +3,29 @@
 import pandas as pd
 import pytest
 
+# Environment keys read by app configuration, healthcheck, and the data source.
+_APP_ENV_VARS = (
+    "DATA_CACHE_TTL_SECONDS",
+    "AI_PROVIDER",
+    "AI_PROVIDER_API_KEY",
+    "AI_MODEL",
+    "EMAIL_FROM",
+    "EMAIL_PASSWORD",
+    "EMAIL_TO",
+    "EMAIL_SMTP_HOST",
+    "EMAIL_SMTP_PORT",
+    "SCAN_UNIVERSE",
+    "MAX_DEEP_ANALYSIS",
+    "SCHEDULER_HEARTBEAT_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def clear_app_config_env(monkeypatch):
+    """Keep app configuration independent of the developer's shell."""
+    for key in _APP_ENV_VARS:
+        monkeypatch.delenv(key, raising=False)
+
 
 @pytest.fixture
 def sample_stock_data():
