@@ -42,8 +42,8 @@ ENV/
 Thumbs.db
 
 # Testing
-.coverage
-.coverage.*
+.coverage*
+coverage.xml
 htmlcov/
 .tox/
 .nox/
