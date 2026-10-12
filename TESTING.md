@@ -215,9 +215,9 @@ pytest --cov=src/volume_price_analysis --cov-report=term-missing
 
 This shows:
 
-- Overall coverage percentage
+- Overall statement-and-branch coverage percentage
 - Line-by-line coverage
-- Missing lines highlighted
+- Missing lines and branch destinations highlighted
 
 ### HTML Coverage Report
 
@@ -227,17 +227,25 @@ pytest --cov=src/volume_price_analysis --cov-report=html
 
 Open `htmlcov/index.html` in your browser for interactive coverage exploration.
 
+### XML Coverage Report
+
+```bash
+uv run pytest --cov-report=xml
+```
+
+This creates `coverage.xml` with line and branch data.
+
 ### Coverage by Module
 
 ```bash
 # Only indicators module
-pytest tests/test_indicators.py --cov=src/volume_price_analysis.indicators
+uv run pytest tests/test_indicators.py --cov-reset --cov=volume_price_analysis.indicators
 
 # Only data fetcher
-pytest tests/test_data_fetcher.py --cov=src/volume_price_analysis.data_fetcher
+uv run pytest tests/test_data_fetcher.py --cov-reset --cov=volume_price_analysis.data_fetcher
 
 # Only server
-pytest tests/test_server.py --cov=src/volume_price_analysis.server
+uv run pytest tests/test_server.py --cov-reset --cov=volume_price_analysis.server
 ```
 
 ## Test Fixtures
@@ -425,7 +433,8 @@ Check that `conftest.py` exists in the `tests/` directory.
 
 ## Coverage Goals
 
-Current coverage: **~95%**
+The enforced minimum is **80% statement-and-branch coverage**. See the latest CI
+summary or PR coverage comment for the current total.
 
 Target coverage by module:
 
@@ -440,30 +449,28 @@ Untested areas (acceptable):
 
 ## CI/CD Integration
 
-### GitHub Actions Example
+The [CI workflow](.github/workflows/ci.yml) runs on pushes to `main` and pull
+requests targeting `main`. Actions are pinned to full commit SHAs. It installs
+Python via uv and runs formatting, linting, and type checks before testing on
+Ubuntu, macOS, and Windows.
 
-```yaml
-name: Tests
+All three test jobs run:
 
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.12'
-      - name: Install UV
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-      - name: Run tests
-        run: pytest --cov --cov-report=xml
-      - name: Upload coverage
-        uses: codecov/codecov-action@v3
+```bash
+uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing --cov-report=xml
 ```
+
+Coverage includes statements and branches and must meet the **80%** floor.
+The Ubuntu job writes a Markdown coverage table to the workflow job summary and
+uploads `coverage.xml` and that table as the `coverage` artifact. Reports are
+published even when tests or the coverage gate fail, provided coverage data was
+produced.
+
+For pull requests from this repository, a separate reporting job uses the GitHub
+CLI to create or update one coverage comment. Only that reporting job receives
+PR write permission for coverage; comment failures do not fail CI. Fork PRs still
+get the artifact and job summary, but skip the comment. No Codecov account or
+additional secrets are required.
 
 ## Resources
 
