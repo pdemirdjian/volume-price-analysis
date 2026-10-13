@@ -9,8 +9,13 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
@@ -29,7 +34,7 @@ jobs:
         run: uv python install
 
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       - name: Run formatting check
         run: uv run ruff format --check src/ tests/
@@ -52,6 +57,7 @@ jobs:
         run: uv run mypy src/
 
   test:
+    timeout-minutes: 30
     needs: lint
     strategy:
       fail-fast: false
@@ -72,7 +78,7 @@ jobs:
         run: uv python install
 
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       - name: Run tests
         run: uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing --cov-report=xml
@@ -100,6 +106,7 @@ jobs:
           if-no-files-found: error
 
   coverage-comment:
+    timeout-minutes: 5
     needs: test
     if: >-
       ${{ !cancelled() && github.event_name == 'pull_request' &&
@@ -137,14 +144,29 @@ jobs:
           fi
 
   ci-gate:
+    timeout-minutes: 5
     if: always()
-    needs: [lint, test]
+    # coverage-comment is deliberately not gated: it only posts a PR comment.
+    needs: [lint, test, dockerfile-lint, security-scan, dependency-review, docker]
     runs-on: ubuntu-latest
     steps:
-      - run: exit 1
-        if: ${{ contains(needs.lint.result, 'failure') || contains(needs.lint.result, 'cancelled') || contains(needs.test.result, 'failure') || contains(needs.test.result, 'cancelled') }}
+      - name: Check required job results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          echo "$NEEDS" | jq -e --arg event "$EVENT_NAME" '
+            .lint.result == "success" and
+            .test.result == "success" and
+            .["dockerfile-lint"].result == "success" and
+            .["security-scan"].result == "success" and
+            .docker.result == "success" and
+            (.["dependency-review"].result ==
+              (if $event == "pull_request" then "success" else "skipped" end))
+          '
 
   dockerfile-lint:
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
@@ -172,6 +194,7 @@ jobs:
           category: hadolint
 
   dependency-review:
+    timeout-minutes: 10
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -187,6 +210,7 @@ jobs:
           fail-on-severity: high
 
   security-scan:
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -226,10 +250,13 @@ jobs:
           category: trivy-fs
 
   docker:
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
-    needs: [ci-gate, dockerfile-lint, security-scan]
+    # dependency-review is left out (it is skipped on push, which would skip docker);
+    # ci-gate checks it instead.
+    needs: [lint, test, dockerfile-lint, security-scan]
     runs-on: ubuntu-latest
 
     steps:
