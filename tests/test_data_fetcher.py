@@ -26,7 +26,7 @@ class TestFetchStockData:
     """Tests for YFinanceDataSource.fetch against a mocked yfinance."""
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_fetch_stock_data_with_period(self, mock_ticker):
+    def test_fetch_with_period(self, mock_ticker):
         """Test fetching stock data with a period parameter."""
         # Create mock data
         mock_data = pd.DataFrame(
@@ -60,7 +60,7 @@ class TestFetchStockData:
         mock_ticker_instance.history.assert_called_once_with(period="1mo", timeout=DEFAULT_TIMEOUT)
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_fetch_stock_data_with_dates(self, mock_ticker):
+    def test_fetch_with_dates(self, mock_ticker):
         """Test fetching stock data with start and end dates."""
         # Create mock data
         mock_data = pd.DataFrame(
@@ -90,7 +90,7 @@ class TestFetchStockData:
         )
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_fetch_stock_data_empty_result(self, mock_ticker):
+    def test_fetch_empty_result(self, mock_ticker):
         """Test handling of empty data result."""
         # Setup mock to return empty DataFrame
         mock_ticker_instance = Mock()
@@ -102,7 +102,7 @@ class TestFetchStockData:
             _fetch("INVALID")
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_fetch_stock_data_columns_filtered(self, mock_ticker):
+    def test_fetch_columns_filtered(self, mock_ticker):
         """Test that only required columns are returned."""
         # Create mock data with extra columns
         mock_data = pd.DataFrame(
@@ -132,7 +132,7 @@ class TestFetchStockData:
         assert list(result.columns) == expected_columns
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_fetch_stock_data_date_as_column(self, mock_ticker):
+    def test_fetch_date_as_column(self, mock_ticker):
         """Test that Date is returned as a column, not index."""
         mock_data = pd.DataFrame(
             {

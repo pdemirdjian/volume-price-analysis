@@ -270,17 +270,17 @@ Flat price with varying volume
 
 ## Mocking
 
-Tests use mocking to avoid network calls:
+Tests avoid network calls by injecting an `InMemoryDataSource` through the
+`DataSource` seam instead of patching module-level fetch functions:
 
 ```python
-@patch("volume_price_analysis.server.fetch_stock_data")
-async def test_get_stock_data_basic(self, mock_fetch):
-    # Setup mock data
-    mock_data = pd.DataFrame(...)
-    mock_fetch.return_value = mock_data
+from volume_price_analysis.data_fetcher import InMemoryDataSource
+from volume_price_analysis.server import dispatch
 
-    # Run test
-    result = await handle_call_tool(...)
+async def test_get_stock_data_basic():
+    source = InMemoryDataSource(frames={"AAPL": pd.DataFrame(...)})
+
+    result = await dispatch("get_stock_data", {"symbol": "AAPL"}, data_source=source)
 ```
 
 Benefits:
@@ -296,7 +296,7 @@ Some tests require network access and are skipped by default:
 ```python
 @pytest.mark.skip(reason="Requires network access")
 def test_fetch_real_stock_data(self):
-    result = fetch_stock_data("AAPL", period="5d")
+    result = YFinanceDataSource(cache_ttl=0).fetch("AAPL", period="5d")
     assert len(result) > 0
 ```
 
@@ -383,12 +383,11 @@ class TestAsyncFunction:
 ```python
 @pytest.mark.parametrize("symbol,expected", [
     ("AAPL", True),
-    ("MSFT", True),
-    ("INVALID123", False),
+    ("BRK-B", True),
+    ("AAPL!@#", False),
 ])
-def test_validate_multiple_symbols(symbol, expected):
-    result = validate_symbol(symbol)
-    assert result == expected
+def test_symbol_formats(symbol, expected):
+    assert validate_symbol_format(symbol) is expected
 ```
 
 ## Troubleshooting

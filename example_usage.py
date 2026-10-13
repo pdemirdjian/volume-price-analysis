@@ -4,7 +4,7 @@ Example script to test the volume-price analysis functions directly.
 This demonstrates the analysis capabilities without running the MCP server.
 """
 
-from src.volume_price_analysis.data_fetcher import fetch_stock_data
+from src.volume_price_analysis.data_fetcher import get_default_data_source
 from src.volume_price_analysis.indicators import (
     analyze_volume_trends,
     calculate_mfi,
@@ -27,7 +27,7 @@ def main():
 
     # Fetch data
     print(f"Fetching {period} of data for {symbol}...")
-    data = fetch_stock_data(symbol, period=period)
+    data = get_default_data_source().fetch(symbol, period=period)
     print(f"✓ Retrieved {len(data)} data points")
     start_date = data["Date"].iloc[0].strftime("%Y-%m-%d")
     end_date = data["Date"].iloc[-1].strftime("%Y-%m-%d")
