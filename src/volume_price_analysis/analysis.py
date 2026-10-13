@@ -21,6 +21,7 @@ from yfinance.exceptions import YFRateLimitError
 
 from .data_fetcher import DEFAULT_TIMEOUT, DataSource, get_default_data_source
 from .indicators import (
+    CMF_CONDITION_BANDS,
     CMF_EXTREME_BANDS,
     CMF_SIGNAL_BANDS,
     MFI_CONDITION_BANDS,
@@ -36,6 +37,7 @@ from .indicators import (
     calculate_composite_score,
     calculate_enhanced_volume_profile,
     calculate_expected_move,
+    calculate_historical_volatility,
     calculate_iv_percentile,
     calculate_mfi,
     calculate_obv,
@@ -774,6 +776,279 @@ def _adaptive_periods(holding_period: int) -> dict[str, int]:
     }
 
 
+def _require_ohlcv(symbol: str, data: pd.DataFrame) -> None:
+    """Reject an empty frame or one missing any OHLCV/Date column."""
+    if data.empty:
+        raise ValueError(f"Empty DataFrame provided for symbol '{symbol}'")
+    required_columns = {"Open", "High", "Low", "Close", "Volume", "Date"}
+    missing = required_columns - set(data.columns)
+    if missing:
+        raise ValueError(f"DataFrame missing required columns: {', '.join(sorted(missing))}")
+
+
+def _bollinger_snapshot(bbands: dict) -> dict[str, float]:
+    """Latest Bollinger band values, with undefined (NaN) values reported as 0.0.
+
+    Shared by comprehensive and options analysis so both payloads apply the
+    same NaN rule; the squeeze verdict is likewise shared via
+    detect_bollinger_squeeze.
+    """
+    snapshot = {}
+    for key in ("upper", "middle", "lower", "percent_b", "bandwidth"):
+        value = bbands[key].iloc[-1]
+        snapshot[key] = float(value) if not pd.isna(value) else 0.0
+    return snapshot
+
+
+def run_comprehensive_analysis(symbol: str, data: pd.DataFrame) -> dict:
+    """
+    Run comprehensive volume-price analysis on a single symbol.
+
+    Args:
+        symbol: Stock ticker symbol.
+        data: DataFrame with OHLCV data (must already be fetched).
+
+    Returns:
+        Dictionary with the comprehensive_analysis tool payload.
+    """
+    _require_ohlcv(symbol, data)
+
+    # Calculate all volume indicators
+    obv = calculate_obv(data)
+    vwap = calculate_vwap(data)
+    mfi = calculate_mfi(data)
+    vpt = calculate_vpt(data)
+    trends = analyze_volume_trends(data)
+    ad_line = calculate_accumulation_distribution(data)
+    cmf = calculate_chaikin_money_flow(data)
+    rvol = calculate_relative_volume(data)
+    breakout = detect_volume_breakout(data)
+    vwma = calculate_vwma(data)
+    roc = calculate_price_roc(data)
+
+    # Calculate volatility indicators
+    hv = calculate_historical_volatility(data)
+    atr = calculate_atr(data)
+    bbands = calculate_bollinger_bands(data)
+
+    # Enhanced volume profile with VAH/VAL
+    profile = calculate_enhanced_volume_profile(data)
+
+    latest_close = data["Close"].iloc[-1]
+    latest_vwap = vwap.iloc[-1]
+    latest_vwma = vwma.iloc[-1]
+    start_dt = data["Date"].iloc[0].strftime("%Y-%m-%d")
+    end_dt = data["Date"].iloc[-1].strftime("%Y-%m-%d")
+
+    # Pre-calculate values for clarity
+    obv_trend = trend_verdict(obv, TREND_LOOKBACK)
+    ad_trend = trend_verdict(ad_line, TREND_LOOKBACK)
+    obv_flow = "into" if obv_trend == "increasing" else "out of"
+    ad_action = "buying" if ad_trend == "increasing" else "selling"
+    mfi_val = mfi.iloc[-1]
+    cmf_val = cmf.iloc[-1]
+
+    mfi_condition = threshold_verdict(mfi_val, MFI_CONDITION_BANDS, "Neutral")
+    cmf_condition = threshold_verdict(cmf_val, CMF_CONDITION_BANDS, "Neutral")
+
+    atr_val = atr.iloc[-1]
+
+    is_squeeze = detect_bollinger_squeeze(data)
+
+    if not pd.isna(atr_val):
+        atr_interp = f"Expected daily range: ±${atr_val:.2f}"
+    else:
+        atr_interp = "N/A"
+
+    # Additive top-line headline (recommendation/score/1-line rationale).
+    # The detailed `summary` list below is left untouched.
+    headline = build_headline(calculate_composite_score(data))
+
+    return {
+        "symbol": symbol,
+        "analysis_type": "Comprehensive Volume-Price Analysis",
+        "period": f"{start_dt} to {end_dt}",
+        "latest_price": float(latest_close),
+        "headline": headline,
+        "volume_indicators": {
+            "obv": {
+                "value": float(obv.iloc[-1]),
+                "trend": obv_trend,
+                "interpretation": f"Money flowing {obv_flow} the security",
+            },
+            "accumulation_distribution": {
+                "value": float(ad_line.iloc[-1]),
+                "trend": ad_trend,
+                "interpretation": f"Institutional {ad_action} pressure",
+            },
+            "vpt": {
+                "value": float(vpt.iloc[-1]),
+                "trend": trend_verdict(vpt, TREND_LOOKBACK),
+            },
+            "mfi": {"value": float(mfi_val), "condition": mfi_condition},
+            "cmf": {
+                "value": float(cmf_val),
+                "condition": cmf_condition,
+                "interpretation": "Positive = buying pressure, Negative = selling pressure",
+            },
+            # Project scalar fields only: rvol also carries "rvol_series",
+            # a pd.Series that would serialize as a truncated repr string.
+            "relative_volume": {
+                "current_rvol": rvol["current_rvol"],
+                "average_volume": rvol["average_volume"],
+                "current_volume": rvol["current_volume"],
+                "significance": rvol["significance"],
+            },
+            "volume_breakout": breakout,
+        },
+        "price_indicators": {
+            "vwap": {
+                "value": float(latest_vwap),
+                "price_vs_vwap": f"{((latest_close / latest_vwap - 1) * 100):.2f}%",
+                "position": "above" if latest_close > latest_vwap else "below",
+            },
+            "vwma_20": {
+                "value": float(latest_vwma),
+                "price_vs_vwma": f"{((latest_close / latest_vwma - 1) * 100):.2f}%",
+                "position": "above" if latest_close > latest_vwma else "below",
+            },
+            # Same projection: roc carries "roc_series" (pd.Series).
+            "price_roc": {
+                "current_roc": roc["current_roc"],
+                "direction": roc["direction"],
+                "strength": roc["strength"],
+                "volume_confirmed": roc["volume_confirmed"],
+                "signal": roc["signal"],
+            },
+        },
+        "volatility_indicators": {
+            "historical_volatility_20d": {
+                "value": float(hv.iloc[-1]) if not pd.isna(hv.iloc[-1]) else 0.0,
+                "annualized": True,
+                "interpretation": "Higher HV = more expensive options",
+            },
+            "atr_14d": {
+                "value": float(atr_val) if not pd.isna(atr_val) else 0.0,
+                "interpretation": atr_interp,
+            },
+            "bollinger_bands": {
+                **_bollinger_snapshot(bbands),
+                "squeeze_status": "Yes" if is_squeeze else "No",
+            },
+        },
+        "volume_profile": {
+            "point_of_control": profile["poc"],
+            "value_area_high": profile["vah"],
+            "value_area_low": profile["val"],
+            "current_position": profile["position"],
+            "interpretation": profile["interpretation"],
+            "poc_distance": f"{profile['poc_distance_pct']:.2f}%",
+            "vah_distance": f"{profile['vah_distance_pct']:.2f}%",
+            "val_distance": f"{profile['val_distance_pct']:.2f}%",
+        },
+        "volume_trends": trends,
+        "summary": generate_enhanced_summary(
+            data,
+            obv,
+            ad_line,
+            vwap,
+            vwma,
+            mfi,
+            cmf,
+            trends,
+            latest_close,
+            latest_vwap,
+            hv,
+            atr,
+            profile,
+            rvol,
+            breakout,
+        ),
+    }
+
+
+def generate_enhanced_summary(
+    data,
+    obv,
+    ad_line,
+    vwap,
+    vwma,
+    mfi,
+    cmf,
+    trends,
+    latest_close,
+    latest_vwap,
+    hv,
+    atr,
+    profile,
+    rvol,
+    breakout,
+):
+    """Generate enhanced human-readable summary of the analysis."""
+    summary = []
+
+    # Price vs VWAP
+    if latest_close > latest_vwap:
+        summary.append("✓ Price trading above VWAP - Bullish institutional sentiment")
+    else:
+        summary.append("⚠️  Price trading below VWAP - Bearish institutional sentiment")
+
+    # Volume Flow Analysis
+    obv_trend = trend_verdict(obv, TREND_LOOKBACK)
+    ad_trend = trend_verdict(ad_line, TREND_LOOKBACK)
+    if obv_trend == "increasing" and ad_trend == "increasing":
+        summary.append("✓ Strong accumulation - Both OBV and A/D Line rising")
+    elif obv_trend == "decreasing" and ad_trend == "decreasing":
+        summary.append("⚠️  Strong distribution - Both OBV and A/D Line falling")
+    else:
+        summary.append("⚠️  Mixed volume signals - OBV and A/D Line diverging")
+
+    # Money Flow
+    mfi_condition = threshold_verdict(mfi.iloc[-1], MFI_CONDITION_BANDS, "Neutral")
+    cmf_condition = threshold_verdict(cmf.iloc[-1], CMF_CONDITION_BANDS, "Neutral")
+    if mfi_condition == "Overbought" or cmf_condition == "Strong buying":
+        summary.append("⚠️  Overbought conditions detected - Potential reversal risk")
+    elif mfi_condition == "Oversold" or cmf_condition == "Strong selling":
+        summary.append("✓ Oversold conditions detected - Potential bounce opportunity")
+
+    # Volatility Assessment
+    if not pd.isna(hv.iloc[-1]):
+        if hv.iloc[-1] > 0.30:
+            hv_pct = f"{hv.iloc[-1]:.1%}"
+            summary.append(f"⚠️  High volatility ({hv_pct}) - Options expensive, wider stops needed")
+        elif hv.iloc[-1] < 0.15:
+            hv_pct = f"{hv.iloc[-1]:.1%}"
+            summary.append(f"✓ Low volatility ({hv_pct}) - Potential breakout setup")
+
+    # Bollinger Band Squeeze
+    if detect_bollinger_squeeze(data):
+        summary.append("✓ Bollinger Band squeeze detected - Breakout likely imminent")
+
+    # Volume Profile Position
+    summary.append(f"Volume Profile: {profile['interpretation']}")
+
+    # Relative Volume
+    if rvol["current_rvol"] > 2.0:
+        rvol_val = rvol["current_rvol"]
+        summary.append(
+            f"⚠️  Extremely high volume ({rvol_val:.1f}x average) - Major catalyst or news"
+        )
+    elif rvol["current_rvol"] < 0.5:
+        summary.append("⚠️  Very low volume - Moves may be unreliable")
+
+    # Volume Breakout
+    if breakout["is_breakout"]:
+        direction = breakout["direction"].capitalize()
+        summary.append(f"✓ Volume breakout detected - {direction} momentum confirmed")
+
+    # Divergence
+    if trends["divergence_detected"]:
+        div_type = trends["divergence_type"]
+        summary.append(f"⚠️  Price-volume divergence: {div_type} - Trend may be weakening")
+
+    return summary
+
+
 def run_options_analysis(
     symbol: str,
     data: pd.DataFrame,
@@ -792,12 +1067,7 @@ def run_options_analysis(
     Returns:
         Dictionary with full options analysis results.
     """
-    if data.empty:
-        raise ValueError(f"Empty DataFrame provided for symbol '{symbol}'")
-    required_columns = {"Open", "High", "Low", "Close", "Volume", "Date"}
-    missing = required_columns - set(data.columns)
-    if missing:
-        raise ValueError(f"DataFrame missing required columns: {', '.join(sorted(missing))}")
+    _require_ohlcv(symbol, data)
 
     if days_to_expiration is None:
         days_to_expiration = holding_period
@@ -868,12 +1138,7 @@ def run_options_analysis(
     mfi_signal = threshold_verdict(mfi_val, MFI_OPTIONS_SIGNAL_BANDS, "neutral")
     cmf_signal = threshold_verdict(cmf_val, CMF_SIGNAL_BANDS, "neutral")
 
-    # Pre-calculate bollinger band values
-    bb_upper = bbands["upper"].iloc[-1]
-    bb_middle = bbands["middle"].iloc[-1]
-    bb_lower = bbands["lower"].iloc[-1]
     bb_pct_b = bbands["percent_b"].iloc[-1]
-    bb_bw = bbands["bandwidth"].iloc[-1]
     atr_val = atr.iloc[-1]
 
     # The squeeze verdict deliberately ignores the holding-period-adaptive
@@ -1032,11 +1297,7 @@ def run_options_analysis(
                 "stop_loss_suggestion": stop_loss,
             },
             "bollinger_bands": {
-                "upper": float(bb_upper) if not pd.isna(bb_upper) else 0.0,
-                "middle": float(bb_middle) if not pd.isna(bb_middle) else 0.0,
-                "lower": float(bb_lower) if not pd.isna(bb_lower) else 0.0,
-                "percent_b": float(bb_pct_b) if not pd.isna(bb_pct_b) else 0.0,
-                "bandwidth": float(bb_bw) if not pd.isna(bb_bw) else 0.0,
+                **_bollinger_snapshot(bbands),
                 "squeeze_detected": is_squeeze,
                 "position": bb_position,
             },

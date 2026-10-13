@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult
 
+from volume_price_analysis.analysis import generate_enhanced_summary
 from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, InMemoryDataSource
 from volume_price_analysis.server import (
     _SERVER_VERSION,
@@ -24,8 +25,7 @@ from volume_price_analysis.server import (
     handle_list_tools,
     server,
 )
-from volume_price_analysis.tools import generate_enhanced_summary
-from volume_price_analysis.tools import validate_range as _validate_range
+from volume_price_analysis.tools import validate_arguments
 
 
 class Market(InMemoryDataSource):
@@ -976,31 +976,37 @@ class TestJsonSanitization:
 class TestParameterValidation:
     """Tests for parameter range validation."""
 
+    SCHEMA = {
+        "properties": {
+            "num_bins": {"type": "integer", "minimum": 2, "maximum": 1000},
+            "mfi_period": {"type": "integer", "minimum": 1, "maximum": 200},
+            "window": {"type": "integer", "minimum": 1, "maximum": 200},
+        }
+    }
+
     def test_validate_range_valid(self):
         """Test that valid values pass validation."""
-        _validate_range(20, "num_bins", 2, 1000)
-        _validate_range(14, "mfi_period", 1, 200)
-        _validate_range(1, "window", 1, 200)
+        validate_arguments({"num_bins": 20, "mfi_period": 14, "window": 1}, self.SCHEMA)
 
     def test_validate_range_at_boundaries(self):
         """Test that boundary values pass validation."""
-        _validate_range(2, "num_bins", 2, 1000)
-        _validate_range(1000, "num_bins", 2, 1000)
+        validate_arguments({"num_bins": 2}, self.SCHEMA)
+        validate_arguments({"num_bins": 1000}, self.SCHEMA)
 
     def test_validate_range_below_minimum(self):
         """Test that values below minimum raise ValueError."""
         with pytest.raises(ValueError, match="num_bins must be between 2 and 1000"):
-            _validate_range(0, "num_bins", 2, 1000)
+            validate_arguments({"num_bins": 0}, self.SCHEMA)
 
     def test_validate_range_above_maximum(self):
         """Test that values above maximum raise ValueError."""
         with pytest.raises(ValueError, match="window must be between 1 and 200"):
-            _validate_range(500, "window", 1, 200)
+            validate_arguments({"window": 500}, self.SCHEMA)
 
     def test_validate_range_negative(self):
         """Test that negative values raise ValueError."""
         with pytest.raises(ValueError, match="mfi_period must be between 1 and 200"):
-            _validate_range(-1, "mfi_period", 1, 200)
+            validate_arguments({"mfi_period": -1}, self.SCHEMA)
 
     @pytest.mark.asyncio
     async def test_invalid_num_bins_returns_error(self):
@@ -1602,8 +1608,8 @@ class TestComprehensiveAnalysisBranches:
         assert "summary" in data
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.tools.calculate_atr")
-    @patch("volume_price_analysis.tools.calculate_bollinger_bands")
+    @patch("volume_price_analysis.analysis.calculate_atr")
+    @patch("volume_price_analysis.analysis.calculate_bollinger_bands")
     async def test_comprehensive_nan_bandwidth_and_atr(self, mock_bb, mock_atr, market):
         """Test comprehensive analysis with NaN bandwidth and ATR (lines 808, 813)."""
         n = 30
@@ -1638,8 +1644,8 @@ class TestComprehensiveAnalysisBranches:
         assert data["symbol"] == "NAN"
 
     @pytest.mark.asyncio
-    @patch("volume_price_analysis.tools.calculate_mfi")
-    @patch("volume_price_analysis.tools.calculate_chaikin_money_flow")
+    @patch("volume_price_analysis.analysis.calculate_mfi")
+    @patch("volume_price_analysis.analysis.calculate_chaikin_money_flow")
     async def test_comprehensive_mfi_oversold_and_cmf_strong_selling(
         self, mock_cmf, mock_mfi, market
     ):

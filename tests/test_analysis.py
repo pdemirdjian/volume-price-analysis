@@ -12,6 +12,7 @@ from volume_price_analysis.analysis import (
     analyze_single_symbol,
     build_headline,
     get_universes,
+    run_comprehensive_analysis,
     run_options_analysis,
     run_scan,
     score_symbol,
@@ -230,6 +231,91 @@ class TestRunOptionsAnalysis:
         df = pd.DataFrame({"Close": [100], "Volume": [1000]})
         with pytest.raises(ValueError, match="missing required columns"):
             run_options_analysis("TEST", df)
+
+
+class TestRunComprehensiveAnalysis:
+    """run_comprehensive_analysis: symbol + OHLCV frame in, tool payload out (PDE-153)."""
+
+    EXPECTED_KEYS = {
+        "symbol",
+        "analysis_type",
+        "period",
+        "latest_price",
+        "headline",
+        "volume_indicators",
+        "price_indicators",
+        "volatility_indicators",
+        "volume_profile",
+        "volume_trends",
+        "summary",
+    }
+
+    def test_frame_from_in_memory_source_yields_full_payload(self):
+        source = InMemoryDataSource(frames={"TEST": _synthetic_ohlcv(60)})
+
+        result = run_comprehensive_analysis("TEST", source.fetch("TEST"))
+
+        assert set(result) == self.EXPECTED_KEYS
+        assert result["symbol"] == "TEST"
+        assert result["analysis_type"] == "Comprehensive Volume-Price Analysis"
+        assert result["period"] == "2024-01-01 to 2024-02-29"
+        assert isinstance(result["summary"], list)
+        assert result["summary"]
+
+    def test_does_not_mutate_the_frame(self):
+        frame = _synthetic_ohlcv(60)
+        before = frame.copy()
+
+        run_comprehensive_analysis("TEST", frame)
+
+        pd.testing.assert_frame_equal(frame, before)
+
+    def test_empty_frame_is_rejected(self):
+        empty = _synthetic_ohlcv(60).iloc[0:0]
+        with pytest.raises(ValueError, match="Empty DataFrame provided for symbol 'TEST'"):
+            run_comprehensive_analysis("TEST", empty)
+
+    def test_missing_columns_are_rejected(self):
+        frame = _synthetic_ohlcv(60).drop(columns=["Volume"])
+        with pytest.raises(ValueError, match="DataFrame missing required columns: Volume"):
+            run_comprehensive_analysis("TEST", frame)
+
+
+class TestBollingerSnapshotParity:
+    """PDE-30 carry-over: both analysis paths share one squeeze and one NaN rule.
+
+    Undefined band values report 0.0 in both payloads, and both report the
+    canonical detect_bollinger_squeeze verdict for the same frame.
+    """
+
+    @pytest.mark.parametrize("periods", [3, 8, 60])
+    def test_band_values_and_squeeze_agree(self, periods):
+        frame = _synthetic_ohlcv(periods)
+
+        comprehensive = run_comprehensive_analysis("T", frame)["volatility_indicators"]
+        options = run_options_analysis("T", frame)["volatility_analysis"]
+        comp_bb = comprehensive["bollinger_bands"]
+        opt_bb = options["bollinger_bands"]
+
+        squeeze = detect_bollinger_squeeze(frame)
+        assert comp_bb["squeeze_status"] == ("Yes" if squeeze else "No")
+        assert opt_bb["squeeze_detected"] is squeeze
+        for key in ("upper", "middle", "lower", "percent_b", "bandwidth"):
+            assert isinstance(comp_bb[key], float)
+            assert isinstance(opt_bb[key], float)
+
+    def test_undefined_bands_report_zero_in_both(self):
+        # Three bars: every Bollinger window is undefined (NaN) in both paths.
+        frame = _synthetic_ohlcv(3)
+
+        comp_bb = run_comprehensive_analysis("T", frame)["volatility_indicators"]["bollinger_bands"]
+        opt_bb = run_options_analysis("T", frame)["volatility_analysis"]["bollinger_bands"]
+
+        for key in ("upper", "middle", "lower", "percent_b", "bandwidth"):
+            assert comp_bb[key] == 0.0
+            assert opt_bb[key] == 0.0
+        assert comp_bb["squeeze_status"] == "No"
+        assert opt_bb["squeeze_detected"] is False
 
 
 class TestAnalyzeSingleSymbol:

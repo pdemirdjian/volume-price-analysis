@@ -297,8 +297,8 @@ class InMemoryDataSource:
     """Test ``DataSource`` backed by in-memory dicts.
 
     Lives in ``src`` (not ``tests``) so it ships with the package and any test
-    module can import it. Injecting one of these replaces patching
-    ``fetch_stock_data`` at each call site.
+    module can import it. Inject one wherever a ``DataSource`` is accepted
+    instead of patching yfinance.
 
     Args:
         frames: symbol -> OHLCV DataFrame honouring the ``DataSource`` contract.
@@ -346,65 +346,10 @@ class InMemoryDataSource:
         return self.earnings.get(symbol)
 
 
-# Module-level production adapter behind the thin function wrappers below.
+# Module-level production adapter, shared so its history cache is process-wide.
 _DEFAULT_DATA_SOURCE = YFinanceDataSource()
 
 
 def get_default_data_source() -> DataSource:
     """Return the production ``DataSource``, used when a caller passes None."""
     return _DEFAULT_DATA_SOURCE
-
-
-def fetch_stock_data(
-    symbol: str,
-    start_date: str | None = None,
-    end_date: str | None = None,
-    period: str = "1mo",
-    timeout: int = DEFAULT_TIMEOUT,
-) -> pd.DataFrame:
-    """
-    Fetch historical stock data via the default production data source.
-
-    Thin wrapper over ``YFinanceDataSource.fetch`` kept for callers (notably
-    ``server.py``) that do not thread a ``DataSource`` through.
-
-    Args:
-        symbol: Stock ticker symbol (e.g., 'AAPL', 'MSFT')
-        start_date: Start date in 'YYYY-MM-DD' format
-        end_date: End date in 'YYYY-MM-DD' format
-        period: Period to fetch if dates not specified (e.g., '1mo', '3mo', '1y')
-        timeout: Request timeout in seconds (default: 30)
-
-    Returns:
-        DataFrame with columns: Date, Open, High, Low, Close, Volume
-
-    Raises:
-        ValueError: If symbol format is invalid or no data found
-    """
-    return _DEFAULT_DATA_SOURCE.fetch(
-        symbol, period=period, start=start_date, end=end_date, timeout=timeout
-    )
-
-
-def validate_symbol(symbol: str, timeout: int = DEFAULT_TIMEOUT) -> bool:
-    """
-    Validate that a stock symbol exists and has data.
-
-    Args:
-        symbol: Stock ticker symbol
-        timeout: Request timeout in seconds (default: 30)
-
-    Returns:
-        True if symbol is valid, False otherwise
-    """
-    # First check format
-    if not validate_symbol_format(symbol):
-        return False
-
-    try:
-        ticker = yf.Ticker(symbol)
-        # Use fast_info which is lighter weight than info
-        info = ticker.fast_info
-        return hasattr(info, "last_price") and info.last_price is not None
-    except Exception:
-        return False

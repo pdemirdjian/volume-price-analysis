@@ -1399,7 +1399,7 @@ class TestDeepAnalysisException:
 
     @pytest.mark.asyncio
     async def test_exception_in_fetch_is_caught_and_logged(self, mocker, capsys):
-        """When fetch_stock_data raises, the exception is caught and analysis continues."""
+        """When the data source fetch raises, the exception is caught and analysis continues."""
         mocker.patch(
             "volume_price_analysis.agent.morning_agent.run_scan",
             return_value={
@@ -1429,7 +1429,7 @@ class TestDeepAnalysisException:
             max_deep_analysis=2,
         )
 
-        # Should NOT raise despite fetch_stock_data failing for every symbol
+        # Should NOT raise despite the fetch failing for every symbol
         await run_morning_briefing(
             config,
             dry_run=True,

@@ -13,7 +13,13 @@ import pytest
 
 from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, InMemoryDataSource
 from volume_price_analysis.server import dispatch, handle_list_tools
-from volume_price_analysis.tools import TOOLS, ToolContext, ToolSpec
+from volume_price_analysis.tools import (
+    TOOLS,
+    TOOLS_BY_NAME,
+    ToolContext,
+    ToolSpec,
+    validate_arguments,
+)
 
 SYMBOL = "AAPL"
 
@@ -283,6 +289,76 @@ class TestDispatchErrors:
 
         assert source.fetch_calls == [SYMBOL]
         assert json.loads(result.content[0].text)["data_points"] == 30
+
+
+def _bounded_params() -> list[tuple[str, str, int | float, int | float]]:
+    """Every (tool, parameter, minimum, maximum) a registry schema declares."""
+    return [
+        (spec.name, param, prop["minimum"], prop["maximum"])
+        for spec in TOOLS
+        for param, prop in spec.input_schema["properties"].items()
+        if "minimum" in prop and "maximum" in prop
+    ]
+
+
+class TestSchemaBounds:
+    """Numeric ranges come from each tool's schema, not hand-written checks (PDE-153)."""
+
+    def test_sweep_covers_every_bounded_parameter(self):
+        # Guards the parametrised sweep below against silently testing nothing.
+        assert {(tool, param) for tool, param, _, _ in _bounded_params()} == {
+            ("calculate_volume_profile", "num_bins"),
+            ("calculate_mfi", "mfi_period"),
+            ("calculate_cmf", "cmf_period"),
+            ("analyze_volume_trends", "window"),
+            ("options_analysis", "holding_period"),
+            ("options_analysis", "days_to_expiration"),
+            ("scan_candidates", "holding_period"),
+            ("scan_candidates", "max_results"),
+            ("calculate_rsi_divergence", "rsi_period"),
+            ("calculate_rsi_divergence", "divergence_lookback"),
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool", "param", "low", "high"), _bounded_params())
+    async def test_out_of_range_rejected_before_any_fetch(self, tool, param, low, high):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        for bad in (low - 1, high + 1):
+            result = await dispatch(tool, {**MINIMAL_ARGS[tool], param: bad}, data_source=source)
+
+            assert result.is_error is True
+            assert json.loads(result.content[0].text)["error"] == (
+                f"{param} must be between {low} and {high}, got {bad}"
+            )
+        assert source.fetch_calls == []
+
+    @pytest.mark.parametrize(("tool", "param", "low", "high"), _bounded_params())
+    def test_boundaries_are_accepted(self, tool, param, low, high):
+        for edge in (low, high):
+            validate_arguments({param: edge}, TOOLS_BY_NAME[tool].input_schema)
+
+    def test_absent_and_unbounded_arguments_pass(self):
+        schema = TOOLS_BY_NAME["scan_candidates"].input_schema
+        validate_arguments({}, schema)
+        validate_arguments({"min_score": -1e9, "min_adx": 1e9}, schema)
+
+    def test_one_sided_bounds(self):
+        schema = {
+            "properties": {
+                "floor": {"type": "integer", "minimum": 1},
+                "ceiling": {"type": "integer", "maximum": 9},
+            }
+        }
+        with pytest.raises(ValueError, match="^floor must be at least 1, got 0$"):
+            validate_arguments({"floor": 0}, schema)
+        with pytest.raises(ValueError, match="^ceiling must be at most 9, got 10$"):
+            validate_arguments({"ceiling": 10}, schema)
+
+    def test_non_numeric_values_are_left_to_the_tool(self):
+        # Bounds only apply to numbers; bool is not treated as a number.
+        schema = TOOLS_BY_NAME["calculate_mfi"].input_schema
+        validate_arguments({"mfi_period": "abc"}, schema)
+        validate_arguments({"mfi_period": False}, schema)
 
 
 class TestToolContext:

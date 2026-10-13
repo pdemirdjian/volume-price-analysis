@@ -13,7 +13,7 @@ from volume_price_analysis.agent.regime import (
 
 
 def make_spy_data(closes: list[float], start: str = "2026-07-01") -> pd.DataFrame:
-    """Build a minimal SPY daily DataFrame with the columns fetch_stock_data returns."""
+    """Build a minimal SPY daily DataFrame with the columns DataSource.fetch returns."""
     dates = pd.bdate_range(start=start, periods=len(closes))
     return pd.DataFrame(
         {
