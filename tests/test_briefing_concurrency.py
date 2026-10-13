@@ -3,13 +3,21 @@
 import asyncio
 from threading import Event, Lock, get_ident
 
-from volume_price_analysis.agent.ai_client import PROVIDERS
 from volume_price_analysis.agent.config import AgentConfig
 from volume_price_analysis.agent.morning_agent import run_morning_briefing
 from volume_price_analysis.data_fetcher import InMemoryDataSource
 
 
-async def test_deep_analysis_is_bounded_concurrent_and_ordered(mocker, sample_stock_data, caplog):
+def _scan_returning(result: dict):
+    """A stand-in for analysis.run_scan that returns ``result``."""
+
+    async def scan(**kwargs) -> dict:
+        return result
+
+    return scan
+
+
+async def test_deep_analysis_is_bounded_concurrent_and_ordered(sample_stock_data, caplog):
     symbols = ["AAPL", "MSFT", "FAIL", "NVDA", "AMD", "META"]
     release = Event()
     started = asyncio.Event()
@@ -52,9 +60,8 @@ async def test_deep_analysis_is_bounded_concurrent_and_ordered(mocker, sample_st
         frames=dict.fromkeys(["SPY", *symbols], sample_stock_data),
         errors={"FAIL": ValueError("unavailable")},
     )
-    mocker.patch(
-        "volume_price_analysis.agent.morning_agent.run_scan",
-        return_value={
+    scan = _scan_returning(
+        {
             "summary": {
                 "total_candidates": 6,
                 "bullish_setups": 6,
@@ -64,7 +71,7 @@ async def test_deep_analysis_is_bounded_concurrent_and_ordered(mocker, sample_st
             "high_conviction_setups": [],
             "top_bullish": [{"symbol": symbol} for symbol in symbols],
             "top_bearish": [],
-        },
+        }
     )
 
     async def release_from_event_loop():
@@ -77,7 +84,11 @@ async def test_deep_analysis_is_bounded_concurrent_and_ordered(mocker, sample_st
 
     result, _ = await asyncio.gather(
         run_morning_briefing(
-            AgentConfig(max_deep_analysis=6), dry_run=True, no_ai=True, data_source=source
+            AgentConfig(max_deep_analysis=6),
+            dry_run=True,
+            no_ai=True,
+            data_source=source,
+            scan=scan,
         ),
         release_from_event_loop(),
     )
@@ -106,9 +117,8 @@ async def test_network_stages_and_ai_backoff_run_off_event_loop(mocker, sample_s
             record("earnings")
             return super().earnings_date(symbol)
 
-    mocker.patch(
-        "volume_price_analysis.agent.morning_agent.run_scan",
-        return_value={
+    scan = _scan_returning(
+        {
             "summary": {
                 "total_candidates": 1,
                 "bullish_setups": 1,
@@ -118,16 +128,15 @@ async def test_network_stages_and_ai_backoff_run_off_event_loop(mocker, sample_s
             "high_conviction_setups": [],
             "top_bullish": [{"symbol": "AAPL"}],
             "top_bearish": [],
-        },
+        }
     )
 
-    def provider(*args, **kwargs):
+    def provider(request):
         record("AI")
         if stages.count("AI") == 1:
             raise TimeoutError("retry this request")
         return "Briefing prose"
 
-    mocker.patch.dict(PROVIDERS, {"anthropic": provider})
     mocker.patch("volume_price_analysis.retry._sleep", side_effect=lambda _: record("backoff"))
     mocker.patch(
         "volume_price_analysis.agent.morning_agent.send_email",
@@ -139,12 +148,12 @@ async def test_network_stages_and_ai_backoff_run_off_event_loop(mocker, sample_s
         email_from="sender@example.test",
         email_to="recipient@example.test",
     )
-    result = await run_morning_briefing(config, data_source=source)
+    result = await run_morning_briefing(config, data_source=source, scan=scan, provider=provider)
     assert not result.degraded
     assert result.email_sent
     assert stages == ["regime", "deep analysis", "earnings", "AI", "backoff", "AI", "SMTP"]
 
     stages.clear()
-    result = await run_morning_briefing(config, no_ai=True, data_source=source)
+    result = await run_morning_briefing(config, no_ai=True, data_source=source, scan=scan)
     assert result.email_sent
     assert stages == ["regime", "deep analysis", "earnings", "SMTP"]

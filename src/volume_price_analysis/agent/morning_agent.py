@@ -13,6 +13,7 @@ import asyncio
 import logging
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -21,7 +22,13 @@ from zoneinfo import ZoneInfo
 from ..analysis import passes_high_conviction_gate, run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
 from ..retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
-from .ai_client import PROVIDERS, generate_briefing, is_transient_ai_error, resolve_model
+from .ai_client import (
+    PROVIDERS,
+    BriefingProvider,
+    generate_briefing,
+    is_transient_ai_error,
+    resolve_model,
+)
 from .briefing import BriefingInputs, render, render_raw
 from .config import AgentConfig
 from .email_sender import SmtpCreds, build_briefing_message, build_error_message, send_email
@@ -41,6 +48,11 @@ logger = logging.getLogger(__name__)
 MARKET_TZ = ZoneInfo("America/New_York")
 _HOLDING_PERIOD_DAYS = 14
 MAX_CONCURRENT_DEEP_ANALYSES = 4
+
+# The briefing run's injectable steps (PDE-155). Production passes nothing and
+# gets analysis.run_scan / analysis.run_options_analysis; tests pass fakes.
+ScanFn = Callable[..., Awaitable[dict]]
+AnalyzeFn = Callable[..., dict]
 
 
 @dataclass
@@ -65,6 +77,10 @@ async def run_morning_briefing(
     no_ai: bool = False,
     data_source: DataSource | None = None,
     now: datetime | None = None,
+    *,
+    scan: ScanFn = run_scan,
+    analyze: AnalyzeFn = run_options_analysis,
+    provider: BriefingProvider | None = None,
 ) -> BriefingRunResult:
     """
     Execute the full morning briefing pipeline.
@@ -79,9 +95,15 @@ async def run_morning_briefing(
             per-symbol fetches, and earnings checks. None uses production.
         now: The run's clock reading (aware datetime); the briefing date is its
             Eastern calendar day. None reads the wall clock.
+        scan: The universe scan, called with ``run_scan``'s keyword arguments.
+        analyze: Per-symbol options analysis, called as
+            ``analyze(symbol, data, holding_period=...)`` on fetched history.
+        provider: Briefing provider handed each :class:`BriefingRequest`.
+            None uses the production adapter for ``config.ai_provider``.
 
     Returns:
-        A BriefingRunResult describing how the run went.
+        A BriefingRunResult describing how the run went, including the regime
+        the run used.
     """
     source = data_source if data_source is not None else get_default_data_source()
     start_time = time.monotonic()
@@ -96,7 +118,7 @@ async def run_morning_briefing(
 
     # Step 1: Run market scan
     logger.info("Step 1: Scanning universe '%s'...", config.scan_universe)
-    scan_results = await run_scan(
+    scan_results = await scan(
         universe=config.scan_universe,
         period="3mo",
         holding_period=_HOLDING_PERIOD_DAYS,
@@ -140,7 +162,7 @@ async def run_morning_briefing(
 
     def analyze_symbol(symbol: str) -> dict:
         data = source.fetch(symbol, period="3mo")
-        return run_options_analysis(symbol, data, holding_period=_HOLDING_PERIOD_DAYS)
+        return analyze(symbol, data, holding_period=_HOLDING_PERIOD_DAYS)
 
     async def analyze_symbol_async(symbol: str) -> dict | None:
         async with semaphore:
@@ -199,6 +221,7 @@ async def run_morning_briefing(
             config.ai_model or "default model",
         )
         earnings_preamble = build_earnings_preamble(earnings_warnings)
+        briefing_provider = provider if provider is not None else PROVIDERS[config.ai_provider]
         try:
             model_text = await asyncio.to_thread(
                 retry_call,
@@ -206,7 +229,7 @@ async def run_morning_briefing(
                     generate_briefing(
                         scan_results=scan_results,
                         deep_analyses=deep_analyses,
-                        provider=PROVIDERS[config.ai_provider],
+                        provider=briefing_provider,
                         model=resolve_model(config.ai_provider, config.ai_model),
                         api_key=config.ai_provider_api_key,
                         earnings_preamble=earnings_preamble,

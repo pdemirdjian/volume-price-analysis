@@ -51,7 +51,24 @@ The morning document delivered by email: `agent/morning_agent.run_morning_briefi
 which fetches the regime, runs the scan, deep-analyses the top symbols, annotates
 conviction, asks the AI client for prose, and sends the result. Its outcome is a
 `BriefingRunResult` (`degraded`, `reason`, `regime`, `symbols_analyzed`,
-`email_sent`). What the reader sees is rendered by the Briefing module.
+`email_sent`); `regime` is the verdict the run actually used. The run's steps are
+keyword-only seams with production defaults: `scan` (`analysis.run_scan`),
+`analyze` (`analysis.run_options_analysis`), and `provider` (None resolves to
+`PROVIDERS[config.ai_provider]`), alongside `data_source` and `now`. Tests pass
+fakes there instead of patching. What the reader sees is rendered by the
+Briefing module.
+
+## briefing request
+
+What one AI provider call receives: the frozen `agent/ai_client.BriefingRequest`
+(`system_prompt`, `user_content`, `model`, `api_key`, `max_tokens`).
+`generate_briefing` builds it; a briefing provider (`BriefingProvider`, e.g.
+`generate_anthropic` / `generate_gemini`) takes exactly one and reads the system
+prompt and token budget off it, never from module globals. The key is excluded
+from its `repr`.
+
+_Avoided:_ **prompt** for the whole request — the prompt is its `user_content`
+(built by `build_briefing_prompt`); `system_prompt` is the separate instruction.
 
 ## Briefing module
 
