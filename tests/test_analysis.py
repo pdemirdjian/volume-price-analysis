@@ -921,7 +921,7 @@ class TestRunScanInjectedUniverses:
 
 
 @pytest.mark.asyncio
-async def test_briefing_excludes_same_day_bar_from_stop_and_target(mocker):
+async def test_briefing_excludes_same_day_bar_from_stop_and_target():
     from datetime import UTC, datetime
 
     from volume_price_analysis.agent.config import AgentConfig
@@ -947,7 +947,6 @@ async def test_briefing_excludes_same_day_bar_from_stop_and_target(mocker):
         scans.append(result)
         return result
 
-    mocker.patch("volume_price_analysis.agent.morning_agent.run_scan", side_effect=scan)
     config = AgentConfig()
     now = datetime(2024, 3, 1, 13, 30, tzinfo=UTC)
     await run_morning_briefing(
@@ -956,6 +955,7 @@ async def test_briefing_excludes_same_day_bar_from_stop_and_target(mocker):
         no_ai=True,
         data_source=InMemoryDataSource({"TEST": data}),
         now=now,
+        scan=scan,
     )
     extreme = data.iloc[[-1]].copy()
     extreme["Date"] = pd.Timestamp("2024-03-01")
@@ -967,6 +967,7 @@ async def test_briefing_excludes_same_day_bar_from_stop_and_target(mocker):
         no_ai=True,
         data_source=InMemoryDataSource({"TEST": pd.concat([data, extreme], ignore_index=True)}),
         now=now,
+        scan=scan,
     )
     candidate = scans[0]["top_bullish"][0]
     assert candidate["atr"] == 4.0

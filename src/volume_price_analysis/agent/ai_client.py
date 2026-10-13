@@ -16,14 +16,32 @@ from .picks import Pick
 
 logger = logging.getLogger(__name__)
 
-# Maximum output tokens requested from any provider. Shared so both adapters
-# stay in lockstep; override per call with the ``max_tokens`` keyword.
+# Default output-token budget for a briefing request. generate_briefing puts it
+# on every BriefingRequest (override with its ``max_tokens`` keyword); adapters
+# read the budget off the request, never from here.
 MAX_OUTPUT_TOKENS = 16384
 AI_REQUEST_TIMEOUT_SECONDS = 120
 
-# A briefing provider turns (user_content, model, api_key) into briefing text.
-# The two production adapters below satisfy it; tests inject plain callables.
-BriefingProvider = Callable[[str, str, str], str]
+
+@dataclass(frozen=True)
+class BriefingRequest:
+    """Everything one provider call needs, in one object.
+
+    A provider adapter reads the system prompt and token budget from here, so
+    it cannot forget either, and callers can change them through the seam.
+    The API key is kept out of ``repr`` so a logged request never leaks it.
+    """
+
+    system_prompt: str
+    user_content: str
+    model: str
+    api_key: str = field(repr=False)
+    max_tokens: int = MAX_OUTPUT_TOKENS
+
+
+# A briefing provider turns a BriefingRequest into briefing text. The two
+# production adapters below satisfy it; tests inject plain callables.
+BriefingProvider = Callable[[BriefingRequest], str]
 
 
 @dataclass(frozen=True)
@@ -359,6 +377,7 @@ def generate_briefing(
     earnings_preamble: str = "",
     briefing_date: date | None = None,
     picks: Iterable[Pick] = (),
+    max_tokens: int = MAX_OUTPUT_TOKENS,
 ) -> BriefingResult:
     """
     Generate a natural-language briefing from scan results and deep analyses.
@@ -366,7 +385,7 @@ def generate_briefing(
     Args:
         scan_results: Output from run_scan().
         deep_analyses: List of outputs from run_options_analysis() for top candidates.
-        provider: Callable taking (user_content, model, api_key) and returning briefing
+        provider: Callable taking a :class:`BriefingRequest` and returning briefing
             text. Use ``PROVIDERS[name]`` to pick a production adapter.
         model: Model name passed through to the provider.
         api_key: API key passed through to the provider.
@@ -375,6 +394,7 @@ def generate_briefing(
             model never has to guess it (PDE-69).
         picks: The briefing's Pick list — the single source of each candidate's
             conviction label (PDE-150).
+        max_tokens: Output-token budget carried on the provider request.
 
     Returns:
         A BriefingResult carrying the markdown briefing and any ungrounded tickers.
@@ -383,7 +403,14 @@ def generate_briefing(
         scan_results, deep_analyses, earnings_preamble, briefing_date=briefing_date, picks=picks
     )
 
-    briefing = strip_date_placeholders(provider(user_content, model, api_key))
+    request = BriefingRequest(
+        system_prompt=SYSTEM_PROMPT,
+        user_content=user_content,
+        model=model,
+        api_key=api_key,
+        max_tokens=max_tokens,
+    )
+    briefing = strip_date_placeholders(provider(request))
     if not briefing.strip():
         raise ValueError("AI provider returned an empty briefing")
 
@@ -626,8 +653,9 @@ def build_briefing_prompt(
     Runs the projection chain (curate scan results, drop scan fields superseded
     by a deep analysis, project each deep analysis) and renders the result as
     JSON blocks under markdown headings, optionally preceded by an
-    earnings-event-risk preamble. Pairs with :data:`SYSTEM_PROMPT`, which the
-    provider adapters supply as the system instruction. When ``briefing_date``
+    earnings-event-risk preamble. Pairs with :data:`SYSTEM_PROMPT`, which
+    generate_briefing puts on the :class:`BriefingRequest` as the system
+    instruction. When ``briefing_date``
     is given it is stated up front so the model never has to guess it.
 
     ``picks`` supplies every candidate's conviction label: it is derived once,
@@ -658,23 +686,23 @@ def build_briefing_prompt(
     return user_content
 
 
-def generate_anthropic(
-    user_content: str, model: str, api_key: str, *, max_tokens: int = MAX_OUTPUT_TOKENS
-) -> str:
+def generate_anthropic(request: BriefingRequest) -> str:
     """Generate briefing using Anthropic Claude API."""
     import anthropic
 
     # Give up the SDK's Retry-After handling so the briefing pipeline owns
     # one bounded retry budget.
-    client = anthropic.Anthropic(api_key=api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS, max_retries=0)
+    client = anthropic.Anthropic(
+        api_key=request.api_key, timeout=AI_REQUEST_TIMEOUT_SECONDS, max_retries=0
+    )
 
-    logger.info("Sending briefing request to Anthropic (%s)", model)
+    logger.info("Sending briefing request to Anthropic (%s)", request.model)
 
     message = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
+        model=request.model,
+        max_tokens=request.max_tokens,
+        system=request.system_prompt,
+        messages=[{"role": "user", "content": request.user_content}],
     )
 
     for block in message.content:
@@ -698,29 +726,27 @@ def generate_anthropic(
     return briefing
 
 
-def generate_gemini(
-    user_content: str, model: str, api_key: str, *, max_tokens: int = MAX_OUTPUT_TOKENS
-) -> str:
+def generate_gemini(request: BriefingRequest) -> str:
     """Generate briefing using Google Gemini API."""
     from google import genai
 
     # Gemini uses milliseconds; Anthropic uses seconds. The pipeline owns retries.
     client = genai.Client(
-        api_key=api_key,
+        api_key=request.api_key,
         http_options={
             "timeout": AI_REQUEST_TIMEOUT_SECONDS * 1000,
             "retry_options": {"attempts": 1},
         },
     )
 
-    logger.info("Sending briefing request to Gemini (%s)", model)
+    logger.info("Sending briefing request to Gemini (%s)", request.model)
 
     response = client.models.generate_content(
-        model=model,
-        contents=user_content,
+        model=request.model,
+        contents=request.user_content,
         config={
-            "system_instruction": SYSTEM_PROMPT,
-            "max_output_tokens": max_tokens,
+            "system_instruction": request.system_prompt,
+            "max_output_tokens": request.max_tokens,
         },
     )
 
