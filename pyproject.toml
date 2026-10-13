@@ -12,7 +12,7 @@ dependencies = [
     "mcp==2.3.0",
     "yfinance==1.7.0",
     "pandas==3.0.6",
-    "numpy==2.5.3",
+    "numpy==2.5.4",
     "anthropic~=1.13.0",
     "google-genai~=2.29.0",
     "markdown~=3.11.0",
