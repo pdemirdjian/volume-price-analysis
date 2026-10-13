@@ -785,13 +785,6 @@ class TestScoreSymbol:
         assert fast["adx_period"] == 10
         assert slow["adx_period"] == 14
 
-    def test_matches_analyze_single_symbol(self, sample_stock_data):
-        """analyze_single_symbol is fetch + score_symbol; results must agree."""
-        source = InMemoryDataSource(frames={"TEST": sample_stock_data})
-        via_fetch = analyze_single_symbol("TEST", "3mo", 14, 0, 0, 100, "any", data_source=source)
-        direct = score_symbol(sample_stock_data, "TEST", 14, 0, 0, 100, "any")
-        assert via_fetch == direct
-
 
 class TestAdaptivePeriods:
     """Boundary behavior of the <=14 / <=21 / else breakpoints."""

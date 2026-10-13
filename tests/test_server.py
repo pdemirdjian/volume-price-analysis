@@ -818,130 +818,133 @@ class TestErrorHandling:
         assert result.is_error is True
 
 
+def _trend_frame(n: int = 60, step: float = 0.8, sign: int = 1) -> pd.DataFrame:
+    """Deterministic sawtooth trend for scan tests (no mocking of the scan path).
+
+    Price climbs (``sign=1``) or falls (``sign=-1``) by ``step`` a bar, with a 2.0
+    zig-zag on alternate bars. Volume is heavy on the with-trend bars and light on the
+    counter-trend bars, and each close sits near the bar's extreme in the trend
+    direction, so OBV, A/D and CMF all confirm the trend. Pinned by calling
+    ``score_symbol`` directly (holding_period=14):
+
+    - ``step=0.8``: composite +/-2.67, ADX(10) ~40 -> candidate at min_score 2 / min_adx 20.
+    - ``step=0.3``: composite +/-2.67, ADX(10) ~15 -> scored, then filtered out by min_adx 20.
+    """
+    closes = [100.0 + sign * (step * i + (2.0 if i % 2 else 0.0)) for i in range(n)]
+    high_offset, low_offset = (0.25, 2.0) if sign > 0 else (2.0, 0.25)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2024-01-01", periods=n, freq="D"),
+            "Open": [c - sign * 0.5 for c in closes],
+            "High": [c + high_offset for c in closes],
+            "Low": [c - low_offset for c in closes],
+            "Close": closes,
+            "Volume": [2_000_000 if i % 2 else 500_000 for i in range(n)],
+        }
+    )
+
+
 class TestScanCandidates:
-    """Tests for scan_candidates tool."""
+    """scan_candidates through the real dispatcher and scoring path.
 
-    @pytest.mark.asyncio
-    @patch("volume_price_analysis.analysis.analyze_single_symbol")
-    async def test_scan_with_hyphenated_symbols(self, mock_analyze):
-        """Test scan_candidates correctly handles symbols with hyphens like BRK-B."""
+    Market data comes from an injected ``InMemoryDataSource``; nothing on the scan
+    path (fetch wrapper, ``score_symbol``, ``run_scan``) is patched, so these tests
+    exercise fetch -> score -> filter -> aggregate end to end.
+    """
 
-        # Mock returns a candidate for BRK-B and AAPL, None for others
-        def mock_analyze_side_effect(symbol, *args, **kwargs):
-            if symbol == "BRK-B":
-                return {
-                    "symbol": "BRK-B",
-                    "composite_score": 3.5,
-                    "recommendation": "bullish",
-                    "signal_quality": "good",
-                    "adx": 28.5,
-                    "trend_strength": "strong",
-                    "trend_direction": "bullish",
-                    "rsi": 55.0,
-                    "rsi_divergence": "none",
-                    "iv_percentile": 35.0,
-                    "iv_implication": "neutral",
-                    "expected_move_pct": 5.2,
-                    "rvol": 1.2,
-                    "latest_price": 450.00,
-                    "key_levels": {"upper_target": 475.00, "lower_target": 425.00},
-                }
-            elif symbol == "AAPL":
-                return {
-                    "symbol": "AAPL",
-                    "composite_score": -2.5,
-                    "recommendation": "bearish",
-                    "signal_quality": "moderate",
-                    "adx": 22.0,
-                    "trend_strength": "moderate",
-                    "trend_direction": "bearish",
-                    "rsi": 35.0,
-                    "rsi_divergence": "none",
-                    "iv_percentile": 45.0,
-                    "iv_implication": "neutral",
-                    "expected_move_pct": 4.5,
-                    "rvol": 0.9,
-                    "latest_price": 185.00,
-                    "key_levels": {"upper_target": 195.00, "lower_target": 175.00},
-                }
-            return None  # Filtered out
+    @staticmethod
+    async def _scan(source: InMemoryDataSource, **arguments) -> dict:
+        result = await dispatch("scan_candidates", arguments, data_source=source)
+        assert isinstance(result, CallToolResult)
+        assert result.is_error is not True
+        return json.loads(result.content[0].text)
 
-        mock_analyze.side_effect = mock_analyze_side_effect
-
-        # Call scan_candidates with custom symbols including hyphenated BRK-B
-        result = await handle_call_tool(
-            name="scan_candidates",
-            arguments={
-                "symbols": ["AAPL", "BRK-B", "MSFT"],
-                "min_score": 2.0,
-                "min_adx": 20,
-            },
+    @pytest.fixture
+    def source(self) -> InMemoryDataSource:
+        """One symbol per scan outcome; GONE is absent from the source entirely."""
+        return InMemoryDataSource(
+            frames={
+                "BRK-B": _trend_frame(step=0.8, sign=1),  # bullish candidate
+                "BEAR": _trend_frame(step=0.8, sign=-1),  # bearish candidate
+                "CHOP": _trend_frame(step=0.3, sign=1),  # scored, fails min_adx
+                "THIN": _trend_frame(n=10, step=0.8, sign=1),  # < 30 bars: a skip
+            }
         )
 
-        data = json.loads(result.content[0].text)
+    @pytest.mark.asyncio
+    async def test_qualifying_candidates_are_ranked_by_direction(self, source):
+        data = await self._scan(
+            source, symbols=["BRK-B", "BEAR", "CHOP"], min_score=2.0, min_adx=20
+        )
 
-        # Verify scan completed
-        assert "scan_parameters" in data
+        assert [c["symbol"] for c in data["top_bullish"]] == ["BRK-B"]
+        assert [c["symbol"] for c in data["top_bearish"]] == ["BEAR"]
+
+        bull = data["top_bullish"][0]
+        assert bull["composite_score"] == pytest.approx(2.67)
+        assert bull["recommendation"] == "bullish"
+        assert bull["adx"] >= 20
+        assert bull["adx_period"] == 10
+        bear = data["top_bearish"][0]
+        assert bear["composite_score"] == pytest.approx(-2.67)
+        assert bear["recommendation"] == "bearish"
+
+        assert data["summary"]["total_candidates"] == 2
+        assert data["summary"]["bullish_setups"] == 1
+        assert data["summary"]["bearish_setups"] == 1
+        assert data["scan_parameters"]["symbols_scanned"] == 3
+
+    @pytest.mark.asyncio
+    async def test_symbol_failing_filters_is_scanned_but_not_a_candidate(self, source):
+        data = await self._scan(source, symbols=["CHOP"], min_score=2.0, min_adx=20)
+
+        assert data["top_bullish"] == []
+        assert data["top_bearish"] == []
+        assert data["summary"]["total_candidates"] == 0
+        assert data["scan_parameters"]["symbols_scanned"] == 1
+        assert data["summary"]["skipped"] == 0
+        assert data["summary"]["errors"] == 0
+        assert data["errors"] == []
+
+        # The same frame qualifies once the ADX floor is lowered, so it was the
+        # min_adx filter (not a scoring failure) that excluded it.
+        relaxed = await self._scan(source, symbols=["CHOP"], min_score=2.0, min_adx=10)
+        assert [c["symbol"] for c in relaxed["top_bullish"]] == ["CHOP"]
+
+    @pytest.mark.asyncio
+    async def test_insufficient_history_is_a_skip_not_an_error(self, source):
+        data = await self._scan(source, symbols=["THIN", "BRK-B"])
+
+        assert data["summary"]["skipped"] == 1
+        assert data["summary"]["errors"] == 0
+        assert data["errors"] == []
+        assert data["scan_parameters"]["symbols_in_universe"] == 2
+        assert data["scan_parameters"]["symbols_scanned"] == 1
+        assert [c["symbol"] for c in data["top_bullish"]] == ["BRK-B"]
+
+    @pytest.mark.asyncio
+    async def test_missing_symbol_is_reported_without_failing_the_scan(self, source):
+        data = await self._scan(source, symbols=["GONE", "BEAR"])
+
+        assert data["summary"]["errors"] == 1
+        assert data["summary"]["skipped"] == 0
+        assert data["summary"]["rate_limit_errors"] == 0
+        assert data["rate_limited"] is False
+        assert [e["symbol"] for e in data["errors"]] == ["GONE"]
+        assert "No data found" in data["errors"][0]["error"]
+        assert data["scan_parameters"]["symbols_scanned"] == 1
+        assert [c["symbol"] for c in data["top_bearish"]] == ["BEAR"]
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_symbol_is_fetched_and_reported_verbatim(self, source):
+        data = await self._scan(source, symbols=["AAPL", "BRK-B", "MSFT"])
+
+        assert "BRK-B" in source.fetch_calls
         assert data["scan_parameters"]["universe"] == "custom"
         assert data["scan_parameters"]["symbols_in_universe"] == 3
-
-        # Verify BRK-B was processed correctly (hyphen handled)
-        assert "top_bullish" in data
-        assert "top_bearish" in data
-
-        bullish_symbols = [c["symbol"] for c in data["top_bullish"]]
-        bearish_symbols = [c["symbol"] for c in data["top_bearish"]]
-
-        assert "BRK-B" in bullish_symbols, "BRK-B should be in bullish candidates"
-        assert "AAPL" in bearish_symbols, "AAPL should be in bearish candidates"
-
-        # Verify the mock was called with correct symbols including hyphen
-        called_symbols = [call[0][0] for call in mock_analyze.call_args_list]
-        assert "BRK-B" in called_symbols, "BRK-B should have been passed to analyzer"
-
-    @pytest.mark.asyncio
-    @patch("volume_price_analysis.analysis.analyze_single_symbol")
-    async def test_scan_handles_errors_gracefully(self, mock_analyze):
-        """Test scan_candidates handles analysis errors without failing entire scan."""
-
-        def mock_analyze_side_effect(symbol, *args, **kwargs):
-            if symbol == "INVALID":
-                raise ValueError("No data found for symbol")
-            return {
-                "symbol": symbol,
-                "composite_score": 3.0,
-                "recommendation": "bullish",
-                "signal_quality": "good",
-                "adx": 25.0,
-                "trend_strength": "moderate",
-                "trend_direction": "bullish",
-                "rsi": 50.0,
-                "rsi_divergence": "none",
-                "iv_percentile": 40.0,
-                "iv_implication": "neutral",
-                "expected_move_pct": 4.0,
-                "rvol": 1.0,
-                "latest_price": 100.00,
-                "key_levels": {"upper_target": 110.00, "lower_target": 90.00},
-            }
-
-        mock_analyze.side_effect = mock_analyze_side_effect
-
-        result = await handle_call_tool(
-            name="scan_candidates",
-            arguments={"symbols": ["AAPL", "INVALID", "MSFT"]},
-        )
-
-        data = json.loads(result.content[0].text)
-
-        # Scan should complete despite one symbol error
-        assert "summary" in data
-        assert data["summary"]["errors"] == 1
-        assert data["scan_parameters"]["symbols_scanned"] == 2  # AAPL and MSFT
-
-        # Error should be captured
-        assert data["errors"] is not None
-        assert any(e["symbol"] == "INVALID" for e in data["errors"])
+        assert [c["symbol"] for c in data["top_bullish"]] == ["BRK-B"]
+        # AAPL and MSFT are not in the injected source, so they surface as errors.
+        assert sorted(e["symbol"] for e in data["errors"]) == ["AAPL", "MSFT"]
 
 
 class TestJsonSanitization:
