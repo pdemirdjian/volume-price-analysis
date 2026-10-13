@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   prune-images:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       # Reachability-aware pruning. The previous hand-rolled script deleted
