@@ -58,6 +58,9 @@ In the same `tools.py`, add an `async def _run_calculate_<name>(ctx: ToolContext
 3. Calls the indicator function
 4. Returns the result as a dict
 
+Numeric bounds belong in the schema (`minimum`/`maximum`); the dispatcher enforces them via
+`validate_arguments`, so the run function does no range checks.
+
 Add a case for the new tool to `MINIMAL_ARGS` in `tests/test_tool_registry.py`.
 
 ## Step 5: Verify

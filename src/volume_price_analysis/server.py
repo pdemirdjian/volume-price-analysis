@@ -25,7 +25,7 @@ from mcp.types import (
 )
 
 from .data_fetcher import DataSource, get_default_data_source
-from .tools import TOOLS, TOOLS_BY_NAME, ToolContext
+from .tools import TOOLS, TOOLS_BY_NAME, ToolContext, validate_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,7 @@ async def dispatch(
         spec = TOOLS_BY_NAME.get(name)
         if spec is None:
             raise ValueError(f"Unknown tool: {name}")
+        validate_arguments(arguments, spec.input_schema)
 
         ctx = ToolContext(
             args=arguments,

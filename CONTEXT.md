@@ -10,17 +10,17 @@ Single-context repo: this file plus `docs/adr/`. See `docs/agents/domain.md`.
 
 The identifier of a tradable instrument, e.g. `"AAPL"`. It is the key everything
 else hangs off: universes are lists of symbols (`analysis.get_universes`), the
-data source fetches per symbol (`data_fetcher.DataSource.fetch`, and the
-module-level `data_fetcher.fetch_stock_data`), and every candidate, pick, and MCP
+data source fetches per symbol (`data_fetcher.DataSource.fetch`), and every
+candidate, pick, and MCP
 tool argument carries a `symbol` field.
 
 _Avoided:_ **ticker** and **stock** as the domain term — say symbol in new code,
 tests, issues, and docs. Both words survive in places that are not free to
 change: the MCP tool name `get_stock_data` and the tool descriptions in
 `server.py` and `analysis.py` ("Stock ticker symbol") are part of the client
-contract, and `data_fetcher.fetch_stock_data` plus the `for stock in
-pts.get_stocks_by_index(...)` loop in `analysis._build_sp500_symbols` are legacy
-identifiers (the latter iterating a third-party payload). Existing names stay;
+contract, and the `for stock in pts.get_stocks_by_index(...)` loop in
+`analysis._build_sp500_symbols` is a legacy identifier iterating a third-party
+payload. Existing names stay;
 new ones say symbol.
 
 ## scan
@@ -119,7 +119,11 @@ tuple of `tools.ToolSpec` (`name`, `description`, `input_schema`, `run`,
 `default_period`). `server.handle_list_tools` maps it to `Tool()` objects and
 `server.dispatch` looks a record up by name and awaits its `run` — there is no
 per-tool branching anywhere in `server.py`, which is only the MCP adapter and
-that one dispatcher. Adding a tool means appending one record.
+that one dispatcher. Adding a tool means appending one record. Numeric argument
+ranges are the schema's `minimum`/`maximum`, enforced for every tool by
+`tools.validate_arguments` before `run`; tool bodies never range-check. Tools
+with real analysis behind them (`comprehensive_analysis`, `options_analysis`)
+keep it in `analysis.py`, and their `run` is a thin call.
 
 _Avoided:_ **handler** for the per-tool callable — it is a registry record's
 `run`. "Handler" is reserved for the MCP protocol wrappers (`_on_list_tools`,
