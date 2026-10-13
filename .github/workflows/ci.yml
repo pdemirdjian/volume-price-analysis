@@ -146,26 +146,23 @@ jobs:
   ci-gate:
     timeout-minutes: 5
     if: always()
-    needs: [lint, test, coverage-comment, dockerfile-lint, security-scan, dependency-review, docker]
+    # coverage-comment is deliberately not gated: it only posts a PR comment.
+    needs: [lint, test, dockerfile-lint, security-scan, dependency-review, docker]
     runs-on: ubuntu-latest
     steps:
       - name: Check required job results
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
-          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
-          echo "$NEEDS" | jq -e --arg event "$EVENT_NAME" --arg same_repo "$SAME_REPO" '
+          echo "$NEEDS" | jq -e --arg event "$EVENT_NAME" '
             .lint.result == "success" and
             .test.result == "success" and
             .["dockerfile-lint"].result == "success" and
             .["security-scan"].result == "success" and
             .docker.result == "success" and
             (.["dependency-review"].result ==
-              (if $event == "pull_request" then "success" else "skipped" end)) and
-            (.["coverage-comment"].result ==
-              (if $event == "pull_request" and $same_repo == "true"
-               then "success" else "skipped" end))
+              (if $event == "pull_request" then "success" else "skipped" end))
           '
 
   dockerfile-lint:
@@ -253,16 +250,13 @@ jobs:
           category: trivy-fs
 
   docker:
-    timeout-minutes: 45
-    if: >-
-      ${{ !cancelled() && needs.lint.result == 'success' && needs.test.result == 'success' &&
-          needs.dockerfile-lint.result == 'success' && needs.security-scan.result == 'success' &&
-          (needs.dependency-review.result == 'success' ||
-           (github.event_name != 'pull_request' && needs.dependency-review.result == 'skipped')) }}
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
-    needs: [lint, test, dockerfile-lint, security-scan, dependency-review]
+    # dependency-review is left out (it is skipped on push, which would skip docker);
+    # ci-gate checks it instead.
+    needs: [lint, test, dockerfile-lint, security-scan]
     runs-on: ubuntu-latest
 
     steps:

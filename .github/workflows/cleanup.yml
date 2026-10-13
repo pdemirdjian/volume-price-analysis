@@ -13,6 +13,11 @@ on:
 permissions:
   packages: write
 
+# One prune at a time across all refs: a manual run waits for the scheduled one.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   prune-images:
     timeout-minutes: 20

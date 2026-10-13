@@ -8,6 +8,8 @@ permissions:
   contents: read
   packages: write
 
+# Never cancel a running publish. GitHub still replaces an older *queued* run in this
+# group with a newer one, so only the latest pending run executes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false

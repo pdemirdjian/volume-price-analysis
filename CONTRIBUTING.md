@@ -26,6 +26,7 @@ for contributing to the project.
    uv venv
    source .venv/bin/activate
    uv sync --all-extras --dev
+   # CI runs `uv sync --locked`: after editing pyproject.toml, run `uv lock` and commit uv.lock
 
    # Or using pip
    python -m venv .venv
