@@ -6,16 +6,29 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 # Never cancel a running publish. GitHub still replaces an older *queued* run in this
 # group with a newer one, so only the latest pending run executes.
+# Use a distinct group: reusable CI inherits the caller's github.workflow value.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: docker-publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      security-events: write
+      # Required by the reusable workflow's PR-only coverage/dependency jobs.
+      pull-requests: write
+
   build-and-push:
+    needs: ci
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     timeout-minutes: 45
     runs-on: ubuntu-latest
 
@@ -27,6 +40,19 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build smoke-test image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: volume-price-analysis:release-test
+          cache-from: type=gha
+
+      - name: Smoke-test image
+        run: docker run --rm volume-price-analysis:release-test morning-briefing --help
 
       - name: Log in to ghcr.io
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -46,12 +72,23 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push
+        id: publish
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign published digest
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/pdemirdjian/volume-price-analysis@${DIGEST}"

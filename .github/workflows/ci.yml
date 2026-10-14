@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -257,10 +258,17 @@ jobs:
     # dependency-review is left out (it is skipped on push, which would skip docker);
     # ci-gate checks it instead.
     needs: [lint, test, dockerfile-lint, security-scan]
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -269,17 +277,21 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          platforms: linux/${{ matrix.arch }}
           load: true
           push: false
-          tags: volume-price-analysis:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: volume-price-analysis:ci-${{ matrix.arch }}
+          cache-from: type=gha,scope=ci-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ci-${{ matrix.arch }}
+
+      - name: Smoke-test image
+        run: docker run --rm volume-price-analysis:ci-${{ matrix.arch }} morning-briefing --help
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.75.0 # renovate: datasource=github-releases depName=aquasecurity/trivy
-          image-ref: volume-price-analysis:ci
+          image-ref: volume-price-analysis:ci-${{ matrix.arch }}
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL,HIGH
@@ -289,7 +301,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.75.0 # renovate: datasource=github-releases depName=aquasecurity/trivy
-          image-ref: volume-price-analysis:ci
+          image-ref: volume-price-analysis:ci-${{ matrix.arch }}
           exit-code: "0"
           ignore-unfixed: true
           severity: CRITICAL,HIGH
@@ -301,4 +313,4 @@ jobs:
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: trivy.sarif
-          category: trivy
+          category: trivy-${{ matrix.arch }}
