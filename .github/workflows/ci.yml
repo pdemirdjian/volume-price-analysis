@@ -250,7 +250,7 @@ jobs:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
 
-  docker:
+  docker-image:
     timeout-minutes: 30
     permissions:
       contents: read
@@ -314,3 +314,16 @@ jobs:
         with:
           sarif_file: trivy.sarif
           category: trivy-${{ matrix.arch }}
+
+  # Branch protection and the main ruleset require a check named exactly "docker"; a matrix
+  # job reports as "docker-image (amd64)" etc., so this job rolls the matrix up under that name.
+  docker:
+    timeout-minutes: 5
+    if: always()
+    needs: docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check every architecture passed
+        env:
+          RESULT: ${{ needs.docker-image.result }}
+        run: test "$RESULT" = success
