@@ -6,16 +6,29 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 # Never cancel a running publish. GitHub still replaces an older *queued* run in this
 # group with a newer one, so only the latest pending run executes.
+# Use a distinct group: reusable CI inherits the caller's github.workflow value.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: docker-publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      security-events: write
+      # Required by the reusable workflow's PR-only coverage/dependency jobs.
+      pull-requests: write
+
   build-and-push:
+    needs: ci
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     timeout-minutes: 45
     runs-on: ubuntu-latest
 
@@ -45,13 +58,84 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push
+      # Builds are not reproducible (ADR-0001: apt-get upgrade floats Debian packages), so
+      # the image that gets tagged must be the one that was scanned. Push it untagged by
+      # digest, gate that digest, then promote it. Nothing below rebuilds.
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          provenance: mode=max
+          sbom: true
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/pdemirdjian/volume-price-analysis,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke-test pushed image (amd64)
+        env:
+          IMAGE: ghcr.io/pdemirdjian/volume-price-analysis@${{ steps.build.outputs.digest }}
+        run: docker run --rm --platform linux/amd64 "$IMAGE" morning-briefing --help
+
+      - name: Smoke-test pushed image (arm64)
+        env:
+          IMAGE: ghcr.io/pdemirdjian/volume-price-analysis@${{ steps.build.outputs.digest }}
+        run: docker run --rm --platform linux/arm64 "$IMAGE" morning-briefing --help
+
+      # TRIVY_IMAGE_SRC=remote: read the pushed manifest, never an image the smoke tests
+      # left in the local daemon (which holds only the last platform pulled).
+      - name: Scan pushed image with Trivy (amd64)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/amd64
+          TRIVY_IMAGE_SRC: remote
+        with:
+          version: v0.75.0 # renovate: datasource=github-releases depName=aquasecurity/trivy
+          image-ref: ghcr.io/pdemirdjian/volume-price-analysis@${{ steps.build.outputs.digest }}
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Scan pushed image with Trivy (arm64)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+          TRIVY_IMAGE_SRC: remote
+        with:
+          version: v0.75.0 # renovate: datasource=github-releases depName=aquasecurity/trivy
+          image-ref: ghcr.io/pdemirdjian/volume-price-analysis@${{ steps.build.outputs.digest }}
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign gated digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/pdemirdjian/volume-price-analysis@${DIGEST}"
+
+      # imagetools create with a single source is a carbon copy, so the release tags point
+      # at the scanned, signed index. The check below fails the run if that ever changes.
+      - name: Promote gated digest to release tags
+        env:
+          REPO: ghcr.io/pdemirdjian/volume-price-analysis
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && args+=(--tag "$tag")
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "${REPO}@${DIGEST}"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            got=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$tag resolves to $got, expected gated digest $DIGEST"
+              exit 1
+            fi
+          done <<< "$TAGS"
