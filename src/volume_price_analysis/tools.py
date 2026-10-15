@@ -42,14 +42,39 @@ logger = logging.getLogger(__name__)
 
 
 def validate_arguments(arguments: dict[str, Any], schema: dict[str, Any]) -> None:
-    """Enforce every ``minimum``/``maximum`` the tool's JSON schema declares.
-
-    Only arguments actually supplied are checked (defaults are in range by
-    construction), and only numeric ones: other types are left to the tool.
-    """
+    """Validate supplied schema types and coerce numeric values before range checks."""
     for name, prop in schema.get("properties", {}).items():
-        value = arguments.get(name)
-        if not isinstance(value, int | float) or isinstance(value, bool):
+        if name not in arguments:
+            continue
+        value = arguments[name]
+        kind = prop.get("type")
+        if kind in ("integer", "number"):
+            message = f"{name} must be a finite {kind}"
+            if isinstance(value, bool) or not isinstance(value, int | float | str):
+                raise ValueError(message)
+            try:
+                number = float(value)
+            except ValueError, OverflowError:
+                raise ValueError(message) from None
+            if not math.isfinite(number) or (kind == "integer" and not number.is_integer()):
+                raise ValueError(message)
+            value = int(value) if isinstance(value, int) else number
+            if kind == "integer":
+                value = int(value)
+            arguments[name] = value
+        elif kind == "string":
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string")
+            continue
+        elif kind == "array":
+            if not isinstance(value, list):
+                raise ValueError(f"{name} must be an array")
+            if prop.get("items", {}).get("type") == "string":
+                for index, item in enumerate(value):
+                    if not isinstance(item, str) or not item.strip():
+                        raise ValueError(f"{name}[{index}] must be a non-empty string")
+            continue
+        else:
             continue
         low, high = prop.get("minimum"), prop.get("maximum")
         too_low = low is not None and value < low
@@ -365,6 +390,7 @@ async def _run_scan_candidates(ctx: ToolContext) -> dict:
         min_score=arguments.get("min_score", 2.0),
         min_adx=arguments.get("min_adx", 20),
         max_iv_percentile=arguments.get("max_iv_percentile", 100),
+        min_avg_daily_volume=arguments.get("min_avg_daily_volume", 0),
         direction=arguments.get("direction", "any"),
         max_results=max_results,
         data_source=ctx.data_source,
@@ -600,15 +626,19 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "min_score": {
                     "type": "number",
                     "description": "Minimum |score| to include (default: 2.0)",
+                    "minimum": 0,
                     "default": 2.0,
                 },
                 "min_adx": {
                     "type": "number",
                     "description": "Minimum ADX for trend strength (default: 20)",
+                    "minimum": 0,
                     "default": 20,
                 },
                 "max_iv_percentile": {
                     "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
                     "description": (
                         "Max volatility percentile (default: 100, use 50 for cheap "
                         "options). Note: this is a historical-volatility (HV) proxy, "
@@ -616,6 +646,12 @@ TOOLS: tuple[ToolSpec, ...] = (
                         "iv_percentile (compat) and hv_percentile."
                     ),
                     "default": 100,
+                },
+                "min_avg_daily_volume": {
+                    "type": "number",
+                    "description": "Minimum average daily share volume (0 = no filter)",
+                    "minimum": 0,
+                    "default": 0,
                 },
                 "direction": {
                     "type": "string",

@@ -315,6 +315,7 @@ class TestSchemaBounds:
             ("options_analysis", "days_to_expiration"),
             ("scan_candidates", "holding_period"),
             ("scan_candidates", "max_results"),
+            ("scan_candidates", "max_iv_percentile"),
             ("calculate_rsi_divergence", "rsi_period"),
             ("calculate_rsi_divergence", "divergence_lookback"),
         }
@@ -340,7 +341,7 @@ class TestSchemaBounds:
     def test_absent_and_unbounded_arguments_pass(self):
         schema = TOOLS_BY_NAME["scan_candidates"].input_schema
         validate_arguments({}, schema)
-        validate_arguments({"min_score": -1e9, "min_adx": 1e9}, schema)
+        validate_arguments({"min_score": 0, "min_adx": 1e9}, schema)
 
     def test_one_sided_bounds(self):
         schema = {
@@ -354,11 +355,15 @@ class TestSchemaBounds:
         with pytest.raises(ValueError, match="^ceiling must be at most 9, got 10$"):
             validate_arguments({"ceiling": 10}, schema)
 
-    def test_non_numeric_values_are_left_to_the_tool(self):
-        # Bounds only apply to numbers; bool is not treated as a number.
-        schema = TOOLS_BY_NAME["calculate_mfi"].input_schema
-        validate_arguments({"mfi_period": "abc"}, schema)
-        validate_arguments({"mfi_period": False}, schema)
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["20", 20.0])
+    async def test_numeric_num_bins_is_coerced(self, value):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        result = await dispatch(
+            "calculate_volume_profile", {"symbol": SYMBOL, "num_bins": value}, data_source=source
+        )
+        assert not result.is_error, result.content[0].text
+        assert json.loads(result.content[0].text)["num_price_levels"] == 20
 
 
 class TestToolContext:
@@ -395,3 +400,66 @@ class TestToolContext:
         ctx = ToolContext(args={}, data_source=InMemoryDataSource(), default_period="3mo")
         assert ctx.period == "3mo"
         assert ToolContext(args={"period": "1y"}, data_source=InMemoryDataSource()).period == "1y"
+
+
+class TestBoundaryValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool", "param", "value"),
+        [
+            ("calculate_volume_profile", "num_bins", value)
+            for value in (True, False, "abc", None, [], 20.5, "20.5", "nan", "inf", float("nan"))
+        ]
+        + [("get_stock_data", "symbol", value) for value in (None, 123, [])]
+        + [("get_stock_data", param, None) for param in ("period", "start_date", "end_date")]
+        + [("scan_candidates", "symbols", value) for value in ("AAPL", None, [None], [1], [""])]
+        + [("scan_candidates", "symbols", ["  "])]
+        + [("scan_candidates", "min_adx", True)],
+    )
+    async def test_invalid_types_return_clear_errors_before_fetch(self, tool, param, value):
+        source = InMemoryDataSource()
+        result = await dispatch(tool, {**MINIMAL_ARGS[tool], param: value}, data_source=source)
+        assert result.is_error is True
+        error = json.loads(result.content[0].text)["error"]
+        assert param in error
+        assert "internal error" not in error
+        assert source.fetch_calls == []
+
+    @pytest.mark.asyncio
+    async def test_scan_normalizes_symbols_and_applies_volume_filter(self):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        args = {"symbols": ["aapl"], "min_score": "0", "min_adx": "0"}
+        baseline = await dispatch("scan_candidates", args.copy(), data_source=source)
+        assert not baseline.is_error, baseline.content[0].text
+        payload = json.loads(baseline.content[0].text)
+        assert payload["summary"]["total_candidates"] == 1
+        assert payload["scan_parameters"]["min_avg_daily_volume"] == 0
+        filtered = await dispatch(
+            "scan_candidates", {**args, "min_avg_daily_volume": "10000000"}, data_source=source
+        )
+        assert not filtered.is_error, filtered.content[0].text
+        payload = json.loads(filtered.content[0].text)
+        assert payload["scan_parameters"]["min_avg_daily_volume"] == 10_000_000
+        assert payload["summary"]["total_candidates"] == 0
+        assert source.fetch_calls == [SYMBOL, SYMBOL]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("param", "value"),
+        [
+            ("min_score", -1),
+            ("min_adx", -1),
+            ("max_iv_percentile", -1),
+            ("max_iv_percentile", 101),
+            ("min_avg_daily_volume", -1),
+            ("min_avg_daily_volume", "-1"),
+        ],
+    )
+    async def test_scan_filter_ranges_are_enforced_before_fetch(self, param, value):
+        source = InMemoryDataSource()
+        result = await dispatch(
+            "scan_candidates", {"symbols": [SYMBOL], param: value}, data_source=source
+        )
+        assert result.is_error is True
+        assert param in json.loads(result.content[0].text)["error"]
+        assert source.fetch_calls == []
