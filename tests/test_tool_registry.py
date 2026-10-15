@@ -404,15 +404,56 @@ class TestToolContext:
 
 class TestBoundaryValidation:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("spec", TOOLS, ids=lambda s: s.name)
+    async def test_optional_nulls_behave_like_omission_for_every_tool(self, spec):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        args = dict(MINIMAL_ARGS[spec.name])
+        baseline = await dispatch(spec.name, args.copy(), data_source=source)
+        for name in spec.input_schema["properties"]:
+            if name not in spec.input_schema.get("required", []) and name not in args:
+                args[name] = None
+        result = await dispatch(spec.name, args, data_source=source)
+        assert not result.is_error, result.content[0].text
+        assert json.loads(result.content[0].text) == json.loads(baseline.content[0].text)
+        if spec.name == "calculate_volume_profile":
+            assert json.loads(result.content[0].text)["num_price_levels"] == 20
+
+    def test_null_symbols_is_omitted_before_scan_universe_selection(self):
+        args = {"symbols": None, "universe": "sp500"}
+        validate_arguments(args, TOOLS_BY_NAME["scan_candidates"].input_schema)
+        assert args == {"universe": "sp500"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [{}, {"symbol": None}])
+    async def test_required_symbol_is_rejected_when_absent_or_null(self, args):
+        source = InMemoryDataSource()
+        result = await dispatch("get_stock_data", args, data_source=source)
+        assert result.is_error is True
+        error = json.loads(result.content[0].text)["error"]
+        assert "symbol" in error
+        assert "internal error" not in error
+        assert source.fetch_calls == []
+
+    @pytest.mark.asyncio
+    async def test_stock_data_optional_nulls_use_defaults(self):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        result = await dispatch(
+            "get_stock_data",
+            {"symbol": SYMBOL, "start_date": None, "end_date": None, "period": None},
+            data_source=source,
+        )
+        assert not result.is_error, result.content[0].text
+        assert json.loads(result.content[0].text)["period"] == "1mo"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("tool", "param", "value"),
         [
             ("calculate_volume_profile", "num_bins", value)
-            for value in (True, False, "abc", None, [], 20.5, "20.5", "nan", "inf", float("nan"))
+            for value in (True, False, "abc", [], 20.5, "20.5", "nan", "inf", float("nan"))
         ]
         + [("get_stock_data", "symbol", value) for value in (None, 123, [])]
-        + [("get_stock_data", param, None) for param in ("period", "start_date", "end_date")]
-        + [("scan_candidates", "symbols", value) for value in ("AAPL", None, [None], [1], [""])]
+        + [("scan_candidates", "symbols", value) for value in ("AAPL", [None], [1], [""])]
         + [("scan_candidates", "symbols", ["  "])]
         + [("scan_candidates", "min_adx", True)],
     )

@@ -43,10 +43,14 @@ logger = logging.getLogger(__name__)
 
 def validate_arguments(arguments: dict[str, Any], schema: dict[str, Any]) -> None:
     """Validate supplied schema types and coerce numeric values before range checks."""
+    required = schema.get("required", [])
     for name, prop in schema.get("properties", {}).items():
         if name not in arguments:
             continue
         value = arguments[name]
+        if value is None and name not in required:
+            del arguments[name]
+            continue
         kind = prop.get("type")
         if kind in ("integer", "number"):
             message = f"{name} must be a finite {kind}"
