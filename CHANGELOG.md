@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.13.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.13.2...v2.13.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** update dependency numpy to v2.5.4 ([#547](https://github.com/pdemirdjian/volume-price-analysis/issues/547)) ([41b2462](https://github.com/pdemirdjian/volume-price-analysis/commit/41b24625fe40a5c1fbab4e43f05cb600eaa901a7))
+* **PDE-31:** validate MCP tool argument types at the server boundary; expose min_avg_daily_volume ([#551](https://github.com/pdemirdjian/volume-price-analysis/issues/551)) ([5b8ac8c](https://github.com/pdemirdjian/volume-price-analysis/commit/5b8ac8c5f2fcf85b49470dde31248b621b3142db))
+
 ## [2.13.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.13.1...v2.13.2) (2026-10-12)
 
 
