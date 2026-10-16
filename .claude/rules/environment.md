@@ -18,4 +18,11 @@ AI and email variables are required for the morning briefing agent only.
 | `MAX_DEEP_ANALYSIS` | No | `5` | Max candidates for deep analysis (1–20; out-of-range values fall back/clamp) |
 | `SCHEDULER_HEARTBEAT_FILE` | No | `<tempdir>/morning-scheduler.heartbeat` | Liveness file the scheduler writes (monotonic stamp); read by `morning-healthcheck` |
 
+Briefing scan variables are documented with defaults and bounds in the
+[README environment table](../../README.md#configuration). They are `SCAN_PERIOD`,
+`SCAN_HOLDING_PERIOD`, `SCAN_MIN_SCORE`, `SCAN_MIN_ADX`, `SCAN_MAX_IV_PERCENTILE`,
+`SCAN_MIN_AVG_DAILY_VOLUME`, and `SCAN_MAX_RESULTS`. Invalid numeric scan values
+raise an error; validation uses the MCP scan bounds and registered universes.
+`LOG_LEVEL` defaults to `INFO` and controls MCP server logging to stderr.
+
 Store in `.env` (gitignored) or pass via Docker `--env-file`.
