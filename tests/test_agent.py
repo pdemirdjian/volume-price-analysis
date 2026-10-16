@@ -44,7 +44,6 @@ from volume_price_analysis.agent.email_sender import (
     send_email,
 )
 from volume_price_analysis.agent.morning_agent import (
-    _HOLDING_PERIOD_DAYS,
     BriefingRunResult,
     _candidate_symbols,
     _check_earnings,
@@ -1306,7 +1305,7 @@ class TestBriefingRunSeams:
         assert not result.degraded
         assert scan.calls[0]["as_of"] == date(2026, 9, 4)
         assert scan.calls[0]["universe"] == config.scan_universe
-        assert analyze.calls == [("AAPL", _HOLDING_PERIOD_DAYS)]
+        assert analyze.calls == [("AAPL", AgentConfig().scan_holding_period)]
         request = provider.requests[0]
         assert (request.model, request.api_key) == ("m", "k")
         assert request.system_prompt == SYSTEM_PROMPT
@@ -2097,7 +2096,7 @@ class TestCheckEarnings:
 
     def test_boundary_exactly_14_days_out_warns(self):
         """The window is inclusive at both ends."""
-        edge = NOW_UTC + timedelta(days=_HOLDING_PERIOD_DAYS)
+        edge = NOW_UTC + timedelta(days=AgentConfig().scan_holding_period)
         assert _check_earnings("AAPL", NOW_UTC, self._source(edge)) is not None
 
     def test_after_hours_earnings_uses_market_calendar_day(self):
@@ -2291,7 +2290,7 @@ class TestConfigErrors:
         base.update(overrides)
         return AgentConfig(**base)
 
-    def test_dry_run_no_ai_ignores_everything(self):
+    def test_dry_run_no_ai_ignores_provider_and_email_errors(self):
         assert _config_errors(self._config(), dry_run=True, no_ai=True) == []
 
     def test_dry_run_with_ai_keeps_only_ai_errors(self):
@@ -2869,3 +2868,24 @@ async def test_briefing_uses_configured_scan_parameters():
         "min_avg_daily_volume": 750_000,
         "max_results": 8,
     }
+
+
+@pytest.mark.parametrize("holding_period,expected", [(7, "HIGH"), (30, "MEDIUM")])
+async def test_configured_holding_period_reaches_earnings_window(capsys, holding_period, expected):
+    candidate = {"symbol": "TJX", "composite_score": 5.0, "adx": 35, "hv_percentile": 20}
+    provider = _FakeProvider()
+    await run_morning_briefing(
+        AgentConfig(scan_holding_period=holding_period),
+        dry_run=True,
+        data_source=InMemoryDataSource(earnings={"TJX": datetime(2026, 8, 23)}),
+        now=datetime(2026, 8, 3, 12, tzinfo=UTC),
+        scan=_FakeScan(_scan_result(top_bullish=[candidate], high_conviction=[candidate])),
+        analyze=lambda symbol, data, **kwargs: {"symbol": symbol},
+        provider=provider,
+    )
+    projected_scan = _prompt_scan(provider.user_content)
+    assert projected_scan["top_bullish"][0]["conviction"] == expected
+    if expected == "MEDIUM":
+        assert f"within {holding_period} days" in provider.user_content
+    else:
+        assert "EARNINGS EVENT RISK" not in provider.user_content

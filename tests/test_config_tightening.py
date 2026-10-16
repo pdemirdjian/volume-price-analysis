@@ -51,12 +51,19 @@ def test_bad_numeric_scan_env_fails(monkeypatch, name):
         ("min_adx", float("inf")),
     ],
 )
-def test_invalid_scan_settings(name, value):
+@pytest.mark.parametrize(
+    "dry_run,no_ai", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_invalid_scan_settings(name, value, dry_run, no_ai):
     config = AgentConfig(**{f"scan_{name}": value})
-    assert any(f"SCAN_{name.upper()}" in error for error in config.validate())
+    from volume_price_analysis.agent.morning_agent import _config_errors
+
+    errors = _config_errors(config, dry_run=dry_run, no_ai=no_ai)
+    assert any(f"SCAN_{name.upper()}" in error for error in errors)
 
 
-def test_server_startup_logging_uses_stderr():
+@pytest.mark.parametrize("level", ["DEBUG", "verbose"])
+def test_server_startup_logging_uses_stderr(level):
     import os
     import subprocess
     import sys
@@ -82,9 +89,21 @@ except RuntimeError:
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        env={**os.environ, "LOG_LEVEL": "DEBUG"},
+        env={**os.environ, "LOG_LEVEL": level},
         check=True,
     )
     assert result.stdout == ""
-    assert "startup debug" in result.stderr
+    assert ("startup debug" in result.stderr) == (level == "DEBUG")
+    if level == "verbose":
+        assert "Invalid LOG_LEVEL=" in result.stderr
+        assert "using INFO" in result.stderr
     assert "startup info" in result.stderr
+
+
+@pytest.mark.parametrize("no_ai", [False, True])
+@pytest.mark.parametrize("value", [0, 21])
+def test_dry_run_rejects_invalid_deep_analysis_limit(no_ai, value):
+    from volume_price_analysis.agent.morning_agent import _config_errors
+
+    errors = _config_errors(AgentConfig(max_deep_analysis=value), dry_run=True, no_ai=no_ai)
+    assert any("max_deep_analysis" in error for error in errors)

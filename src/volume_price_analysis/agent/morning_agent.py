@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 # Briefings are dated in market time: the scheduler fires at 08:30 ET, and a
 # UTC date would roll over at 20:00 ET the evening before.
 MARKET_TZ = ZoneInfo("America/New_York")
-_HOLDING_PERIOD_DAYS = 14
 MAX_CONCURRENT_DEEP_ANALYSES = 4
 
 # The briefing run's injectable steps (PDE-155). Production passes nothing and
@@ -188,6 +187,7 @@ async def run_morning_briefing(
         sorted(_candidate_symbols(scan_results, deep_analyses)),
         now,
         source,
+        config.scan_holding_period,
     )
     scan_results = _exclude_earnings_candidates(scan_results, earnings_warnings)
     if earnings_warnings:
@@ -220,7 +220,7 @@ async def run_morning_briefing(
             config.ai_provider,
             config.ai_model or "default model",
         )
-        earnings_preamble = build_earnings_preamble(earnings_warnings)
+        earnings_preamble = build_earnings_preamble(earnings_warnings, config.scan_holding_period)
         briefing_provider = provider if provider is not None else PROVIDERS[config.ai_provider]
         try:
             model_text = await asyncio.to_thread(
@@ -303,8 +303,10 @@ _EARNINGS_MAX_WORKERS = 8
 EARNINGS_TIMEOUT_SECONDS = 30
 
 
-def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | None:
-    """Return a warning string if the symbol has earnings within 14 days, else None."""
+def _check_earnings(
+    symbol: str, now: datetime, source: DataSource, holding_period: int = 14
+) -> str | None:
+    """Return a warning string if the symbol has earnings within the holding period, else None."""
     try:
         earnings_dt = source.earnings_date(symbol)
         if earnings_dt is None:
@@ -314,7 +316,7 @@ def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | Non
         if earnings_dt.utcoffset() is not None:
             earnings_dt = earnings_dt.astimezone(MARKET_TZ)
         days_out = (earnings_dt.date() - now.astimezone(MARKET_TZ).date()).days
-        if 0 <= days_out <= _HOLDING_PERIOD_DAYS:
+        if 0 <= days_out <= holding_period:
             return f"EARNINGS in {days_out} day(s) ({earnings_dt.strftime('%Y-%m-%d')})"
         return None
     except Exception:
@@ -323,14 +325,16 @@ def _check_earnings(symbol: str, now: datetime, source: DataSource) -> str | Non
 
 
 def _fetch_earnings_warnings(
-    symbols: list[str], now: datetime, source: DataSource
+    symbols: list[str], now: datetime, source: DataSource, holding_period: int = 14
 ) -> dict[str, str]:
     """Fetch earnings dates for all symbols concurrently. Returns symbol -> warning string."""
     if not symbols:
         return {}
     pool = ThreadPoolExecutor(max_workers=min(len(symbols), _EARNINGS_MAX_WORKERS))
     try:
-        futures = {sym: pool.submit(_check_earnings, sym, now, source) for sym in symbols}
+        futures = {
+            sym: pool.submit(_check_earnings, sym, now, source, holding_period) for sym in symbols
+        }
         result: dict[str, str] = {}
         for sym, fut in futures.items():
             try:
@@ -442,7 +446,7 @@ def _candidate_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str
     return symbols
 
 
-def build_earnings_preamble(warnings: dict[str, str]) -> str:
+def build_earnings_preamble(warnings: dict[str, str], holding_period: int = 14) -> str:
     """Render the earnings-risk preamble prepended to the AI prompt.
 
     Returns an empty string when no displayed candidate has upcoming earnings.
@@ -452,7 +456,7 @@ def build_earnings_preamble(warnings: dict[str, str]) -> str:
     lines = [f"  - {sym}: {warn}" for sym, warn in sorted(warnings.items())]
     return (
         "\n\n**EARNINGS EVENT RISK** — the following candidates have earnings "
-        f"within {_HOLDING_PERIOD_DAYS} days. These are earnings plays — binary risk; "
+        f"within {holding_period} days. These are earnings plays — binary risk; "
         "never present them as high conviction. Keep them flagged in the regular list:\n"
         + "\n".join(lines)
         + "\n"
@@ -463,16 +467,15 @@ def _config_errors(config: AgentConfig, dry_run: bool, no_ai: bool) -> list[str]
     """Select the config errors that actually block this run mode.
 
     A dry run never emails, and --no-ai never calls a provider, so each mode
-    ignores the half of ``AgentConfig.validate()`` it cannot trip over.
+    ignores the corresponding provider or email errors. Scan errors always block.
     """
     errors = config.validate()
-    if dry_run and no_ai:
-        return []
-    if dry_run:
-        return [e for e in errors if "API_KEY" in e or "AI_PROVIDER" in e]
-    if no_ai:
-        return [e for e in errors if "API_KEY" not in e and "AI_PROVIDER" not in e]
-    return errors
+    return [
+        error
+        for error in errors
+        if not (dry_run and error.startswith("EMAIL_"))
+        and not (no_ai and error.startswith("AI_PROVIDER"))
+    ]
 
 
 def main():

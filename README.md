@@ -478,13 +478,13 @@ uv run python -m volume_price_analysis.agent.morning_agent --no-ai
 | `SCAN_MIN_AVG_DAILY_VOLUME` | `500000` | Minimum average daily volume (>= 0) |
 | `SCAN_MAX_RESULTS` | `15` | Results per direction (1–100) |
 | `LOG_LEVEL` | `INFO` | MCP server stderr logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+| `DATA_CACHE_TTL_SECONDS` | `900` | History cache TTL in seconds for MCP and briefing; `0` disables caching; invalid values fall back to `900` |
+| `TZ` | `America/New_York` | Container timezone |
 
 Numeric scan variables must be numeric and finite; invalid values fail configuration.
 `SCAN_UNIVERSE` must name a registered universe. Deep analysis is limited to 1–20
 candidates (existing env parsing falls back/clamps outside that range).
 Restart the agent after changing environment variables.
-| `DATA_CACHE_TTL_SECONDS` | `900` | History cache TTL in seconds for MCP and briefing; `0` disables caching; invalid values fall back to `900` |
-| `TZ` | `America/New_York` | Container timezone |
 
 ## Data Source
 

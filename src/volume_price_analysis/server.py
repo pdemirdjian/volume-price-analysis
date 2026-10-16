@@ -141,12 +141,16 @@ server = Server(
 
 async def main():
     """Run the MCP server."""
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = logging.getLevelNamesMapping().get(level_name)
     logging.basicConfig(
-        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        level=level if level is not None else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[logging.StreamHandler(sys.stderr)],
         force=True,
     )
+    if level is None:
+        logging.getLogger(__name__).warning("Invalid LOG_LEVEL=%r; using INFO", level_name)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
