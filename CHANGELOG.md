@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.14.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.13.3...v2.14.0) (2026-10-16)
+
+
+### Features
+
+* **PDE-32:** env-configurable briefing scan params, stricter config validation, server stderr logging ([#556](https://github.com/pdemirdjian/volume-price-analysis/issues/556)) ([0fbf49f](https://github.com/pdemirdjian/volume-price-analysis/commit/0fbf49f5c56e709f58a9cb9c627da7481cb724ae))
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=2.30.0 ([#554](https://github.com/pdemirdjian/volume-price-analysis/issues/554)) ([48b33c0](https://github.com/pdemirdjian/volume-price-analysis/commit/48b33c033f308b014692e445b5e126d81fcfccee))
+
 ## [2.13.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.13.2...v2.13.3) (2026-10-15)
 
 
