@@ -4,6 +4,10 @@ import logging
 import os
 from dataclasses import dataclass
 
+from ..analysis import get_universes
+from ..data_fetcher import VALID_PERIODS
+from ..tools import TOOLS_BY_NAME, validate_arguments
+
 logger = logging.getLogger(__name__)
 
 # Upper bound for MAX_DEEP_ANALYSIS: each candidate costs a data fetch, an
@@ -31,6 +35,13 @@ class AgentConfig:
     # Scan settings
     scan_universe: str = "full_market"
     max_deep_analysis: int = 5
+    scan_period: str = "3mo"
+    scan_holding_period: int = 14
+    scan_min_score: float = 2.0
+    scan_min_adx: float = 20
+    scan_max_iv_percentile: float = 70
+    scan_min_avg_daily_volume: float = 500_000
+    scan_max_results: int = 15
 
     def __repr__(self) -> str:
         return (
@@ -71,6 +82,14 @@ class AgentConfig:
                 )
                 max_deep = MAX_DEEP_ANALYSIS_CAP
 
+        def scan_number(name: str, default: int | float, kind: type[int] | type[float]):
+            key = f"SCAN_{name.upper()}"
+            raw = os.environ.get(key, str(default))
+            try:
+                return kind(raw)
+            except ValueError:
+                raise ValueError(f"{key}={raw!r} must be a valid {kind.__name__}") from None
+
         return cls(
             ai_provider=os.environ.get("AI_PROVIDER", "gemini").lower(),
             ai_provider_api_key=os.environ.get("AI_PROVIDER_API_KEY", ""),
@@ -82,6 +101,13 @@ class AgentConfig:
             email_smtp_port=smtp_port,
             scan_universe=os.environ.get("SCAN_UNIVERSE", "full_market"),
             max_deep_analysis=max_deep,
+            scan_period=os.environ.get("SCAN_PERIOD", "3mo"),
+            scan_holding_period=scan_number("holding_period", 14, int),
+            scan_min_score=scan_number("min_score", 2.0, float),
+            scan_min_adx=scan_number("min_adx", 20, float),
+            scan_max_iv_percentile=scan_number("max_iv_percentile", 70, float),
+            scan_min_avg_daily_volume=scan_number("min_avg_daily_volume", 500_000, float),
+            scan_max_results=scan_number("max_results", 15, int),
         )
 
     def validate(self) -> list[str]:
@@ -117,4 +143,21 @@ class AgentConfig:
             errors.append(
                 f"max_deep_analysis={self.max_deep_analysis} exceeds cap {MAX_DEEP_ANALYSIS_CAP}"
             )
+        if self.scan_universe not in get_universes():
+            errors.append(f"SCAN_UNIVERSE={self.scan_universe!r} is unknown")
+        if self.scan_period not in VALID_PERIODS:
+            errors.append(f"SCAN_PERIOD={self.scan_period!r} is invalid")
+        schema = TOOLS_BY_NAME["scan_candidates"].input_schema
+        for name in (
+            "holding_period",
+            "min_score",
+            "min_adx",
+            "max_iv_percentile",
+            "min_avg_daily_volume",
+            "max_results",
+        ):
+            try:
+                validate_arguments({name: getattr(self, f"scan_{name}")}, schema)
+            except ValueError as exc:
+                errors.append(f"SCAN_{name.upper()}: {exc}")
         return errors

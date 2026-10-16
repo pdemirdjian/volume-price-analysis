@@ -2833,3 +2833,39 @@ def test_prompt_carries_pick_entry_stop_and_target_without_mutating_candidates()
     row = projected["top_bearish"][0]
     assert (row["entry"], row["stop"], row["target"]) == (100.0, 106.0, 88.0)
     assert scan == original
+
+
+async def test_briefing_uses_configured_scan_parameters():
+    config = _config()
+    config.scan_period = "6mo"
+    config.scan_holding_period = 30
+    config.scan_min_score = 3.5
+    config.scan_min_adx = 25
+    config.scan_max_iv_percentile = 60
+    config.scan_min_avg_daily_volume = 750_000
+    config.scan_max_results = 8
+    scan = _FakeScan()
+    await run_morning_briefing(
+        config, dry_run=True, no_ai=True, data_source=agent_source(), scan=scan
+    )
+    args = scan.calls[0]
+    assert {
+        key: args[key]
+        for key in (
+            "period",
+            "holding_period",
+            "min_score",
+            "min_adx",
+            "max_iv_percentile",
+            "min_avg_daily_volume",
+            "max_results",
+        )
+    } == {
+        "period": "6mo",
+        "holding_period": 30,
+        "min_score": 3.5,
+        "min_adx": 25,
+        "max_iv_percentile": 60,
+        "min_avg_daily_volume": 750_000,
+        "max_results": 8,
+    }

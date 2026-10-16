@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import math
+import os
+import sys
 from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server import NotificationOptions, Server, ServerRequestContext
@@ -139,6 +141,12 @@ server = Server(
 
 async def main():
     """Run the MCP server."""
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stderr)],
+        force=True,
+    )
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,

@@ -470,6 +470,19 @@ uv run python -m volume_price_analysis.agent.morning_agent --no-ai
 | `EMAIL_TO` | (required) | Recipient email address |
 | `SCAN_UNIVERSE` | `full_market` | Symbol universe to scan |
 | `MAX_DEEP_ANALYSIS` | `5` | Top N candidates for deep analysis |
+| `SCAN_PERIOD` | `3mo` | History period (valid yfinance period) |
+| `SCAN_HOLDING_PERIOD` | `14` | Holding period in days (1–90) |
+| `SCAN_MIN_SCORE` | `2.0` | Minimum absolute score (>= 0) |
+| `SCAN_MIN_ADX` | `20` | Minimum ADX (>= 0) |
+| `SCAN_MAX_IV_PERCENTILE` | `70` | Maximum HV proxy percentile (0–100) |
+| `SCAN_MIN_AVG_DAILY_VOLUME` | `500000` | Minimum average daily volume (>= 0) |
+| `SCAN_MAX_RESULTS` | `15` | Results per direction (1–100) |
+| `LOG_LEVEL` | `INFO` | MCP server stderr logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+
+Numeric scan variables must be numeric and finite; invalid values fail configuration.
+`SCAN_UNIVERSE` must name a registered universe. Deep analysis is limited to 1–20
+candidates (existing env parsing falls back/clamps outside that range).
+Restart the agent after changing environment variables.
 | `DATA_CACHE_TTL_SECONDS` | `900` | History cache TTL in seconds for MCP and briefing; `0` disables caching; invalid values fall back to `900` |
 | `TZ` | `America/New_York` | Container timezone |
 

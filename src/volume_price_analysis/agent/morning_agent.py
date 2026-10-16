@@ -120,14 +120,14 @@ async def run_morning_briefing(
     logger.info("Step 1: Scanning universe '%s'...", config.scan_universe)
     scan_results = await scan(
         universe=config.scan_universe,
-        period="3mo",
-        holding_period=_HOLDING_PERIOD_DAYS,
-        min_score=2.0,
-        min_adx=20,
-        max_iv_percentile=70,
-        min_avg_daily_volume=500_000,
+        period=config.scan_period,
+        holding_period=config.scan_holding_period,
+        min_score=config.scan_min_score,
+        min_adx=config.scan_min_adx,
+        max_iv_percentile=config.scan_max_iv_percentile,
+        min_avg_daily_volume=config.scan_min_avg_daily_volume,
         direction="any",
-        max_results=15,
+        max_results=config.scan_max_results,
         data_source=source,
         as_of=briefing_date,
     )
@@ -161,8 +161,8 @@ async def run_morning_briefing(
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_DEEP_ANALYSES)
 
     def analyze_symbol(symbol: str) -> dict:
-        data = source.fetch(symbol, period="3mo")
-        return analyze(symbol, data, holding_period=_HOLDING_PERIOD_DAYS)
+        data = source.fetch(symbol, period=config.scan_period)
+        return analyze(symbol, data, holding_period=config.scan_holding_period)
 
     async def analyze_symbol_async(symbol: str) -> dict | None:
         async with semaphore:
