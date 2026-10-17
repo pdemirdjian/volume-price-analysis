@@ -8,10 +8,10 @@ import asyncio
 import functools
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 from curl_cffi.requests.exceptions import ConnectionError as CurlConnectionError
@@ -52,6 +52,15 @@ from .indicators import (
     detect_volume_breakout,
     threshold_verdict,
     trend_verdict,
+)
+from .payloads import (
+    BollingerSnapshot,
+    CompositeScore,
+    ComprehensiveAnalysis,
+    Headline,
+    OptionsAnalysis,
+    ScanCandidate,
+    ScanResult,
 )
 from .retry import retry_call
 
@@ -246,7 +255,7 @@ HIGH_CONVICTION_MIN_ADX = 28.0
 HIGH_CONVICTION_MAX_HV_PERCENTILE = 50.0
 
 
-def passes_high_conviction_gate(candidate: dict) -> bool:
+def passes_high_conviction_gate(candidate: Mapping[str, Any]) -> bool:
     """True when a scan candidate dict clears the high-conviction gate.
 
     Missing or non-numeric fields fail the gate rather than raising, so partial
@@ -298,7 +307,7 @@ def _build_rationale(score: float, label: str, signal_quality: str, breakdown: d
     )
 
 
-def build_headline(composite: dict) -> dict:
+def build_headline(composite: CompositeScore) -> Headline:
     """Build a compact top-line headline from a composite-score result.
 
     Additive summary for MCP tool responses (comprehensive_analysis,
@@ -337,7 +346,7 @@ def analyze_single_symbol(
     min_avg_volume: float = 0,
     data_source: DataSource | None = None,
     as_of: date | None = None,
-) -> dict | None:
+) -> ScanCandidate | None:
     """
     Analyze a single symbol for scan_candidates.
 
@@ -374,7 +383,7 @@ def score_symbol(
     max_iv: float,
     direction: str,
     min_avg_volume: float = 0,
-) -> dict | None:
+) -> ScanCandidate | None:
     """
     Score already-fetched OHLCV data for a single symbol and apply scan filters.
 
@@ -453,7 +462,7 @@ def score_symbol(
 class _ScanDataSource:
     """Scan-only retry policy around the adapter's single fetch attempt."""
 
-    def __init__(self, source: DataSource, sleep: Callable[[float], None] | None):
+    def __init__(self, source: DataSource, sleep: Callable[[float], None] | None) -> None:
         self.source = source
         self.sleep = sleep
 
@@ -523,7 +532,7 @@ async def _analyze_symbol_async(
     min_avg_volume: float = 0,
     data_source: DataSource | None = None,
     as_of: date | None = None,
-) -> tuple[str, dict | None, str | None, bool, bool]:
+) -> tuple[str, ScanCandidate | None, str | None, bool, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
 
@@ -570,7 +579,7 @@ async def run_scan(
     data_source: DataSource | None = None,
     as_of: date | None = None,
     retry_sleep: Callable[[float], None] | None = None,
-) -> dict:
+) -> ScanResult:
     """
     Scan the market for options trading candidates.
 
@@ -786,21 +795,21 @@ def _require_ohlcv(symbol: str, data: pd.DataFrame) -> None:
         raise ValueError(f"DataFrame missing required columns: {', '.join(sorted(missing))}")
 
 
-def _bollinger_snapshot(bbands: dict) -> dict[str, float]:
+def _bollinger_snapshot(bbands: dict) -> BollingerSnapshot:
     """Latest Bollinger band values, with undefined (NaN) values reported as 0.0.
 
     Shared by comprehensive and options analysis so both payloads apply the
     same NaN rule; the squeeze verdict is likewise shared via
     detect_bollinger_squeeze.
     """
-    snapshot = {}
+    snapshot: dict[str, float] = {}
     for key in ("upper", "middle", "lower", "percent_b", "bandwidth"):
         value = bbands[key].iloc[-1]
         snapshot[key] = float(value) if not pd.isna(value) else 0.0
-    return snapshot
+    return cast(BollingerSnapshot, snapshot)
 
 
-def run_comprehensive_analysis(symbol: str, data: pd.DataFrame) -> dict:
+def run_comprehensive_analysis(symbol: str, data: pd.DataFrame) -> ComprehensiveAnalysis:
     """
     Run comprehensive volume-price analysis on a single symbol.
 
@@ -968,22 +977,22 @@ def run_comprehensive_analysis(symbol: str, data: pd.DataFrame) -> dict:
 
 
 def generate_enhanced_summary(
-    data,
-    obv,
-    ad_line,
-    vwap,
-    vwma,
-    mfi,
-    cmf,
-    trends,
-    latest_close,
-    latest_vwap,
-    hv,
-    atr,
-    profile,
-    rvol,
-    breakout,
-):
+    data: pd.DataFrame,
+    obv: pd.Series,
+    ad_line: pd.Series,
+    vwap: pd.Series,
+    vwma: pd.Series,
+    mfi: pd.Series,
+    cmf: pd.Series,
+    trends: dict[str, Any],
+    latest_close: float,
+    latest_vwap: float,
+    hv: pd.Series,
+    atr: pd.Series,
+    profile: dict[str, Any],
+    rvol: dict[str, Any],
+    breakout: dict[str, Any],
+) -> list[str]:
     """Generate enhanced human-readable summary of the analysis."""
     summary = []
 
@@ -1054,7 +1063,7 @@ def run_options_analysis(
     data: pd.DataFrame,
     holding_period: int = 14,
     days_to_expiration: int | None = None,
-) -> dict:
+) -> OptionsAnalysis:
     """
     Run comprehensive options analysis on a single symbol.
 
@@ -1342,22 +1351,22 @@ def run_options_analysis(
 
 
 def _generate_options_insights(
-    composite,
-    adx_data,
-    rsi_data,
-    iv_percentile,
-    expected_move,
-    profile,
-    rvol,
-    breakout,
-    trends,
-    mfi_val,
-    cmf_val,
-    is_squeeze,
-    bb_pct_b,
-    holding_period,
-    latest_close,
-):
+    composite: CompositeScore,
+    adx_data: dict[str, Any],
+    rsi_data: dict[str, Any],
+    iv_percentile: dict[str, Any],
+    expected_move: dict[str, Any],
+    profile: dict[str, Any],
+    rvol: dict[str, Any],
+    breakout: dict[str, Any],
+    trends: dict[str, Any],
+    mfi_val: float,
+    cmf_val: float,
+    is_squeeze: bool,
+    bb_pct_b: float,
+    holding_period: int,
+    latest_close: float,
+) -> list[str]:
     """Generate comprehensive options trading insights for 14-30 day plays."""
     insights = []
 

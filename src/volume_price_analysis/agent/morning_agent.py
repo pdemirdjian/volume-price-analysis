@@ -13,14 +13,16 @@ import asyncio
 import logging
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from ..analysis import passes_high_conviction_gate, run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
+from ..payloads import OptionsAnalysis, ScanResult
 from ..retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 from .ai_client import (
     PROVIDERS,
@@ -50,8 +52,8 @@ MAX_CONCURRENT_DEEP_ANALYSES = 4
 
 # The briefing run's injectable steps (PDE-155). Production passes nothing and
 # gets analysis.run_scan / analysis.run_options_analysis; tests pass fakes.
-ScanFn = Callable[..., Awaitable[dict]]
-AnalyzeFn = Callable[..., dict]
+ScanFn = Callable[..., Awaitable[ScanResult]]
+AnalyzeFn = Callable[..., OptionsAnalysis]
 
 
 @dataclass
@@ -159,11 +161,11 @@ async def run_morning_briefing(
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_DEEP_ANALYSES)
 
-    def analyze_symbol(symbol: str) -> dict:
+    def analyze_symbol(symbol: str) -> OptionsAnalysis:
         data = source.fetch(symbol, period=config.scan_period)
         return analyze(symbol, data, holding_period=config.scan_holding_period)
 
-    async def analyze_symbol_async(symbol: str) -> dict | None:
+    async def analyze_symbol_async(symbol: str) -> OptionsAnalysis | None:
         async with semaphore:
             try:
                 analysis = await asyncio.to_thread(analyze_symbol, symbol)
@@ -352,14 +354,16 @@ def _fetch_earnings_warnings(
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-def _exclude_earnings_candidates(scan_results: dict, warnings: dict[str, str]) -> dict:
+def _exclude_earnings_candidates(
+    scan_results: Mapping[str, Any], warnings: dict[str, str]
+) -> ScanResult:
     """Keep earnings plays in the directional lists, outside high conviction.
 
     Copy candidates because scan result lists share their dictionaries. The
     summary counts qualifiers beyond the capped high-conviction list too.
     """
     if not warnings:
-        return scan_results
+        return cast(ScanResult, scan_results)
     result = dict(scan_results)
     excluded = set()
     for key in ("high_conviction_setups", "top_bullish", "top_bearish"):
@@ -385,7 +389,7 @@ def _exclude_earnings_candidates(scan_results: dict, warnings: dict[str, str]) -
         **summary,
         "high_conviction": max(0, summary.get("high_conviction", 0) - len(excluded)),
     }
-    return result
+    return cast(ScanResult, result)
 
 
 def _fetch_market_regime(source: DataSource, today: date | None = None) -> dict:
@@ -405,7 +409,7 @@ def _fetch_market_regime(source: DataSource, today: date | None = None) -> dict:
         return compute_market_regime(None)
 
 
-def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
+def _get_top_symbols(scan_results: Mapping[str, Any], max_count: int) -> list[str]:
     """Extract top candidate symbols from scan results for deep analysis."""
     symbols = []
     seen = set()
@@ -434,7 +438,9 @@ def _get_top_symbols(scan_results: dict, max_count: int) -> list[str]:
     return symbols[:max_count]
 
 
-def _candidate_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str]:
+def _candidate_symbols(
+    scan_results: Mapping[str, Any], deep_analyses: Sequence[OptionsAnalysis]
+) -> set[str]:
     """Collect every symbol the briefing may mention, for ticker linkification."""
     symbols = {
         candidate["symbol"]
@@ -478,7 +484,7 @@ def _config_errors(config: AgentConfig, dry_run: bool, no_ai: bool) -> list[str]
     ]
 
 
-def main():
+def main() -> None:
     """Entry point for the morning briefing agent."""
     parser = argparse.ArgumentParser(description="Morning market briefing agent")
     parser.add_argument("--dry-run", action="store_true", help="Print to stdout, don't email")
