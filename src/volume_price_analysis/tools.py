@@ -37,6 +37,7 @@ from .indicators import (
     threshold_verdict,
     trend_verdict,
 )
+from .payloads import ComprehensiveAnalysis, OptionsAnalysis, ScanResult
 
 logger = logging.getLogger(__name__)
 
@@ -362,11 +363,11 @@ async def _run_analyze_volume_trends(ctx: ToolContext) -> dict:
     return {"symbol": symbol, "analysis": "Volume Trend Analysis", **trends}
 
 
-async def _run_comprehensive_analysis(ctx: ToolContext) -> dict:
+async def _run_comprehensive_analysis(ctx: ToolContext) -> ComprehensiveAnalysis:
     return run_comprehensive_analysis(symbol=ctx.require_symbol(), data=ctx.fetch())
 
 
-async def _run_options_analysis(ctx: ToolContext) -> dict:
+async def _run_options_analysis(ctx: ToolContext) -> OptionsAnalysis:
     symbol = ctx.require_symbol()
     holding_period = ctx.args.get("holding_period", 14)
     days_to_expiration = ctx.args.get("days_to_expiration", holding_period)
@@ -380,7 +381,7 @@ async def _run_options_analysis(ctx: ToolContext) -> dict:
     )
 
 
-async def _run_scan_candidates(ctx: ToolContext) -> dict:
+async def _run_scan_candidates(ctx: ToolContext) -> ScanResult:
     """scan_candidates fetches per symbol inside run_scan -- never via ctx.fetch()."""
     arguments = ctx.args
     holding_period = arguments.get("holding_period", 14)
