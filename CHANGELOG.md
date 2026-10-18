@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.14.2](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.1...v2.14.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=1.14.0 ([#559](https://github.com/pdemirdjian/volume-price-analysis/issues/559)) ([b849e25](https://github.com/pdemirdjian/volume-price-analysis/commit/b849e259d55cf54af4c848c37bba4d070f4ec0ef))
+
 ## [2.14.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.0...v2.14.1) (2026-10-18)
 
 
