@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "volume-price-analysis-mcp"
-version = "2.14.0"
+version = "2.14.1"
 description = "MCP server for stock volume-price analysis"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -29,7 +29,7 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-asyncio==1.4.0",
-    "pytest-mock==3.16.0",
+    "pytest-mock==3.17.0",
     "ruff==0.17.1",
     "mypy==2.4.0",
     "pytest-xdist==3.8.0",
@@ -97,8 +97,8 @@ indent-style = "space"
 python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = false
-ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 
 [project.scripts]
 volume-price-analysis = "volume_price_analysis.server:cli"
@@ -106,3 +106,8 @@ morning-briefing = "volume_price_analysis.agent.morning_agent:main"
 morning-scheduler = "volume_price_analysis.agent.scheduler:main"
 morning-healthcheck = "volume_price_analysis.agent.healthcheck:main"
 vpa-backtest = "volume_price_analysis.backtest:main"
+
+# These installed packages do not ship typing metadata.
+[[tool.mypy.overrides]]
+module = ["pandas", "yfinance", "yfinance.*", "pytickersymbols"]
+ignore_missing_imports = true

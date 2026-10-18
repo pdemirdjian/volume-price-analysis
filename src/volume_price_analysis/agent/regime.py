@@ -14,9 +14,13 @@ no in-progress bar enters the check.
 """
 
 import logging
+from collections.abc import Mapping
 from datetime import date
+from typing import Any, cast
 
 import pandas as pd
+
+from ..payloads import ScanResult
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +80,7 @@ def compute_market_regime(spy_data: pd.DataFrame | None, today: date | None = No
     }
 
 
-def annotate_regime_conflicts(scan_results: dict, regime: dict) -> dict:
+def annotate_regime_conflicts(scan_results: Mapping[str, Any], regime: dict) -> ScanResult:
     """Attach the regime verdict and flag counter-regime high-conviction picks.
 
     Returns a copy of ``scan_results`` (input never mutated) with the regime
@@ -96,7 +100,7 @@ def annotate_regime_conflicts(scan_results: dict, regime: dict) -> dict:
 
     verdict = regime.get("regime")
     if verdict not in REGIME_DIRECTIONS or not high_conviction:
-        return result
+        return cast(ScanResult, result)
 
     annotated: list[dict] = []
     conflict_notes: dict[str, str] = {}
@@ -133,7 +137,7 @@ def annotate_regime_conflicts(scan_results: dict, regime: dict) -> dict:
             else c
             for c in candidates
         ]
-    return result
+    return cast(ScanResult, result)
 
 
 def format_regime_header(regime: dict, conflict_count: int = 0) -> str:

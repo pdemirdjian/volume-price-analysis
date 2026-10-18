@@ -8,9 +8,12 @@ orchestrator gathers a :class:`BriefingInputs` and makes one call;
 """
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
+from ..payloads import OptionsAnalysis
 from .ai_client import format_briefing_date
 from .picks import Pick, build_picks, render_picks_table
 from .regime import annotate_regime_conflicts, format_regime_header
@@ -24,8 +27,8 @@ class BriefingInputs:
     unavailable (the render then falls back to a programmatic body).
     """
 
-    scan_results: dict
-    deep_analyses: list[dict]
+    scan_results: Mapping[str, Any]
+    deep_analyses: Sequence[OptionsAnalysis]
     regime: dict
     briefing_date: date
     elapsed_s: float
