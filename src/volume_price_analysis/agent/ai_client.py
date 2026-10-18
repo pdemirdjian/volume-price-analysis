@@ -8,10 +8,12 @@ Supports multiple providers via the AI_PROVIDER environment variable:
 import json
 import logging
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Any, cast
 
+from ..payloads import OptionsAnalysis, ScanResult
 from .picks import Pick
 
 logger = logging.getLogger(__name__)
@@ -312,7 +314,9 @@ def _normalize_symbol(symbol: str) -> str:
     return re.sub(r"[^A-Z]", "", symbol.upper())
 
 
-def _collect_input_symbols(scan_results: dict, deep_analyses: list[dict]) -> set[str]:
+def _collect_input_symbols(
+    scan_results: ScanResult, deep_analyses: Sequence[OptionsAnalysis]
+) -> set[str]:
     """Collect every ticker symbol present anywhere in the scan/analysis input.
 
     Includes scan candidates (high-conviction / bullish / bearish) and symbols
@@ -321,7 +325,7 @@ def _collect_input_symbols(scan_results: dict, deep_analyses: list[dict]) -> set
     """
     symbols: set[str] = set()
     for key in ("high_conviction_setups", "top_bullish", "top_bearish", "errors"):
-        for entry in scan_results.get(key, []) or []:
+        for entry in cast(Mapping[str, Any], scan_results).get(key, []) or []:
             if isinstance(entry, dict) and entry.get("symbol"):
                 symbols.add(_normalize_symbol(str(entry["symbol"])))
     for analysis in deep_analyses or []:
@@ -332,7 +336,7 @@ def _collect_input_symbols(scan_results: dict, deep_analyses: list[dict]) -> set
 
 
 def find_ungrounded_tickers(
-    briefing: str, scan_results: dict, deep_analyses: list[dict]
+    briefing: str, scan_results: ScanResult, deep_analyses: Sequence[OptionsAnalysis]
 ) -> list[str]:
     """Return ticker-like tokens in the briefing that are absent from the input.
 
@@ -369,8 +373,8 @@ def resolve_model(provider_name: str, model: str = "") -> str:
 
 
 def generate_briefing(
-    scan_results: dict,
-    deep_analyses: list[dict],
+    scan_results: ScanResult,
+    deep_analyses: Sequence[OptionsAnalysis],
     provider: BriefingProvider,
     model: str,
     api_key: str,
@@ -443,27 +447,31 @@ _SCAN_PROJECTION_KEYS = (
 )
 
 
-def _project_scan_results(scan_results: dict) -> dict:
+def _project_scan_results(scan_results: ScanResult) -> dict:
     """Project scan results down to the high-signal fields a briefing needs.
 
     Keeps scan parameters, summary stats, and the already-compact candidate
     setups; drops the verbose raw per-symbol error list (its count lives in
     ``summary``). Missing keys are simply omitted so sparse inputs are safe.
     """
-    return {key: scan_results[key] for key in _SCAN_PROJECTION_KEYS if key in scan_results}
+    return {
+        key: cast(Mapping[str, Any], scan_results)[key]
+        for key in _SCAN_PROJECTION_KEYS
+        if key in scan_results
+    }
 
 
-def _as_dict(value: object) -> dict:
+def _as_dict[T: Mapping[str, Any]](value: T) -> T:
     """Return ``value`` if it is a dict, else an empty dict.
 
     Guards the nested ``.get()`` chains below against malformed inputs where a
     section is present but holds a non-dict value (so the projection degrades
     gracefully instead of raising AttributeError).
     """
-    return value if isinstance(value, dict) else {}
+    return value if isinstance(value, dict) else cast(T, {})
 
 
-def _project_deep_analysis(analysis: dict) -> dict:
+def _project_deep_analysis(analysis: OptionsAnalysis) -> dict:
     """Project a full options-analysis dict to its briefing-relevant essentials.
 
     ``run_options_analysis`` returns a deeply nested object (score breakdowns,
@@ -567,7 +575,9 @@ def _project_deep_analysis(analysis: dict) -> dict:
 _SCAN_FIELDS_SUPERSEDED_BY_DEEP = ("key_levels", "expected_move_pct")
 
 
-def _drop_superseded_scan_fields(projected_scan: dict, deep_analyses: list[dict]) -> dict:
+def _drop_superseded_scan_fields(
+    projected_scan: dict, deep_analyses: Sequence[OptionsAnalysis]
+) -> dict:
     """Strip scan-level targets from candidates that also have a deep analysis.
 
     Returns a copy; candidate dicts are shared with the caller's scan results
@@ -642,8 +652,8 @@ def _apply_pick_fields(projected_scan: dict, picks: Iterable[Pick]) -> dict:
 
 
 def build_briefing_prompt(
-    scan_results: dict,
-    deep_analyses: list[dict],
+    scan_results: ScanResult,
+    deep_analyses: Sequence[OptionsAnalysis],
     earnings_preamble: str = "",
     briefing_date: date | None = None,
     picks: Iterable[Pick] = (),

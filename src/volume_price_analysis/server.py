@@ -139,7 +139,7 @@ server = Server(
 )
 
 
-async def main():
+async def main() -> None:
     """Run the MCP server."""
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
     level = logging.getLevelNamesMapping().get(level_name)

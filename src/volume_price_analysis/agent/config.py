@@ -3,10 +3,13 @@
 import logging
 import os
 from dataclasses import dataclass
+from typing import TypeVar
 
 from ..analysis import get_universes
 from ..data_fetcher import VALID_PERIODS
 from ..tools import TOOLS_BY_NAME, validate_arguments
+
+_Number = TypeVar("_Number", int, float)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,7 @@ class AgentConfig:
                 )
                 max_deep = MAX_DEEP_ANALYSIS_CAP
 
-        def scan_number(name: str, default: int | float, kind: type[int] | type[float]):
+        def scan_number(name: str, default: _Number, kind: type[_Number]) -> _Number:
             key = f"SCAN_{name.upper()}"
             raw = os.environ.get(key, str(default))
             try:
