@@ -26,10 +26,10 @@ get a different answer by calling annotators in a different order.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from math import isfinite
-from typing import Literal
+from typing import Any, Literal
 
 from ..analysis import HIGH_CONVICTION_MIN_ABS_SCORE, passes_high_conviction_gate
 from .regime import REGIME_DIRECTIONS, annotate_regime_conflicts
@@ -121,7 +121,7 @@ def _score_of(candidate: dict) -> float:
         return 0.0
 
 
-def _high_conviction_symbols(scan_results: dict) -> set[str]:
+def _high_conviction_symbols(scan_results: Mapping[str, Any]) -> set[str]:
     return {
         c["symbol"]
         for c in scan_results.get("high_conviction_setups") or []
@@ -130,8 +130,8 @@ def _high_conviction_symbols(scan_results: dict) -> set[str]:
 
 
 def build_picks(
-    scan_results: dict,
-    deep_analyses: Iterable[dict] = (),
+    scan_results: Mapping[str, Any],
+    deep_analyses: Iterable[Mapping[str, Any]] = (),
     *,
     regime: dict | None = None,
 ) -> list[Pick]:

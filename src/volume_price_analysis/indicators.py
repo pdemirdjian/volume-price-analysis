@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .payloads import CompositeScore
+
 # --------------------------------------------------------------------------
 # Verdict helpers
 #
@@ -1649,7 +1651,7 @@ def composite_adx_period(holding_period: int) -> int:
     return 10 if holding_period <= 14 else 14
 
 
-def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> dict[str, Any]:
+def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> CompositeScore:
     """
     Calculate composite signal score for options trading.
 
