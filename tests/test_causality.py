@@ -22,11 +22,23 @@ Every public function in ``indicators.py`` must appear in exactly one of three t
     computed on the *unsliced* ``df[:n + k]`` at position ``n - 1`` (e.g. the divergence verdict
     against ``rsi_divergence_signal_series``, ``current_hv`` against
     ``calculate_historical_volatility``), so a snapshot built from a centred window or a
-    whole-series statistic fails. Snapshots with no per-bar counterpart (``trend_verdict``,
-    ``analyze_volume_trends``, ``detect_volume_breakout``) are only guarded against exposing a
-    per-bar Series (anything indexable at a past bar belongs in ``SERIES``). Their causality
-    rests on callers slicing to the as-of bar first, which ``causal_score_at`` and the scan's
-    ``as_of`` cutoff do and which the score-level tests below check.
+    whole-series statistic fails. Every ``SNAPSHOT`` entry needs a ``SNAPSHOT_ANCHORS`` entry,
+    or an ``UNANCHORED_SNAPSHOT`` entry with a non-blank reason saying why no per-bar
+    counterpart exists; an unanchored snapshot's causality rests only on callers slicing to the
+    as-of bar first. Every snapshot is also guarded against exposing a per-bar Series (anything
+    indexable at a past bar belongs in ``SERIES``).
+
+    ``calculate_composite_score`` is anchored for holding periods in all three of its adaptive
+    branches (MFI/CMF/VWMA/RSI/ADX periods differ per branch) on every ``indicator_summary``
+    input. Its final aggregation (``score_breakdown`` -> ``composite_score``) is not re-derived
+    here; it is a pure function of those inputs and is covered as-of by the
+    ``causal_score_at`` test.
+
+Score level
+    ``causal_score_at`` must give the same snapshot for bar ``n - 1`` with or without future
+    bars. ``score_symbol`` is checked twice: the scan's ``as_of`` cutoff must reproduce the
+    candidate of ``df[:n]``, and the candidate's plain per-bar reads (price, ATR, RSI, RVOL,
+    ADX) must equal their per-bar series on the unsliced ``df[:n + k]`` at ``n - 1``.
 
 ``NON_CAUSAL``
     The allow-list. Each entry needs a non-blank reason. A real leak found by the sweep goes
@@ -58,7 +70,7 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis import indicators
-from volume_price_analysis.analysis import analyze_single_symbol, score_symbol
+from volume_price_analysis.analysis import STOP_ATR_PERIOD, analyze_single_symbol, score_symbol
 from volume_price_analysis.backtest import causal_score_at
 from volume_price_analysis.data_fetcher import InMemoryDataSource
 
@@ -80,7 +92,8 @@ def _synthetic_ohlcv(seed: int, length: int, volatile_head: int = 0) -> pd.DataF
     """Seeded random-walk OHLCV with High >= max(Open, Close), Low <= min(Open, Close).
 
     ``volatile_head`` bars at the start get 4x the return volatility, so an HV extreme sits
-    outside a trailing lookback that ends far enough later.
+    outside a trailing lookback that ends far enough later. Volume ramps 1.5x per bar in noisy
+    8-bar cycles, so rising-volume runs and >2x relative-volume breakouts both occur.
     """
     rng = np.random.default_rng(seed)
     sigma = np.where(np.arange(length) < volatile_head, 0.08, 0.02)
@@ -88,7 +101,8 @@ def _synthetic_ohlcv(seed: int, length: int, volatile_head: int = 0) -> pd.DataF
     open_ = np.r_[100.0, close[:-1]] * np.exp(rng.normal(0.0, 0.005, length))
     high = np.maximum(open_, close) * (1.0 + rng.uniform(0.0, 0.02, length))
     low = np.minimum(open_, close) * (1.0 - rng.uniform(0.0, 0.02, length))
-    volume = rng.integers(200_000, 5_000_000, length)
+    ramp = 1.5 ** (np.arange(length) % 8)
+    volume = (300_000 * ramp * rng.uniform(0.9, 1.1, length)).astype(np.int64)
     return pd.DataFrame(
         {
             "Date": pd.bdate_range("2020-01-02", periods=length),
@@ -187,10 +201,12 @@ def _hv_at(extended: pd.DataFrame, n: int) -> float:
     return float(indicators.calculate_historical_volatility(extended, 20).iloc[n - 1])
 
 
-def _divergence_at(extended: pd.DataFrame, n: int, rsi_period: int) -> dict[str, Any]:
+def _divergence_at(
+    extended: pd.DataFrame, n: int, rsi_period: int, lookback: int = 10
+) -> dict[str, Any]:
     """Divergence fields as of bar ``n - 1``, read off the per-bar causal signal series."""
     rsi = indicators.calculate_rsi(extended, rsi_period)
-    signal = indicators.rsi_divergence_signal_series(extended, rsi, 10).iloc[n - 1]
+    signal = indicators.rsi_divergence_signal_series(extended, rsi, lookback).iloc[n - 1]
     current_rsi = _or(rsi.iloc[n - 1], 50.0)
     return {
         "bullish_divergence": signal == 1,
@@ -242,24 +258,79 @@ def _expected_move_at(extended: pd.DataFrame, n: int) -> dict[str, Any]:
     }
 
 
-def _composite_at(extended: pd.DataFrame, n: int) -> dict[str, Any]:
-    # calculate_composite_score's default holding_period=14 uses MFI(7), CMF/VWMA(10), RSI(7),
-    # ADX(10) and divergence lookback 10.
+def _trend_verdict_at(extended: pd.DataFrame, n: int) -> dict[str, Any]:
+    # trend_verdict's default lookback=5 compares Close.iloc[-1] with Close.iloc[-5]: 4 bars back.
+    change = extended["Close"].diff(4).iloc[n - 1]
+    return {"": "increasing" if change > 0 else "decreasing" if change < 0 else "flat"}
+
+
+def _rvol_at(extended: pd.DataFrame, n: int, period: int) -> pd.Series:
+    """Relative volume series (volume over its trailing mean) up to bar ``n - 1``."""
+    return indicators.calculate_relative_volume(extended, period)["rvol_series"].iloc[:n]
+
+
+def _volume_trends_at(extended: pd.DataFrame, n: int) -> dict[str, Any]:
+    # analyze_volume_trends(window=20): trailing 20-bar volume mean, the last 5 volumes for the
+    # trend and the close 19 bars back (Close.iloc[-20]) for the price direction.
+    volume = extended["Volume"]
+    return {
+        "current_volume": int(volume.iloc[n - 1]),
+        "average_volume": int(volume.rolling(20, min_periods=1).mean().iloc[n - 1]),
+        "volume_trend": "increasing"
+        if volume.iloc[n - 5 : n].is_monotonic_increasing
+        else "decreasing",
+        "price_direction": "up" if extended["Close"].diff(19).iloc[n - 1] > 0 else "down",
+    }
+
+
+def _volume_breakout_at(extended: pd.DataFrame, n: int) -> dict[str, Any]:
+    # detect_volume_breakout(2.0, 20): breakout when volume exceeds 2x its trailing mean, i.e.
+    # relative volume (period 20) above 2.
+    rvol = _rvol_at(extended, n, 20)
+    is_breakout = bool(rvol.iloc[-1] > 2.0)
+    up = extended["Close"].diff().iloc[n - 1] > 0
+    return {
+        "current_volume": int(extended["Volume"].iloc[n - 1]),
+        "multiplier_above_avg": float(rvol.iloc[-1]),
+        "is_breakout": is_breakout,
+        "recent_breakouts": int((rvol.iloc[-5:] > 2.0).sum()),
+        "direction": ("bullish" if up else "bearish") if is_breakout else "none",
+    }
+
+
+def _composite_periods(holding_period: int) -> dict[str, int]:
+    """calculate_composite_score's adaptive branches (<=14, <=21, else); ADX from its helper."""
+    mfi, window, rsi = (7, 10, 7) if holding_period <= 14 else (10, 14, 10)
+    if holding_period > 21:
+        mfi, window, rsi = 14, 20, 14
+    adx = indicators.composite_adx_period(holding_period)
+    return {"mfi": mfi, "window": window, "rsi": rsi, "adx": adx}
+
+
+def _composite_at(extended: pd.DataFrame, n: int, holding_period: int = 14) -> dict[str, Any]:
+    """Every ``indicator_summary`` input of the composite, read off per-bar series at ``n - 1``."""
+    p = _composite_periods(holding_period)
     t = n - 1
     close = extended["Close"].iloc[t]
-    adx = indicators.calculate_adx(extended, 10)["adx_series"].iloc[t]
-    return {
-        "indicator_summary.price_above_vwap": close > indicators.calculate_vwap(extended).iloc[t],
-        "indicator_summary.price_above_vwma": close
-        > indicators.calculate_vwma(extended, 10).iloc[t],
-        "indicator_summary.mfi": _or(indicators.calculate_mfi(extended, 7).iloc[t], 50.0),
-        "indicator_summary.cmf": _or(
-            indicators.calculate_chaikin_money_flow(extended, 10).iloc[t], 0.0
-        ),
-        "indicator_summary.rsi": _or(indicators.calculate_rsi(extended, 7).iloc[t], 50.0),
-        "indicator_summary.rsi_divergence": _divergence_at(extended, n, 7)["divergence_type"],
-        "indicator_summary.adx": _or(adx, 0.0),
+    adx = indicators.calculate_adx(extended, p["adx"])
+    plus_di = _or(adx["plus_di_series"].iloc[t], 0.0)
+    minus_di = _or(adx["minus_di_series"].iloc[t], 0.0)
+    adx_trend = "bullish" if plus_di > minus_di else "bearish" if minus_di > plus_di else "neutral"
+    divergence = _divergence_at(extended, n, p["rsi"], p["window"])
+    summary = {
+        "price_above_vwap": close > indicators.calculate_vwap(extended).iloc[t],
+        "price_above_vwma": close > indicators.calculate_vwma(extended, p["window"]).iloc[t],
+        "obv_bullish": indicators.calculate_obv(extended).diff(2).iloc[t] > 0,
+        "ad_bullish": indicators.calculate_accumulation_distribution(extended).diff(2).iloc[t] > 0,
+        "mfi": _or(indicators.calculate_mfi(extended, p["mfi"]).iloc[t], 50.0),
+        "cmf": _or(indicators.calculate_chaikin_money_flow(extended, p["window"]).iloc[t], 0.0),
+        "rsi": divergence["current_rsi"],
+        "rsi_divergence": divergence["divergence_type"],
+        "adx": _or(adx["adx_series"].iloc[t], 0.0),
+        "adx_trend": adx_trend,
+        "volume_breakout": bool(_rvol_at(extended, n, p["window"]).iloc[-1] > 2.0),
     }
+    return {f"indicator_summary.{key}": value for key, value in summary.items()}
 
 
 SNAPSHOT_ANCHORS: dict[str, Expected] = {
@@ -270,7 +341,14 @@ SNAPSHOT_ANCHORS: dict[str, Expected] = {
     "calculate_iv_percentile": _iv_percentile_at,
     "calculate_expected_move": _expected_move_at,
     "calculate_composite_score": _composite_at,
+    "trend_verdict": _trend_verdict_at,
+    "analyze_volume_trends": _volume_trends_at,
+    "detect_volume_breakout": _volume_breakout_at,
 }
+
+#: Snapshots with no per-bar counterpart to anchor to -> why. A reason is mandatory; causality of
+#: these rests only on callers slicing first.
+UNANCHORED_SNAPSHOT: dict[str, str] = {}
 
 
 #: Allow-list: function name -> why it is exempt from the sweep. A reason is mandatory.
@@ -397,6 +475,18 @@ def test_registries_do_not_overlap() -> None:
 def test_anchors_reference_series_entries() -> None:
     assert ANCHORS.keys() <= SERIES.keys()
     assert SNAPSHOT_ANCHORS.keys() <= SERIES.keys() | SNAPSHOT.keys()
+    assert UNANCHORED_SNAPSHOT.keys() <= SNAPSHOT.keys()
+
+
+def test_every_snapshot_is_anchored_or_explained() -> None:
+    assert not SNAPSHOT_ANCHORS.keys() & UNANCHORED_SNAPSHOT.keys()
+    missing = SNAPSHOT.keys() - SNAPSHOT_ANCHORS.keys() - UNANCHORED_SNAPSHOT.keys()
+    assert not missing, (
+        f"SNAPSHOT entries {sorted(missing)} need a SNAPSHOT_ANCHORS entry tying them to a "
+        "per-bar counterpart, or an UNANCHORED_SNAPSHOT entry with a reason."
+    )
+    blank = [name for name, reason in UNANCHORED_SNAPSHOT.items() if not _reason_ok(reason)]
+    assert not blank, f"UNANCHORED_SNAPSHOT entries need a non-blank reason: {blank}"
 
 
 @pytest.mark.parametrize("name", sorted(NON_CAUSAL))
@@ -554,6 +644,45 @@ def test_snapshot_matches_its_per_bar_counterpart(name: str) -> None:
     )
 
 
+def test_snapshot_anchors_see_both_outcomes() -> None:
+    # Guards the synthetic data: an anchor on a flag that never flips would pass vacuously.
+    seen: dict[str, set[Any]] = {}
+    for seed, n, k in CASES:
+        prefix, _ = _frames(seed, n, k)
+        breakout = indicators.detect_volume_breakout(prefix)
+        summary = indicators.calculate_composite_score(prefix)["indicator_summary"]
+        observed = {
+            "is_breakout": breakout["is_breakout"],
+            "volume_trend": indicators.analyze_volume_trends(prefix)["volume_trend"],
+            "trend_verdict": indicators.trend_verdict(prefix["Close"]),
+            "squeeze": indicators.detect_bollinger_squeeze(prefix),
+            "divergence": SNAPSHOT["detect_rsi_divergence"](prefix)["divergence_type"],
+            **{key: summary[key] for key in ("obv_bullish", "ad_bullish", "volume_breakout")},
+            "adx_trend": summary["adx_trend"],
+        }
+        for key, value in observed.items():
+            seen.setdefault(key, set()).add(value)
+    single = {key: values for key, values in seen.items() if len(values) < 2}
+    assert not single, f"synthetic frames never vary these anchored fields: {single}"
+
+
+@pytest.mark.parametrize("holding_period", [7, 14, 21, 30])
+def test_composite_inputs_match_per_bar_counterparts(holding_period: int) -> None:
+    # One holding period per adaptive branch (<=14, <=21, else), plus both sides of the ADX
+    # switch at 14.
+    failures = []
+    for seed, n, k in CASES:
+        prefix, extended = _frames(seed, n, k)
+        mismatches = snapshot_lookahead(
+            lambda df: indicators.calculate_composite_score(df, holding_period),
+            lambda ext, n_: _composite_at(ext, n_, holding_period),
+            prefix,
+            extended,
+        )
+        failures += [f"seed={seed} n={n} k={k} {m}" for m in mismatches]
+    assert not failures, "\n".join(failures[:10])
+
+
 @pytest.mark.parametrize("k", [1, 60])
 def test_iv_percentile_with_full_252_bar_lookback(k: int) -> None:
     # The volatile head puts the HV maximum before the trailing 252-bar window, so a percentile
@@ -588,7 +717,7 @@ def test_causal_score_at_ignores_future_bars(holding_period: int) -> None:
 
 
 def _score(data: pd.DataFrame) -> dict[str, Any] | None:
-    return score_symbol(data, "SYN", 14, 0.0, 0.0, 100.0, "both")  # type: ignore[return-value]
+    return score_symbol(data, "SYN", 14, 0.0, 0.0, 100.0, "any")  # type: ignore[return-value]
 
 
 def test_score_symbol_as_of_cutoff_ignores_future_bars() -> None:
@@ -599,10 +728,31 @@ def test_score_symbol_as_of_cutoff_ignores_future_bars() -> None:
         as_of = extended["Date"].iloc[n].date()
         source = InMemoryDataSource({"SYN": extended})
         via_cutoff = analyze_single_symbol(
-            "SYN", "1y", 14, 0.0, 0.0, 100.0, "both", data_source=source, as_of=as_of
+            "SYN", "1y", 14, 0.0, 0.0, 100.0, "any", data_source=source, as_of=as_of
         )
         expected = _score(prefix)
         assert expected is not None
         assert not _snapshot_diff(dict(expected), dict(via_cutoff or {})), (
             f"seed={seed} n={n} k={k}"
         )
+
+
+def test_score_symbol_fields_match_per_bar_counterparts() -> None:
+    # score_symbol(holding_period=14) reads RSI(14), RVOL(20), ATR(STOP_ATR_PERIOD) and the
+    # composite's ADX(composite_adx_period(14)) at the last bar, rounded as below.
+    adx_period = indicators.composite_adx_period(14)
+    for seed, n, k in CASES:
+        prefix, extended = _frames(seed, n, k)
+        t = n - 1
+        candidate = _score(prefix)
+        assert candidate is not None
+        adx = indicators.calculate_adx(extended, adx_period)["adx_series"].iloc[t]
+        expected = {
+            "latest_price": round(float(extended["Close"].iloc[t]), 2),
+            "atr": round(float(indicators.calculate_atr(extended, STOP_ATR_PERIOD).iloc[t]), 2),
+            "rsi": round(_or(indicators.calculate_rsi(extended, 14).iloc[t], 50.0), 1),
+            "rvol": round(float(_rvol_at(extended, n, 20).iloc[-1]), 2),
+            "adx": round(_or(adx, 0.0), 1),
+        }
+        diff = _snapshot_diff({key: candidate[key] for key in expected}, expected)
+        assert not diff, f"seed={seed} n={n} k={k}: {diff}"

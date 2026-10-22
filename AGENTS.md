@@ -21,8 +21,8 @@ src/volume_price_analysis/
 3. Append a `ToolSpec(name, description, input_schema, run)` to `TOOLS` in `tools.py` — the
    list-tools response and the dispatcher both derive from it; `server.py` needs no change
 4. Add a case to `tests/test_tool_registry.py`'s `MINIMAL_ARGS` so the registry sweep covers it
-5. Register it in `tests/test_causality.py` (`SERIES` or `SNAPSHOT`, or `NON_CAUSAL` with a
-   reason) so the no-lookahead sweep covers it; unclassified public indicators fail CI
+5. Register it in `tests/test_causality.py`: `SERIES`, `SNAPSHOT` (plus a `SNAPSHOT_ANCHORS` or
+   reasoned `UNANCHORED_SNAPSHOT` entry), or reasoned `NON_CAUSAL`; unclassified ones fail CI
 
 Use skills `indicator-validator` and `scan-reviewer` when modifying indicators or scan logic.
 
