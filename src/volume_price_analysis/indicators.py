@@ -2,7 +2,10 @@
 
 import math
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .indicator_suite import Snapshot
 
 import numpy as np
 import pandas as pd
@@ -1646,12 +1649,16 @@ def composite_adx_period(holding_period: int) -> int:
     Short holding periods use a more responsive ADX(10); 15+ day holds use the
     standard ADX(14). Centralised so the scan can report and filter on the exact
     same period the composite score consumed, rather than a separate fixed ADX(14)
-    (see HOM-48). Keep this the single source of truth for the rule.
+    (see HOM-48). Delegates to the indicator suite's single tuning table.
     """
-    return 10 if holding_period <= 14 else 14
+    from .indicator_suite import adaptive_periods
+
+    return adaptive_periods(holding_period)["adx_period"]
 
 
-def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> CompositeScore:
+def calculate_composite_score(
+    data: pd.DataFrame, holding_period: int = 14, *, snapshot: Snapshot | None = None
+) -> CompositeScore:
     """
     Calculate composite signal score for options trading.
 
@@ -1663,41 +1670,29 @@ def calculate_composite_score(data: pd.DataFrame, holding_period: int = 14) -> C
     Args:
         data: DataFrame with OHLC and Volume data
         holding_period: Days for options holding period (affects indicator tuning)
+        snapshot: Optional suite already built for this data and holding period.
 
     Returns:
         Dictionary with composite score and breakdown
     """
-    # Adaptive parameters based on holding period
-    if holding_period <= 14:
-        mfi_period = 7
-        volume_window = 10
-        rsi_period = 7
-    elif holding_period <= 21:
-        mfi_period = 10
-        volume_window = 14
-        rsi_period = 10
-    else:  # 22-30 days
-        mfi_period = 14
-        volume_window = 20
-        rsi_period = 14
-    adx_period = composite_adx_period(holding_period)
+    from .indicator_suite import build_snapshot
 
-    # Calculate indicators
-    obv = calculate_obv(data)
-    ad_line = calculate_accumulation_distribution(data)
-    vwap = calculate_vwap(data)
-    vwma = calculate_vwma(data, volume_window)
-    mfi = calculate_mfi(data, mfi_period)
-    cmf = calculate_chaikin_money_flow(data, volume_window)
-    rsi_data = calculate_rsi_with_divergence(data, rsi_period, volume_window)
-    adx_data = calculate_adx(data, adx_period)
-    breakout = detect_volume_breakout(data, 2.0, volume_window)
+    if snapshot is None:
+        snapshot = build_snapshot(data, holding_period)
+    adx_period = snapshot.periods["adx_period"]
+    obv = snapshot.obv
+    ad_line = snapshot.ad_line
+    vwap = snapshot.vwap
+    vwma = snapshot.vwma
+    rsi_data = snapshot.rsi_data
+    adx_data = snapshot.adx_data
+    breakout = snapshot.breakout
 
     latest_close = data["Close"].iloc[-1]
     latest_vwap = vwap.iloc[-1]
     latest_vwma = vwma.iloc[-1]
-    latest_mfi = mfi.iloc[-1] if not pd.isna(mfi.iloc[-1]) else 50.0
-    latest_cmf = cmf.iloc[-1] if not pd.isna(cmf.iloc[-1]) else 0.0
+    latest_mfi = snapshot.latest_mfi
+    latest_cmf = snapshot.latest_cmf
     latest_rsi = rsi_data["rsi"]
 
     # Scoring components (each from -2 to +2, some weighted more)

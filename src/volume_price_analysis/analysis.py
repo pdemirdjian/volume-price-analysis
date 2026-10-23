@@ -20,6 +20,7 @@ from pytickersymbols import PyTickerSymbols
 from yfinance.exceptions import YFRateLimitError
 
 from .data_fetcher import DEFAULT_TIMEOUT, DataSource, get_default_data_source
+from .indicator_suite import adaptive_periods, build_snapshot
 from .indicators import (
     CMF_CONDITION_BANDS,
     CMF_EXTREME_BANDS,
@@ -29,8 +30,6 @@ from .indicators import (
     SQUEEZE_WINDOW,
     TREND_LOOKBACK,
     analyze_volume_trends,
-    calculate_accumulation_distribution,
-    calculate_adx,
     calculate_atr,
     calculate_bollinger_bands,
     calculate_chaikin_money_flow,
@@ -40,12 +39,9 @@ from .indicators import (
     calculate_historical_volatility,
     calculate_iv_percentile,
     calculate_mfi,
-    calculate_obv,
     calculate_price_roc,
     calculate_relative_volume,
-    calculate_rsi_with_divergence,
     calculate_vpt,
-    calculate_vwap,
     calculate_vwma,
     composite_adx_period,
     detect_bollinger_squeeze,
@@ -401,14 +397,15 @@ def score_symbol(
         raise InsufficientDataError(f"{symbol}: {len(sym_data)} bars < {MIN_SCAN_HISTORY} required")
 
     # Calculate composite score and key indicators
-    composite = calculate_composite_score(sym_data, holding_period)
+    snapshot = build_snapshot(sym_data, holding_period)
+    composite = calculate_composite_score(sym_data, holding_period, snapshot=snapshot)
     # Reuse the ADX the composite already computed (adaptive to holding_period) so the
     # reported adx, the min_adx filter, and signal_quality all reference the same value
     # instead of a separate, fixed-period ADX(14). See HOM-48.
     adx_summary = composite["adx_summary"]
     iv_pct_data = calculate_iv_percentile(sym_data, 20)
     expected_move = calculate_expected_move(sym_data, holding_period, 20)
-    rsi_data = calculate_rsi_with_divergence(sym_data, 14, 10)
+    rsi_data = snapshot.rsi(14, 10)
     rvol = calculate_relative_volume(sym_data, 20)
 
     score = composite["composite_score"]
@@ -755,34 +752,8 @@ async def run_scan(
 
 
 def _adaptive_periods(holding_period: int) -> dict[str, int]:
-    """Indicator lookbacks scaled to the options holding period.
-
-    Breakpoints: <=14 days (fast), <=21 days (balanced), else standard.
-    """
-    if holding_period <= 14:
-        return {
-            "mfi_period": 7,
-            "volume_window": 10,
-            "rsi_period": 7,
-            "adx_period": 10,
-            "hv_window": 10,
-        }
-    if holding_period <= 21:
-        return {
-            "mfi_period": 10,
-            "volume_window": 14,
-            "rsi_period": 10,
-            "adx_period": 14,
-            "hv_window": 14,
-        }
-    # 22-30 days
-    return {
-        "mfi_period": 14,
-        "volume_window": 20,
-        "rsi_period": 14,
-        "adx_period": 14,
-        "hv_window": 20,
-    }
+    """Compatibility wrapper for the suite's single tuning table."""
+    return adaptive_periods(holding_period)
 
 
 def _require_ohlcv(symbol: str, data: pd.DataFrame) -> None:
@@ -822,13 +793,15 @@ def run_comprehensive_analysis(symbol: str, data: pd.DataFrame) -> Comprehensive
     """
     _require_ohlcv(symbol, data)
 
+    snapshot = build_snapshot(data)
+
     # Calculate all volume indicators
-    obv = calculate_obv(data)
-    vwap = calculate_vwap(data)
+    obv = snapshot.obv
+    vwap = snapshot.vwap
     mfi = calculate_mfi(data)
     vpt = calculate_vpt(data)
     trends = analyze_volume_trends(data)
-    ad_line = calculate_accumulation_distribution(data)
+    ad_line = snapshot.ad_line
     cmf = calculate_chaikin_money_flow(data)
     rvol = calculate_relative_volume(data)
     breakout = detect_volume_breakout(data)
@@ -871,7 +844,7 @@ def run_comprehensive_analysis(symbol: str, data: pd.DataFrame) -> Comprehensive
 
     # Additive top-line headline (recommendation/score/1-line rationale).
     # The detailed `summary` list below is left untouched.
-    headline = build_headline(calculate_composite_score(data))
+    headline = build_headline(calculate_composite_score(data, snapshot=snapshot))
 
     return {
         "symbol": symbol,
@@ -1082,7 +1055,8 @@ def run_options_analysis(
         days_to_expiration = holding_period
 
     # Adaptive indicator periods based on holding period
-    periods = _adaptive_periods(holding_period)
+    snapshot = build_snapshot(data, holding_period)
+    periods = snapshot.periods
     mfi_period = periods["mfi_period"]
     volume_window = periods["volume_window"]
     rsi_period = periods["rsi_period"]
@@ -1090,24 +1064,22 @@ def run_options_analysis(
     hv_window = periods["hv_window"]
 
     # Calculate all indicators with adaptive parameters
-    obv = calculate_obv(data)
-    vwap = calculate_vwap(data)
-    mfi = calculate_mfi(data, mfi_period)
+    obv = snapshot.obv
+    vwap = snapshot.vwap
     vpt = calculate_vpt(data)
     trends = analyze_volume_trends(data, volume_window)
-    ad_line = calculate_accumulation_distribution(data)
-    cmf = calculate_chaikin_money_flow(data, volume_window)
+    ad_line = snapshot.ad_line
     rvol = calculate_relative_volume(data, volume_window)
-    breakout = detect_volume_breakout(data, 2.0, volume_window)
-    vwma = calculate_vwma(data, volume_window)
+    breakout = snapshot.breakout
+    vwma = snapshot.vwma
     roc = calculate_price_roc(data, volume_window)
 
     # Enhanced indicators
-    adx_data = calculate_adx(data, adx_period)
-    rsi_data = calculate_rsi_with_divergence(data, rsi_period, volume_window)
+    adx_data = snapshot.adx_data
+    rsi_data = snapshot.rsi_data
     iv_percentile = calculate_iv_percentile(data, hv_window)
     expected_move = calculate_expected_move(data, days_to_expiration, hv_window)
-    composite = calculate_composite_score(data, holding_period)
+    composite = calculate_composite_score(data, holding_period, snapshot=snapshot)
 
     # Volatility indicators
     atr = calculate_atr(data, volume_window)
@@ -1140,8 +1112,8 @@ def run_options_analysis(
     else:
         vpt_conviction = False
 
-    mfi_val = mfi.iloc[-1] if not pd.isna(mfi.iloc[-1]) else 50.0
-    cmf_val = cmf.iloc[-1] if not pd.isna(cmf.iloc[-1]) else 0.0
+    mfi_val = snapshot.latest_mfi
+    cmf_val = snapshot.latest_cmf
 
     mfi_cond = threshold_verdict(mfi_val, MFI_CONDITION_BANDS, "Neutral")
     mfi_signal = threshold_verdict(mfi_val, MFI_OPTIONS_SIGNAL_BANDS, "neutral")
