@@ -57,6 +57,9 @@ addopts = [
     "--cov-fail-under=80",
 ]
 asyncio_mode = "auto"
+markers = [
+    "integration: requires real network access; run with --run-integration",
+]
 
 [tool.coverage.run]
 branch = true

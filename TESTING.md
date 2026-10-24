@@ -98,7 +98,7 @@ Tests stock data fetching functionality:
 - Invalid symbol handling
 - Exception handling
 
-#### TestIntegration (skipped by default)
+#### TestIntegration (`integration` marker, opt-in)
 
 - Real Yahoo Finance data fetching
 - Real symbol validation
@@ -291,23 +291,29 @@ Benefits:
 
 ## Integration Tests
 
-Some tests require network access and are skipped by default:
+Tests that call real upstream services (Yahoo Finance) are marked `integration`
+and skipped by default with the reason `integration test: needs --run-integration`.
+The default run keeps blocking non-loopback hosts; `--run-integration` lifts the
+pytest-socket guard for `integration` tests only.
 
 ```python
-@pytest.mark.skip(reason="Requires network access")
-def test_fetch_real_stock_data(self):
-    result = YFinanceDataSource(cache_ttl=0).fetch("AAPL", period="5d")
-    assert len(result) > 0
+@pytest.mark.integration
+class TestIntegration:
+    def test_fetch_real_stock_data(self):
+        result = YFinanceDataSource(cache_ttl=0).fetch("AAPL", period="5d")
+        assert len(result) > 0
 ```
 
-To run integration tests:
+Run them locally (needs network; `--no-cov` because the coverage floor only
+makes sense for the full suite):
 
 ```bash
-# Run including skipped tests
-pytest --run-skipped
-
-# Or remove the @pytest.mark.skip decorator
+uv run pytest -m integration --run-integration --no-cov -n 0
 ```
+
+The [integration workflow](.github/workflows/integration.yml) runs the same
+command nightly and on manual dispatch, so a yfinance API break shows up as a
+failed scheduled run.
 
 ## Continuous Testing
 

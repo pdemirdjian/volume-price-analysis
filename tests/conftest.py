@@ -3,6 +3,27 @@
 import pandas as pd
 import pytest
 
+pytest_plugins = ["pytester"]
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="Run tests marked `integration` against real upstream services.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip `integration` tests unless opted in; opted-in ones get real network."""
+    run_integration = config.getoption("--run-integration")
+    skip = pytest.mark.skip(reason="integration test: needs --run-integration")
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(pytest.mark.enable_socket if run_integration else skip)
+
+
 # Environment keys read by app configuration, healthcheck, and the data source.
 _APP_ENV_VARS = (
     "DATA_CACHE_TTL_SECONDS",
