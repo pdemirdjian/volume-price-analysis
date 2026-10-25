@@ -451,13 +451,12 @@ class TestYFinanceEarningsDate:
         assert YFinanceDataSource().earnings_date("AAPL") is None
 
 
+@pytest.mark.integration
 class TestIntegration:
-    """Integration tests (require network access - skip in CI)."""
+    """Real Yahoo Finance calls; run nightly with `--run-integration`."""
 
-    @pytest.mark.skip(reason="Requires network access")
     def test_fetch_real_stock_data(self):
         """Integration test with real Yahoo Finance data."""
-        # This test is skipped by default but can be run manually
         result = _fetch("AAPL", period="5d")
 
         assert len(result) > 0
