@@ -11,7 +11,7 @@ requires-python = ">=3.14"
 dependencies = [
     "mcp==2.3.0",
     "yfinance==1.7.0",
-    "pandas==3.0.6",
+    "pandas==3.1.0",
     "numpy==2.5.4",
     "anthropic~=2.1.0",
     "google-genai~=2.32.0",
