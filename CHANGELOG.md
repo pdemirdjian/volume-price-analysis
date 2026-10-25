@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.14.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.3...v2.14.4) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=2.32.0 ([#578](https://github.com/pdemirdjian/volume-price-analysis/issues/578)) ([47cc991](https://github.com/pdemirdjian/volume-price-analysis/commit/47cc991a3dc54b2875fa638efac1df1a3ca9c7e1))
+* **deps:** update dependency pandas to v3.1.0 ([#584](https://github.com/pdemirdjian/volume-price-analysis/issues/584)) ([e76d72e](https://github.com/pdemirdjian/volume-price-analysis/commit/e76d72e322c951e9feb782158b003f9c276d5f01))
+
 ## [2.14.3](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.2...v2.14.3) (2026-10-23)
 
 
