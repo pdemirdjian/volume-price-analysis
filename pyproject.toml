@@ -28,7 +28,7 @@ packages = ["src/volume_price_analysis"]
 dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
-    "pytest-asyncio==1.4.0",
+    "pytest-asyncio==1.4.1",
     "pytest-mock==3.17.0",
     "ruff==0.17.2",
     "mypy==2.4.0",
