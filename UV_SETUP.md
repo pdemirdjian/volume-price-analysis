@@ -155,7 +155,7 @@ source .venv/bin/activate  # macOS/Linux
 uv sync --all-extras --dev
 
 # 5. Verify installation
-python example_usage.py
+uv run python example_usage.py
 ```
 
 ### Running Tests

@@ -4,17 +4,20 @@ Comprehensive testing documentation for the Volume-Price Analysis MCP Server.
 
 ## Test Suite Overview
 
-The project includes **639 tests** organized into seven test modules:
+Tests live in `tests/`, one `test_*.py` module per area (indicators, MCP tool
+registry and server, scan/analysis, data fetching and caching, backtest, morning
+briefing agent, scheduler, healthcheck). Shared fixtures and the integration-test
+opt-in live in `tests/conftest.py`. List what exists rather than trusting a
+hand-maintained count:
 
-| Test Module            | Tests | Coverage                              |
-| ---------------------- | ----- | ------------------------------------- |
-| `test_indicators.py`   | 282   | All volume-price indicators           |
-| `test_agent.py`        | 151   | Morning briefing agent & AI providers |
-| `test_server.py`       | 72    | MCP server integration                |
-| `test_analysis.py`     | 41    | Scan, options analysis, universes     |
-| `test_data_fetcher.py` | 40    | Data fetching & validation            |
-| `test_backtest.py`     | 34    | Strictly-causal backtest harness      |
-| `test_scheduler.py`    | 19    | Asyncio scheduler                     |
+```bash
+uv run pytest --collect-only -q
+```
+
+Default `pytest` options come from `[tool.pytest.ini_options]` in `pyproject.toml`:
+tests run in parallel (`-n=auto`, pytest-xdist), with coverage on and the **80%**
+gate (`--cov-fail-under=80`) enforced, and non-loopback network blocked
+(pytest-socket).
 
 ## Quick Start
 
@@ -22,187 +25,68 @@ The project includes **639 tests** organized into seven test modules:
 # Install with test dependencies
 uv sync --all-extras --dev
 
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=src/volume_price_analysis --cov-report=term-missing
+# Run all tests (coverage report and 80% gate included)
+uv run pytest
 ```
-
-## Test Modules
-
-### 1. Indicators Tests (`test_indicators.py`)
-
-Tests all volume-price calculation functions:
-
-#### TestOBV - On-Balance Volume
-
-- Basic calculation
-- Uptrend behavior
-- Downtrend behavior
-- Flat price handling
-
-#### TestVWAP - Volume Weighted Average Price
-
-- Basic calculation
-- Price range validation
-- Cumulative behavior
-- NaN handling
-
-#### TestVolumeProfile - Volume distribution
-
-- Basic profile generation
-- Total volume conservation
-- Price range coverage
-- Different bin configurations
-
-#### TestMFI - Money Flow Index
-
-- Basic calculation
-- 0-100 range validation
-- Initial NaN values
-- Different periods
-
-#### TestVPT - Volume-Price Trend
-
-- Basic calculation
-- Uptrend/downtrend behavior
-
-#### TestVolumeTrends - Trend analysis
-
-- Basic analysis
-- Divergence detection
-- Percentage formatting
-
-#### TestEdgeCases
-
-- Empty DataFrames
-- Single row DataFrames
-- Zero volume handling
-
-### 2. Data Fetcher Tests (`test_data_fetcher.py`)
-
-Tests stock data fetching functionality:
-
-#### TestFetchStockData
-
-- Fetching with period parameter
-- Fetching with date range
-- Empty result handling
-- Column filtering
-- Date as column (not index)
-
-#### TestValidateSymbol
-
-- Valid symbol validation
-- Invalid symbol handling
-- Exception handling
-
-#### TestIntegration (`integration` marker, opt-in)
-
-- Real Yahoo Finance data fetching
-- Real symbol validation
-
-### 3. Server Tests (`test_server.py`)
-
-Tests MCP server functionality:
-
-#### TestListTools
-
-- All tools listed
-- Valid schemas
-
-#### TestCallToolGetStockData
-
-- Basic stock data retrieval
-- Date range queries
-
-#### TestCallToolOBV
-
-- OBV calculation via MCP
-
-#### TestCallToolVWAP
-
-- VWAP calculation via MCP
-
-#### TestCallToolVolumeProfile
-
-- Volume profile via MCP
-
-#### TestCallToolMFI
-
-- MFI calculation via MCP
-
-#### TestCallToolVolumeTrends
-
-- Trend analysis via MCP
-
-#### TestCallToolComprehensive
-
-- Complete analysis with all indicators
-
-#### TestErrorHandling
-
-- Invalid symbol errors
-- Unknown tool errors
-
-#### TestGenerateSummary
-
-- Bullish condition summaries
-- Divergence summaries
 
 ## Running Tests
 
 ### All Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Specific Test File
 
 ```bash
-pytest tests/test_indicators.py
-pytest tests/test_data_fetcher.py
-pytest tests/test_server.py
+uv run pytest tests/test_indicators.py
+uv run pytest tests/test_data_fetcher.py
+uv run pytest tests/test_server.py
 ```
 
 ### Specific Test Class
 
 ```bash
-pytest tests/test_indicators.py::TestOBV
-pytest tests/test_server.py::TestCallToolVWAP
+uv run pytest tests/test_indicators.py::TestOBV
+uv run pytest tests/test_server.py::TestCallToolVWAP
 ```
 
 ### Specific Test Function
 
 ```bash
-pytest tests/test_indicators.py::TestOBV::test_obv_uptrend
-pytest tests/test_server.py::TestListTools::test_list_tools_returns_all_tools
+uv run pytest tests/test_indicators.py::TestOBV::test_obv_uptrend
+uv run pytest tests/test_server.py::TestListTools::test_list_tools_returns_all_tools
 ```
 
 ### With Verbose Output
 
 ```bash
-pytest -v
+uv run pytest -v
 ```
 
 ### With Print Statements
 
 ```bash
-pytest -s
+uv run pytest -s
+```
+
+### Serial Run (debugging, pdb)
+
+```bash
+uv run pytest -n 0
 ```
 
 ### Stop on First Failure
 
 ```bash
-pytest -x
+uv run pytest -x
 ```
 
 ### Run Last Failed Tests
 
 ```bash
-pytest --lf
+uv run pytest --lf
 ```
 
 ## Coverage Reports
@@ -210,7 +94,7 @@ pytest --lf
 ### Terminal Coverage
 
 ```bash
-pytest --cov=src/volume_price_analysis --cov-report=term-missing
+uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing
 ```
 
 This shows:
@@ -222,7 +106,7 @@ This shows:
 ### HTML Coverage Report
 
 ```bash
-pytest --cov=src/volume_price_analysis --cov-report=html
+uv run pytest --cov=src/volume_price_analysis --cov-report=html
 ```
 
 Open `htmlcov/index.html` in your browser for interactive coverage exploration.
@@ -294,7 +178,7 @@ Benefits:
 Tests that call real upstream services (Yahoo Finance) are marked `integration`
 and skipped by default with the reason `integration test: needs --run-integration`.
 The default run keeps blocking non-loopback hosts; `--run-integration` lifts the
-pytest-socket guard for `integration` tests only.
+uv run pytest-socket guard for `integration` tests only.
 
 ```python
 @pytest.mark.integration
@@ -332,7 +216,7 @@ Create `.git/hooks/pre-commit`:
 
 ```bash
 #!/bin/bash
-pytest
+uv run pytest
 if [ $? -ne 0 ]; then
     echo "Tests failed. Commit aborted."
     exit 1
@@ -438,44 +322,32 @@ Check that `conftest.py` exists in the `tests/` directory.
 
 ## Coverage Goals
 
-The enforced minimum is **80% statement-and-branch coverage**. See the latest CI
-summary or PR coverage comment for the current total.
+The enforced minimum is **80% statement-and-branch coverage**
+(`--cov-fail-under=80` in `pyproject.toml`). See the latest CI summary or PR
+coverage comment for the current total.
 
-Target coverage by module:
+Excluded from coverage (see `[tool.coverage.report]` in `pyproject.toml`):
 
-- `indicators.py`: 95%+
-- `data_fetcher.py`: 90%+
-- `server.py`: 85%+
-
-Untested areas (acceptable):
-
-- Integration with real Yahoo Finance API (requires network)
-- Main entry point (`if __name__ == "__main__"`)
+- Main entry points (`if __name__ == "__main__":`)
+- Protocol stub bodies (`...`)
 
 ## CI/CD Integration
 
-The [CI workflow](.github/workflows/ci.yml) runs on pushes to `main` and pull
-requests targeting `main`. Actions are pinned to full commit SHAs. It installs
-Python via uv and runs formatting, linting, and type checks before testing on
-Ubuntu, macOS, and Windows.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the source of truth.
+In short: it runs ruff (format and lint), mypy, and the full test suite with the
+same 80% coverage gate on Ubuntu, macOS, and Windows, and posts a coverage
+summary on pull requests. Real-network `integration` tests run separately in
+[`.github/workflows/integration.yml`](.github/workflows/integration.yml)
+(nightly and on manual dispatch).
 
-All three test jobs run:
+To reproduce the CI checks locally:
 
 ```bash
-uv run pytest --cov=src/volume_price_analysis --cov-report=term-missing --cov-report=xml
+uv run ruff format --check src/ tests/ example_usage.py run_analysis_local.py
+uv run ruff check src/ tests/ example_usage.py run_analysis_local.py
+uv run mypy src/
+uv run pytest
 ```
-
-Coverage includes statements and branches and must meet the **80%** floor.
-The Ubuntu job writes a Markdown coverage table to the workflow job summary and
-uploads `coverage.xml` and that table as the `coverage` artifact. Reports are
-published even when tests or the coverage gate fail, provided coverage data was
-produced.
-
-For pull requests from this repository, a separate reporting job uses the GitHub
-CLI to create or update one coverage comment. Only that reporting job receives
-PR write permission for coverage; comment failures do not fail CI. Fork PRs still
-get the artifact and job summary, but skip the comment. No Codecov account or
-additional secrets are required.
 
 ## Resources
 
