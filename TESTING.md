@@ -178,7 +178,7 @@ Benefits:
 Tests that call real upstream services (Yahoo Finance) are marked `integration`
 and skipped by default with the reason `integration test: needs --run-integration`.
 The default run keeps blocking non-loopback hosts; `--run-integration` lifts the
-uv run pytest-socket guard for `integration` tests only.
+pytest-socket guard for `integration` tests only.
 
 ```python
 @pytest.mark.integration
