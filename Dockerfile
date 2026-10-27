@@ -1,5 +1,5 @@
 # ── Stage 1: build ──
-FROM python:3.15.0-slim@sha256:2da676046630d7bf14c6764ae1143dc7fa0377a53f94bf5a642f0b214aca5bce AS builder
+FROM python:3.15.1-slim@sha256:533b0b2f9b5d46fd097091cf826f27902f1d6c3bca714b6dc74551356aa97a51 AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY src/ src/
 RUN uv sync --no-dev --frozen --no-editable
 
 # ── Stage 2: runtime ──
-FROM python:3.15.0-slim@sha256:2da676046630d7bf14c6764ae1143dc7fa0377a53f94bf5a642f0b214aca5bce
+FROM python:3.15.1-slim@sha256:533b0b2f9b5d46fd097091cf826f27902f1d6c3bca714b6dc74551356aa97a51
 
 WORKDIR /app
 # --chown here rather than a later `chown -R`: a recursive chown in a RUN
