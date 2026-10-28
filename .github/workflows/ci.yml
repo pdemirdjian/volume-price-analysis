@@ -38,14 +38,14 @@ jobs:
         run: uv sync --locked --all-extras --dev
 
       - name: Run formatting check
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ example_usage.py run_analysis_local.py
 
       - name: Run linting
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ example_usage.py run_analysis_local.py
 
       - name: Run linting (SARIF)
         if: success() || failure()
-        run: uv run ruff check --output-format sarif -o ruff.sarif src/ tests/ || true
+        run: uv run ruff check --output-format sarif -o ruff.sarif src/ tests/ example_usage.py run_analysis_local.py || true
 
       - name: Upload Ruff SARIF
         if: success() || failure()

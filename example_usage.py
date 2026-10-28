@@ -4,8 +4,8 @@ Example script to test the volume-price analysis functions directly.
 This demonstrates the analysis capabilities without running the MCP server.
 """
 
-from src.volume_price_analysis.data_fetcher import get_default_data_source
-from src.volume_price_analysis.indicators import (
+from volume_price_analysis.data_fetcher import get_default_data_source
+from volume_price_analysis.indicators import (
     analyze_volume_trends,
     calculate_mfi,
     calculate_obv,
@@ -14,7 +14,7 @@ from src.volume_price_analysis.indicators import (
 )
 
 
-def main():
+def main() -> None:
     """Run example analysis on a stock."""
 
     # Configuration
@@ -141,4 +141,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Error: {e}\n")
         print("Make sure you have installed dependencies:")
-        print("  pip install -e .")
+        print("  uv sync")

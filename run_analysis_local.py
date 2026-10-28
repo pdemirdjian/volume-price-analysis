@@ -1,20 +1,21 @@
-import asyncio
-import os
-import sys
+#!/usr/bin/env python3
+"""Call MCP tool handlers in-process, without an MCP client.
 
-# Add src to path
-sys.path.append(os.path.join(os.getcwd(), "src"))
+Run with: uv run python run_analysis_local.py
+"""
+
+import asyncio
 
 from mcp.types import TextContent
 
 from volume_price_analysis.server import handle_call_tool
 
 
-async def main():
+async def main() -> None:
     print("--- COMPREHENSIVE ANALYSIS ---")
     try:
-        results = await handle_call_tool("comprehensive_analysis", {"symbol": "SPY"})
-        for content in results:
+        result = await handle_call_tool("comprehensive_analysis", {"symbol": "SPY"})
+        for content in result.content:
             if isinstance(content, TextContent):
                 print(content.text)
     except Exception as e:
@@ -25,8 +26,8 @@ async def main():
 
     print("\n--- OPTIONS ANALYSIS ---")
     try:
-        results = await handle_call_tool("options_analysis", {"symbol": "SPY"})
-        for content in results:
+        result = await handle_call_tool("options_analysis", {"symbol": "SPY"})
+        for content in result.content:
             if isinstance(content, TextContent):
                 print(content.text)
     except Exception as e:

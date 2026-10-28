@@ -3,6 +3,7 @@
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
+[![Container image](https://img.shields.io/badge/ghcr.io-volume--price--analysis-blue?logo=docker)](https://github.com/pdemirdjian/volume-price-analysis/pkgs/container/volume-price-analysis)
 
 A Model Context Protocol (MCP) server that provides comprehensive volume-price
 analysis tools for stock market data. Analyze stocks using indicators like OBV,
@@ -160,26 +161,30 @@ Add this server to your Claude Code MCP configuration:
 
 **Windows**: `%APPDATA%\claude-code\mcp_settings.json`
 
+Run the server with `uv` from your checkout, so the client doesn't depend on which
+`python` is on its `PATH`:
+
 ```json
 {
   "mcpServers": {
     "volume-price-analysis": {
-      "command": "python",
-      "args": ["-m", "volume_price_analysis.server"],
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/volume-price-analysis", "volume-price-analysis"],
       "env": {}
     }
   }
 }
 ```
 
-If you installed in a virtual environment, use the full path to Python:
+If you installed with pip into a virtual environment, point at the installed
+`volume-price-analysis` console script instead:
 
 ```json
 {
   "mcpServers": {
     "volume-price-analysis": {
-      "command": "/path/to/venv/bin/python",
-      "args": ["-m", "volume_price_analysis.server"],
+      "command": "/path/to/venv/bin/volume-price-analysis",
+      "args": [],
       "env": {}
     }
   }
@@ -191,7 +196,9 @@ If you installed in a virtual environment, use the full path to Python:
 The server uses stdio for communication. Run it with:
 
 ```bash
-python -m volume_price_analysis.server
+uv run volume-price-analysis   # from the checkout
+# or, with the package installed in the active environment:
+volume-price-analysis
 ```
 
 ## Usage Examples
@@ -328,7 +335,7 @@ All tools return structured JSON data. Example output from
 
 ### Running Tests
 
-Comprehensive test suite with 600+ tests covering all functionality:
+Comprehensive test suite covering all functionality (see [TESTING.md](TESTING.md)):
 
 ```bash
 # Install with dev dependencies
@@ -441,7 +448,22 @@ candidates, and email you an AI-generated briefing.
    EMAIL_TO=recipient@example.com
    ```
 
-3. Build and run with Docker:
+   See [`.env.example`](.env.example) for every optional setting, including
+   `EMAIL_SMTP_HOST`/`EMAIL_SMTP_PORT` for non-Gmail SMTP servers.
+
+3. Run the published image from GitHub Container Registry:
+
+   ```bash
+   docker run --env-file .env ghcr.io/pdemirdjian/volume-price-analysis:latest
+   ```
+
+   Each release is published for `linux/amd64` and `linux/arm64` with three tags:
+   `latest`, the full version (e.g. `2.14.4`), and `major.minor` (e.g. `2.14`).
+   Pin a version tag rather than `latest` for reproducible deployments. The
+   image's default command is the `morning-scheduler`, with a Docker
+   `HEALTHCHECK` that runs `morning-healthcheck`.
+
+   Or build it locally:
 
    ```bash
    docker build -t volume-price-analysis .
@@ -465,9 +487,11 @@ uv run python -m volume_price_analysis.agent.morning_agent --no-ai
 | `AI_PROVIDER` | `gemini` | `gemini` or `anthropic` |
 | `AI_PROVIDER_API_KEY` | (required) | API key for chosen provider |
 | `AI_MODEL` | provider default | Override model (e.g., `gemini-2.5-flash`) |
-| `EMAIL_FROM` | (required) | Sender Gmail address |
-| `EMAIL_PASSWORD` | (required) | Gmail App Password |
-| `EMAIL_TO` | (required) | Recipient email address |
+| `EMAIL_FROM` | (required) | Sender address (Gmail by default) |
+| `EMAIL_PASSWORD` | (required) | SMTP password (a Gmail App Password for Gmail) |
+| `EMAIL_TO` | (required) | Recipient email address(es), comma-separated |
+| `EMAIL_SMTP_HOST` | `smtp.gmail.com` | SMTP server; set with `EMAIL_SMTP_PORT` for non-Gmail providers |
+| `EMAIL_SMTP_PORT` | `587` | SMTP port; the server must support STARTTLS (implicit-TLS port 465 is not supported) |
 | `SCAN_UNIVERSE` | `full_market` | Symbol universe to scan |
 | `MAX_DEEP_ANALYSIS` | `5` | Top N candidates for deep analysis |
 | `SCAN_PERIOD` | `3mo` | History period (valid yfinance period) |
@@ -479,6 +503,7 @@ uv run python -m volume_price_analysis.agent.morning_agent --no-ai
 | `SCAN_MAX_RESULTS` | `15` | Results per direction (1–100) |
 | `LOG_LEVEL` | `INFO` | MCP server stderr logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
 | `DATA_CACHE_TTL_SECONDS` | `900` | History cache TTL in seconds for MCP and briefing; `0` disables caching; invalid values fall back to `900` |
+| `SCHEDULER_HEARTBEAT_FILE` | `<tempdir>/morning-scheduler.heartbeat` | Liveness file written by the scheduler and read by `morning-healthcheck` |
 | `TZ` | `America/New_York` | Container timezone |
 
 Numeric scan variables must be numeric and finite; invalid values fail configuration.

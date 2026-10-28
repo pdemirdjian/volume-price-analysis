@@ -39,7 +39,7 @@ pip install -e .
 ### Run Example Script
 
 ```bash
-python example_usage.py
+uv run python example_usage.py
 ```
 
 You should see analysis output for Apple stock (AAPL). If this works,
@@ -71,22 +71,16 @@ Add this configuration:
 {
   "mcpServers": {
     "volume-price-analysis": {
-      "command": "python",
-      "args": ["-m", "volume_price_analysis.server"]
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/volume-price-analysis", "volume-price-analysis"]
     }
   }
 }
 ```
 
-**Note**: If using a virtual environment, use the full path to Python:
-
-```bash
-# Find your Python path
-which python  # macOS/Linux
-where python  # Windows
-```
-
-Then update the command to use that full path.
+**Note**: If you installed with pip into a virtual environment instead, set
+`"command"` to the full path of the installed `volume-price-analysis` script
+(e.g. `/path/to/venv/bin/volume-price-analysis`) and `"args"` to `[]`.
 
 ## Step 4: Restart Claude Code
 
