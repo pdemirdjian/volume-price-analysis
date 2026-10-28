@@ -13,7 +13,7 @@ dependencies = [
     "yfinance==1.7.0",
     "pandas==3.1.0",
     "numpy==2.5.4",
-    "anthropic~=2.1.0",
+    "anthropic~=2.3.0",
     "google-genai~=2.33.0",
     "markdown~=3.11.0",
     "holidays~=0.91",
@@ -26,11 +26,11 @@ packages = ["src/volume_price_analysis"]
 
 [dependency-groups]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-cov==7.1.0",
     "pytest-asyncio==1.4.1",
     "pytest-mock==3.17.0",
-    "ruff==0.17.2",
+    "ruff==0.17.3",
     "mypy==2.4.0",
     "pytest-xdist==3.8.0",
     "pytest-socket==0.8.1",
