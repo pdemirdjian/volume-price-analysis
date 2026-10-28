@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.14.5](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.4...v2.14.5) (2026-10-28)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=2.2.0 ([#592](https://github.com/pdemirdjian/volume-price-analysis/issues/592)) ([fa50032](https://github.com/pdemirdjian/volume-price-analysis/commit/fa50032e3ce152c233777f72a05ca05c819b6b48))
+* **deps:** update dependency google-genai to ~=2.33.0 ([#587](https://github.com/pdemirdjian/volume-price-analysis/issues/587)) ([c35d374](https://github.com/pdemirdjian/volume-price-analysis/commit/c35d374e28137440689d81804908cc13f08f6424))
+* **deps:** update python docker tag to v3.15.1 ([#594](https://github.com/pdemirdjian/volume-price-analysis/issues/594)) ([7a3f2cc](https://github.com/pdemirdjian/volume-price-analysis/commit/7a3f2ccd7038f35a12a35b52012d6e864fbd3e66))
+
+
+### Documentation
+
+* **PDE-34:** ghcr.io image, SMTP vars, drift-proof TESTING.md, fixed example scripts ([#589](https://github.com/pdemirdjian/volume-price-analysis/issues/589)) ([42b83b9](https://github.com/pdemirdjian/volume-price-analysis/commit/42b83b9b87434d096801086a7e72931e61dcbb2d))
+
 ## [2.14.4](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.3...v2.14.4) (2026-10-25)
 
 
