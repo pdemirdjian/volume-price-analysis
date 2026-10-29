@@ -12,7 +12,6 @@ import logging
 import math
 import os
 import sys
-from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.models import InitializationOptions
@@ -26,15 +25,13 @@ from mcp.types import (
     Tool,
 )
 
+from . import __version__
 from .data_fetcher import DataSource, get_default_data_source
 from .tools import TOOLS, TOOLS_BY_NAME, ToolContext, validate_arguments
 
 logger = logging.getLogger(__name__)
 
-try:
-    _SERVER_VERSION = version("volume-price-analysis-mcp")
-except PackageNotFoundError:
-    _SERVER_VERSION = "0.0.0"
+_SERVER_VERSION = __version__
 
 
 def _sanitize_for_json(obj: object) -> object:

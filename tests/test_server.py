@@ -1691,7 +1691,7 @@ class TestServerVersion:
         try:
             expected = version("volume-price-analysis-mcp")
         except PackageNotFoundError:
-            expected = "0.0.0"
+            expected = "0.0.0+unknown"
         assert _SERVER_VERSION == expected
 
     def test_server_version_is_string(self):

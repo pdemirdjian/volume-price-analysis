@@ -75,6 +75,13 @@ pytest --cov=src/volume_price_analysis --cov-report=term-missing
 pytest tests/test_indicators.py
 ```
 
+### Dependency Pinning
+
+`uv.lock` pins exact versions for reproducible dev, CI, and Docker builds. Runtime
+dependencies in `pyproject.toml` stay compatible-release ranges (`~=` or `>=x,<next-major`),
+never `==`, so consumers installing the wheel can resolve them alongside their own packages.
+After changing a range, run `uv lock` (not `uv lock --upgrade`) and commit `uv.lock`.
+
 ### Adding New Indicators
 
 When adding new technical indicators:
