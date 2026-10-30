@@ -1763,12 +1763,12 @@ requires-dist = [
     { name = "google-genai", specifier = "~=2.33.0" },
     { name = "holidays", specifier = "~=0.91" },
     { name = "markdown", specifier = "~=3.11.0" },
-    { name = "mcp", specifier = "==2.3.0" },
+    { name = "mcp", specifier = ">=2.3.0,<3" },
     { name = "nh3", specifier = "~=0.3.3" },
-    { name = "numpy", specifier = "==2.5.4" },
-    { name = "pandas", specifier = "==3.1.0" },
+    { name = "numpy", specifier = ">=2.5.4,<3" },
+    { name = "pandas", specifier = ">=3.1.0,<4" },
     { name = "pytickersymbols", specifier = "~=1.17.0" },
-    { name = "yfinance", specifier = "==1.7.0" },
+    { name = "yfinance", specifier = ">=1.7.0,<2" },
 ]
 
 [package.metadata.requires-dev]

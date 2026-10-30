@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]  # PEP 639 license-files support
 build-backend = "hatchling.build"
 
 [project]
@@ -8,11 +8,37 @@ version = "2.14.5"
 description = "MCP server for stock volume-price analysis"
 readme = "README.md"
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Peter Demirdjian" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "stock-market",
+    "technical-analysis",
+    "volume-price-analysis",
+    "trading",
+    "yfinance",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Typing :: Typed",
+]
+# Pinning strategy: uv.lock pins exact versions for reproducible dev/CI/Docker builds, so
+# these stay compatible ranges (never `==`) to let wheel consumers resolve alongside other
+# packages. Floors track the locked versions; ceilings stop at the next breaking release.
 dependencies = [
-    "mcp==2.3.0",
-    "yfinance==1.7.0",
-    "pandas==3.1.0",
-    "numpy==2.5.4",
+    "mcp>=2.3.0,<3",
+    "yfinance>=1.7.0,<2",
+    "pandas>=3.1.0,<4",
+    "numpy>=2.5.4,<3",
     "anthropic~=2.3.0",
     "google-genai~=2.33.0",
     "markdown~=3.11.0",
@@ -20,6 +46,12 @@ dependencies = [
     "pytickersymbols~=1.17.0",
     "nh3~=0.3.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pdemirdjian/volume-price-analysis"
+Repository = "https://github.com/pdemirdjian/volume-price-analysis"
+Issues = "https://github.com/pdemirdjian/volume-price-analysis/issues"
+Changelog = "https://github.com/pdemirdjian/volume-price-analysis/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/volume_price_analysis"]
