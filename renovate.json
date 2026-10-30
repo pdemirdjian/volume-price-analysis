@@ -60,7 +60,8 @@
       "matchDepTypes": [
         "project.dependencies"
       ],
-      "semanticCommitType": "fix"
+      "semanticCommitType": "fix",
+      "rangeStrategy": "update-lockfile"
     },
     {
       "description": "Automerge non-major production dependencies with 3-day soak",
