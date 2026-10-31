@@ -161,6 +161,7 @@ Tests avoid network calls by injecting an `InMemoryDataSource` through the
 from volume_price_analysis.data_fetcher import InMemoryDataSource
 from volume_price_analysis.server import dispatch
 
+
 async def test_get_stock_data_basic():
     source = InMemoryDataSource(frames={"AAPL": pd.DataFrame(...)})
 
@@ -210,22 +211,23 @@ ptw
 
 Tests automatically re-run when files change.
 
-### Pre-commit Hook
+### Pre-commit Hooks
 
-Create `.git/hooks/pre-commit`:
-
-```bash
-#!/bin/bash
-uv run pytest
-if [ $? -ne 0 ]; then
-    echo "Tests failed. Commit aborted."
-    exit 1
-fi
-```
+Hooks are managed by the [pre-commit](https://pre-commit.com) framework and configured in
+`.pre-commit-config.yaml` (ruff, ruff-format, mypy, and baseline file checks). Install them
+once per clone:
 
 ```bash
-chmod +x .git/hooks/pre-commit
+uv run --with pre-commit pre-commit install
 ```
+
+Run every hook against the whole tree (what CI's `pre-commit` job does):
+
+```bash
+uv run --with pre-commit pre-commit run --all-files
+```
+
+The hooks don't run the test suite; run `uv run pytest` before pushing.
 
 ## Writing New Tests
 
@@ -234,6 +236,7 @@ chmod +x .git/hooks/pre-commit
 ```python
 import pytest
 from volume_price_analysis.indicators import calculate_obv
+
 
 class TestNewIndicator:
     """Tests for new indicator."""
@@ -260,6 +263,7 @@ class TestNewIndicator:
 ```python
 import pytest
 
+
 class TestAsyncFunction:
     @pytest.mark.asyncio
     async def test_async_function(self):
@@ -271,11 +275,14 @@ class TestAsyncFunction:
 ### Parametrized Tests
 
 ```python
-@pytest.mark.parametrize("symbol,expected", [
-    ("AAPL", True),
-    ("BRK-B", True),
-    ("AAPL!@#", False),
-])
+@pytest.mark.parametrize(
+    "symbol,expected",
+    [
+        ("AAPL", True),
+        ("BRK-B", True),
+        ("AAPL!@#", False),
+    ],
+)
 def test_symbol_formats(symbol, expected):
     assert validate_symbol_format(symbol) is expected
 ```
