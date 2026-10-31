@@ -416,22 +416,22 @@ def _get_top_symbols(scan_results: Mapping[str, Any], max_count: int) -> list[st
 
     # Prioritize high conviction setups
     for candidate in scan_results.get("high_conviction_setups", []):
-        sym = candidate["symbol"]
-        if sym not in seen:
+        sym = candidate.get("symbol")
+        if sym and sym not in seen:
             symbols.append(sym)
             seen.add(sym)
 
     # Then top bullish
     for candidate in scan_results.get("top_bullish", []):
-        sym = candidate["symbol"]
-        if sym not in seen:
+        sym = candidate.get("symbol")
+        if sym and sym not in seen:
             symbols.append(sym)
             seen.add(sym)
 
     # Then top bearish
     for candidate in scan_results.get("top_bearish", []):
-        sym = candidate["symbol"]
-        if sym not in seen:
+        sym = candidate.get("symbol")
+        if sym and sym not in seen:
             symbols.append(sym)
             seen.add(sym)
 

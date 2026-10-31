@@ -58,6 +58,7 @@ from .payloads import (
     ScanCandidate,
     ScanResult,
 )
+from .redaction import redact_error_message
 from .retry import retry_call
 
 logger = logging.getLogger(__name__)
@@ -556,7 +557,7 @@ async def _analyze_symbol_async(
         except InsufficientDataError:
             return (symbol, None, None, True, False)
         except Exception as e:
-            return (symbol, None, str(e), False, _is_rate_limit(e))
+            return (symbol, None, redact_error_message(str(e)), False, _is_rate_limit(e))
 
 
 async def run_scan(
