@@ -57,6 +57,28 @@ jobs:
       - name: Run type checking
         run: uv run mypy src/
 
+  pre-commit:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run pre-commit hooks
+        run: uv run --with pre-commit pre-commit run --all-files --show-diff-on-failure
+
   test:
     timeout-minutes: 30
     needs: lint
@@ -148,7 +170,7 @@ jobs:
     timeout-minutes: 5
     if: always()
     # coverage-comment is deliberately not gated: it only posts a PR comment.
-    needs: [lint, test, dockerfile-lint, security-scan, dependency-review, docker]
+    needs: [lint, pre-commit, test, dockerfile-lint, security-scan, dependency-review, docker]
     runs-on: ubuntu-latest
     steps:
       - name: Check required job results
@@ -158,6 +180,7 @@ jobs:
         run: |
           echo "$NEEDS" | jq -e --arg event "$EVENT_NAME" '
             .lint.result == "success" and
+            .["pre-commit"].result == "success" and
             .test.result == "success" and
             .["dockerfile-lint"].result == "success" and
             .["security-scan"].result == "success" and

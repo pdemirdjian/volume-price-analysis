@@ -19,6 +19,7 @@ from email.mime.text import MIMEText
 import markdown  # type: ignore[import-untyped]
 import nh3
 
+from ..redaction import redact_error_message
 from ..retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
 from .config import AgentConfig
 
@@ -183,11 +184,7 @@ def build_error_message(creds: SmtpCreds, error_message: str) -> MIMEMultipart:
     """Build the plain-text error notification sent when a briefing fails."""
     # Truncate and sanitize error message to avoid leaking sensitive details
     safe_message = error_message[:500] if error_message else "Unknown error"
-    # Strip potential secrets: URLs with query params, key-like strings
-    safe_message = re.sub(r"https?://\S+", "[URL redacted]", safe_message)
-    safe_message = re.sub(
-        r"(?i)(key|token|password|secret|credential)[=:]\s*\S+", r"\1=[REDACTED]", safe_message
-    )
+    safe_message = redact_error_message(safe_message)
     body = (
         f"The morning briefing agent encountered a critical error:\n\n"
         f"{safe_message}\n\n"

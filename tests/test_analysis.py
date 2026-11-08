@@ -1187,3 +1187,21 @@ async def test_scan_retries_adapter_wrapped_timeout():
     await run_scan(symbols=["AAA"], data_source=source, retry_sleep=delays.append)
     assert source.fetch_calls == ["AAA"] * 3
     assert delays == [0.25, 0.5]
+
+
+@pytest.mark.asyncio
+async def test_scan_redacts_urls_in_error_messages():
+    url = "https://query2.finance.yahoo.com/v8/finance/chart/BADX?crumb=secret"
+    source = InMemoryDataSource(errors={"BADX": ValueError(f"HTTP 404 for {url}")})
+    result = await run_scan(symbols=["BADX"], data_source=source)
+    assert result["errors"] == [{"symbol": "BADX", "error": "HTTP 404 for [URL redacted]"}]
+
+
+@pytest.mark.asyncio
+async def test_scan_detects_rate_limit_from_original_exception_before_redaction():
+    source = InMemoryDataSource(
+        errors={"AAA": ValueError("429 from https://query2.finance.yahoo.com/x?crumb=s")}
+    )
+    result = await run_scan(symbols=["AAA"], data_source=source, retry_sleep=lambda _: None)
+    assert result["rate_limited"] is True
+    assert result["errors"][0]["error"] == "429 from [URL redacted]"

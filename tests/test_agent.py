@@ -249,6 +249,14 @@ class TestGetTopSymbols:
         symbols = _get_top_symbols(scan_results, 10)
         assert len(symbols) == len(set(symbols))
 
+    def test_skips_candidates_without_symbol(self):
+        scan_results = {
+            "high_conviction_setups": [{"score": 9.0}, {"symbol": "AAPL"}],
+            "top_bullish": [{}, {"symbol": "MSFT"}],
+            "top_bearish": [{"direction": "bearish"}, {"symbol": "TSLA"}],
+        }
+        assert _get_top_symbols(scan_results, 10) == ["AAPL", "MSFT", "TSLA"]
+
     def test_respects_max_count(self):
         scan_results = {
             "high_conviction_setups": [{"symbol": f"SYM{i}"} for i in range(10)],

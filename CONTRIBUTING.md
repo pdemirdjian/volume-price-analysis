@@ -34,7 +34,13 @@ for contributing to the project.
    pip install -e .
    ```
 
-3. Run the tests to verify your setup:
+3. Install the git hooks (ruff, mypy and baseline file checks run on each commit):
+
+   ```bash
+   uv run --with pre-commit pre-commit install
+   ```
+
+4. Run the tests to verify your setup:
 
    ```bash
    pytest
