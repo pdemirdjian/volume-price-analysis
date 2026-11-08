@@ -19,15 +19,10 @@ from curl_cffi.requests.exceptions import Timeout as CurlTimeout
 from pytickersymbols import PyTickerSymbols
 from yfinance.exceptions import YFRateLimitError
 
+from . import interpretation as labels
 from .data_fetcher import DEFAULT_TIMEOUT, DataSource, get_default_data_source
 from .indicator_suite import adaptive_periods, build_snapshot
 from .indicators import (
-    CMF_CONDITION_BANDS,
-    CMF_EXTREME_BANDS,
-    CMF_SIGNAL_BANDS,
-    MFI_CONDITION_BANDS,
-    MFI_OPTIONS_SIGNAL_BANDS,
-    SQUEEZE_WINDOW,
     TREND_LOOKBACK,
     analyze_volume_trends,
     calculate_atr,
@@ -46,8 +41,16 @@ from .indicators import (
     composite_adx_period,
     detect_bollinger_squeeze,
     detect_volume_breakout,
-    threshold_verdict,
     trend_verdict,
+)
+from .interpretation import (
+    CMF_CONDITION_BANDS,
+    CMF_EXTREME_BANDS,
+    CMF_SIGNAL_BANDS,
+    MFI_CONDITION_BANDS,
+    MFI_OPTIONS_SIGNAL_BANDS,
+    SQUEEZE_WINDOW,
+    threshold_verdict,
 )
 from .payloads import (
     BollingerSnapshot,
@@ -1370,16 +1373,17 @@ def _generate_options_insights(
     # 2. Trend Quality Assessment
     adx = adx_data["adx"]
     trend_dir = adx_data["trend_direction"]
-    if adx > 30:
+    tier = labels.adx_options_tier(adx)
+    if tier == "strong":
         insights.append(
             f"STRONG TREND: ADX at {adx:.1f} ({trend_dir}) - "
             f"Directional plays have wind at their back"
         )
-    elif adx > 25:
+    elif tier == "moderate":
         insights.append(
             f"Moderate Trend: ADX at {adx:.1f} ({trend_dir}) - Decent setup for directional options"
         )
-    elif adx > 20:
+    elif tier == "weak":
         insights.append(
             f"Weak Trend: ADX at {adx:.1f} - Consider reduced position size or neutral strategies"
         )
