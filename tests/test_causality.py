@@ -365,7 +365,6 @@ NON_CAUSAL: dict[str, str] = {
         "Marks bar i using bars i+1..i+right (the confirmation window) by design. Consumers "
         "must gate pivots on confirmation; rsi_divergence_signal_series does and is swept."
     ),
-    "threshold_verdict": "Maps a scalar to a label; takes no bar data.",
     "composite_adx_period": "Maps a holding period to an ADX lookback; takes no bar data.",
 }
 
