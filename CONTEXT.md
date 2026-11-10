@@ -121,7 +121,7 @@ after a successful send (never on `--dry-run` or `--no-ai`), once per
 
 A **grade row** (`kind: "grade"`) is one pick row's outcome at one horizon,
 appended once per (`briefing_date`, `symbol`, `horizon`) when that horizon has
-elapsed. Horizons are 5 and 10 trading sessions plus the pick row's
+elapsed. A pick row whose `price` is null is never graded. Horizons are 5 and 10 trading sessions plus the pick row's
 `holding_period`, counted from the briefing date: the entry bar is the last
 session before it, and horizon N exits at the close of the N-th session on or
 after it.

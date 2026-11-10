@@ -156,6 +156,18 @@ def horizons_for(row: Mapping[str, Any]) -> list[int]:
     return sorted(horizons)
 
 
+def _entry_price(row: Mapping[str, Any]) -> float | None:
+    """The pick row's recorded entry reference, or None when it has no usable one.
+
+    Returns are measured from the pick's ``price``; a row without a positive
+    finite one has nothing to measure from and is never graded.
+    """
+    price = row.get("price")
+    if isinstance(price, bool) or not isinstance(price, (int, float)):
+        return None
+    return float(price) if math.isfinite(price) and price > 0 else None
+
+
 def _first_touch(
     window: pd.DataFrame, *, bullish: bool, stop: float | None, target: float | None
 ) -> tuple[bool | None, bool | None]:
@@ -187,8 +199,12 @@ def grade_pick(
     Strictly causal: bars dated on or after ``as_of`` are ignored, so a run
     during the session never grades against a partial bar. The return is
     close-to-close from the entry bar (``backtest.forward_returns``), signed so
-    that positive means the pick's direction was right.
+    that positive means the pick's direction was right. A row with no usable
+    recorded ``price`` gets no grade rows.
     """
+    price = _entry_price(row)
+    if price is None:
+        return []
     briefing_date = date.fromisoformat(row["briefing_date"])
     frame = data[pd.to_datetime(data["Date"]).dt.date < as_of].reset_index(drop=True)
     dates = pd.to_datetime(frame["Date"]).dt.date
@@ -198,8 +214,7 @@ def grade_pick(
     bullish = row.get("direction") != "bearish"
     # Fetched history is re-adjusted for splits and dividends paid since the
     # briefing, so levels recorded then are rescaled onto today's price basis.
-    price = row.get("price")
-    scale = float(frame["Close"].iloc[entry]) / price if price else 1.0
+    scale = float(frame["Close"].iloc[entry]) / price
     stop, target = row.get("stop"), row.get("target")
     grades: list[Row] = []
     for horizon in horizons_for(row) if horizons is None else horizons:
@@ -234,7 +249,8 @@ def grade_ledger(
     """The grade rows now due for a ledger's pick rows. Writes nothing.
 
     One fetch per symbol with a due horizon. A symbol whose fetch or grading
-    fails is logged and skipped; it is retried on the next run.
+    fails is logged and skipped; it is retried on the next run. Pick rows with
+    no usable recorded ``price`` are never graded and cost no fetch.
     """
     done = {_key(row) for row in rows if row.get("kind") == "grade"}
     due: dict[str, list[tuple[Mapping[str, Any], list[int]]]] = {}
@@ -246,6 +262,11 @@ def grade_ledger(
             sessions = int(np.busday_count(row["briefing_date"], as_of))
             symbol = row["symbol"]
         except KeyError, TypeError, ValueError:
+            continue
+        if _entry_price(row) is None:
+            logger.debug(
+                "Ledger pick %s %s has no entry price; not graded", row["briefing_date"], symbol
+            )
             continue
         horizons = [
             h

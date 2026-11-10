@@ -358,6 +358,29 @@ class TestGradeLedger:
 
         assert [(g["horizon"], g["signed_return"]) for g in grades] == [(14, pytest.approx(0.03))]
 
+    @pytest.mark.parametrize("price", [None, 0, -5.0, float("nan"), float("inf"), "100", True])
+    def test_pick_without_a_usable_entry_price_is_never_graded(self, price):
+        # Returns are measured from the pick's recorded price; with none, the
+        # fetched prior close must not stand in for it.
+        source = InMemoryDataSource(frames={"AAPL": _frame(closes={EXIT_5: 105.0})})
+        row = _pick_row(price=price, stop=None, target=None)
+
+        grades = grade_ledger([row], source, as_of=AS_OF)
+
+        assert grades == []
+        assert grade_pick(row, source.frames["AAPL"], as_of=AS_OF) == []
+        assert source.fetch_calls == []
+        assert scorecard_table([row, *grades], as_of=AS_OF) == ""
+
+    def test_unpriced_pick_is_skipped_while_its_neighbours_are_graded(self):
+        source = InMemoryDataSource(frames={"AAPL": _frame(), "MSFT": _frame()})
+        rows = [_pick_row(), _pick_row(symbol="MSFT", price=None, conviction="LOW")]
+
+        grades = grade_ledger(rows, source, as_of=AS_OF)
+
+        assert {g["symbol"] for g in grades} == {"AAPL"}
+        assert "| LOW | — | — | — |" in scorecard_table([*rows, *grades], as_of=AS_OF)
+
     def test_one_fetch_per_symbol_and_a_failing_symbol_is_skipped(self, caplog):
         source = InMemoryDataSource(
             frames={"AAPL": _frame()}, errors={"GONE": ValueError("No data found")}
