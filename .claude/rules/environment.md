@@ -17,6 +17,7 @@ AI and email variables are required for the morning briefing agent only.
 | `SCAN_UNIVERSE` | No | `full_market` | Symbol universe |
 | `MAX_DEEP_ANALYSIS` | No | `5` | Max candidates for deep analysis (1–20; out-of-range values fall back/clamp) |
 | `SCHEDULER_HEARTBEAT_FILE` | No | `<tempdir>/morning-scheduler.heartbeat` | Liveness file the scheduler writes (monotonic stamp); read by `morning-healthcheck` |
+| `LEDGER_PATH` | No | unset | JSONL pick ledger: picks appended after a successful send, graded on later runs; unset records nothing |
 
 Briefing scan variables are documented with defaults and bounds in the
 [README environment table](../../README.md#configuration). They are `SCAN_PERIOD`,

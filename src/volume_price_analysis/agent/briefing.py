@@ -15,6 +15,7 @@ from typing import Any
 
 from ..payloads import OptionsAnalysis
 from .ai_client import format_briefing_date
+from .ledger import SCORECARD_WINDOW_DAYS, scorecard_table
 from .picks import Pick, build_picks, render_picks_table
 from .regime import annotate_regime_conflicts, format_regime_header
 
@@ -25,6 +26,8 @@ class BriefingInputs:
 
     ``model_text`` is the AI provider's prose, or None when the provider was
     unavailable (the render then falls back to a programmatic body).
+    ``ledger_rows`` are the ledger's pick and grade rows; the scorecard section
+    is rendered from them and is absent while none of them is graded.
     """
 
     scan_results: Mapping[str, Any]
@@ -33,12 +36,13 @@ class BriefingInputs:
     briefing_date: date
     elapsed_s: float
     model_text: str | None
+    ledger_rows: Sequence[Mapping[str, Any]] = ()
 
 
 def render(inputs: BriefingInputs) -> str:
     """Render the complete markdown body of the delivered briefing.
 
-    The template (dated title, regime verdict, fixed pick table, footer) is
+    The template (dated title, regime verdict, fixed pick table, scorecard, footer) is
     rendered here, never by the model, so the date is always real and the pick
     block always parses (PDE-69). ``tests/golden/briefing_body.md`` pins it.
     """
@@ -48,6 +52,7 @@ def render(inputs: BriefingInputs) -> str:
         f"# Morning Market Briefing — {format_briefing_date(inputs.briefing_date)}\n\n"
         f"{_regime_header(inputs, picks)}\n\n"
         f"## Pick Summary\n\n{render_picks_table(picks)}\n\n"
+        f"{_scorecard(inputs)}"
         f"{text}"
         f"{_stats_line(inputs)}"
     )
@@ -114,6 +119,19 @@ def _picks(inputs: BriefingInputs) -> list[Pick]:
 def _regime_header(inputs: BriefingInputs, picks: list[Pick]) -> str:
     """The regime verdict line; the conflict count is the table's flagged rows."""
     return format_regime_header(inputs.regime, sum(p.regime_conflict for p in picks))
+
+
+def _scorecard(inputs: BriefingInputs) -> str:
+    """The track record of past picks, or nothing while the ledger has no grades."""
+    table = scorecard_table(inputs.ledger_rows, as_of=inputs.briefing_date)
+    if not table:
+        return ""
+    return (
+        "## Scorecard\n\n"
+        f"Past picks from the trailing {SCORECARD_WINDOW_DAYS} days, by trading-day horizon: "
+        "hit rate / mean direction-signed return (n = graded picks).\n\n"
+        f"{table}\n\n"
+    )
 
 
 def _stats_line(inputs: BriefingInputs) -> str:
