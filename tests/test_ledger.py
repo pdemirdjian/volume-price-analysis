@@ -329,11 +329,34 @@ class TestGradeLedger:
         source = InMemoryDataSource(frames={"AAPL": _frame()})
         fully_graded = [_pick_row(), *(_grade_row(h, 0.0) for h in (5, 10, 14))]
 
-        # Four weekdays after the briefing date, fully graded, and long stale.
+        # Four weekdays after the briefing date, and fully graded.
         assert grade_ledger([_pick_row()], source, as_of=date(2026, 8, 14)) == []
         assert grade_ledger(fully_graded, source, as_of=AS_OF) == []
-        assert grade_ledger([_pick_row()], source, as_of=date(2027, 1, 4)) == []
         assert source.fetch_calls == []
+
+    def test_long_overdue_horizons_are_still_graded(self):
+        # Catch-up after an outage: every horizon elapsed months ago (well over
+        # 20 sessions), and the history is still available.
+        source = InMemoryDataSource(
+            frames={"AAPL": _frame(closes={EXIT_5: 105.0, EXIT_10: 110.0, EXIT_14: 90.0})}
+        )
+
+        grades = _by_horizon(grade_ledger([_pick_row()], source, as_of=date(2027, 1, 4)))
+
+        assert {h: g["signed_return"] for h, g in grades.items()} == {
+            5: pytest.approx(0.05),
+            10: pytest.approx(0.10),
+            14: pytest.approx(-0.10),
+        }
+        assert source.fetch_calls == ["AAPL"]
+
+    def test_overdue_horizon_is_caught_up_alongside_already_graded_ones(self):
+        source = InMemoryDataSource(frames={"AAPL": _frame(closes={EXIT_14: 103.0})})
+        rows = [_pick_row(), _grade_row(5, 0.01), _grade_row(10, 0.01)]
+
+        grades = grade_ledger(rows, source, as_of=date(2027, 1, 4))
+
+        assert [(g["horizon"], g["signed_return"]) for g in grades] == [(14, pytest.approx(0.03))]
 
     def test_one_fetch_per_symbol_and_a_failing_symbol_is_skipped(self, caplog):
         source = InMemoryDataSource(

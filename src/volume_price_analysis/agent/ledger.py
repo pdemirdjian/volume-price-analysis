@@ -49,9 +49,6 @@ SCORECARD_WINDOW_DAYS = 90
 
 # Calendar days fetched ahead of the briefing date so the entry bar is present.
 _ENTRY_LOOKBACK_DAYS = 10
-# A horizon still ungraded this many weekdays after it was due is abandoned
-# (delisted symbol, dirty data), so it is not refetched on every run forever.
-_STALE_AFTER_SESSIONS = 20
 _MAX_CONCURRENT_FETCHES = 4
 
 Row = dict[str, Any]
@@ -253,8 +250,7 @@ def grade_ledger(
         horizons = [
             h
             for h in horizons_for(row)
-            if h <= sessions <= h + _STALE_AFTER_SESSIONS
-            and ("grade", row["briefing_date"], symbol, h) not in done
+            if h <= sessions and ("grade", row["briefing_date"], symbol, h) not in done
         ]
         if horizons:
             due.setdefault(symbol, []).append((row, horizons))
