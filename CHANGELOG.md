@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.14.6](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.5...v2.14.6) (2026-11-13)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=2.5.0 ([#609](https://github.com/pdemirdjian/volume-price-analysis/issues/609)) ([9ca8af3](https://github.com/pdemirdjian/volume-price-analysis/commit/9ca8af362505961c83ecc273d67b74d17a05c69a))
+* **deps:** update dependency anthropic to ~=2.6.0 ([#616](https://github.com/pdemirdjian/volume-price-analysis/issues/616)) ([8173460](https://github.com/pdemirdjian/volume-price-analysis/commit/8173460b52edfea334a706025aae570b8cbae0fa))
+* **deps:** update dependency anthropic to ~=2.7.0 ([#620](https://github.com/pdemirdjian/volume-price-analysis/issues/620)) ([d67f731](https://github.com/pdemirdjian/volume-price-analysis/commit/d67f731739d8e0db89aa679b4f12e0ce9cc52cc3))
+* **deps:** update dependency anthropic to ~=2.8.0 ([#621](https://github.com/pdemirdjian/volume-price-analysis/issues/621)) ([0b87e24](https://github.com/pdemirdjian/volume-price-analysis/commit/0b87e2467d9ba4c2ff836056d4e6815272dc04f8))
+* **deps:** update dependency google-genai to ~=2.34.0 ([#602](https://github.com/pdemirdjian/volume-price-analysis/issues/602)) ([f529f0c](https://github.com/pdemirdjian/volume-price-analysis/commit/f529f0c814df5de91f29d0e3fc70a6c3c7b780c6))
+* **deps:** update ghcr.io/astral-sh/uv docker tag to v0.13.4 ([#572](https://github.com/pdemirdjian/volume-price-analysis/issues/572)) ([8f973e0](https://github.com/pdemirdjian/volume-price-analysis/commit/8f973e095f1e6f5a639088581cd9995fc5cb983b))
+* **deps:** update python docker tag to v3.15.2 ([#600](https://github.com/pdemirdjian/volume-price-analysis/issues/600)) ([b7ef515](https://github.com/pdemirdjian/volume-price-analysis/commit/b7ef515ad63b84b78c7007e0f007b2950ca680e5))
+* **PDE-36:** redact scan error strings, guard _get_top_symbols, wire pre-commit ([#599](https://github.com/pdemirdjian/volume-price-analysis/issues/599)) ([e1a0c0e](https://github.com/pdemirdjian/volume-price-analysis/commit/e1a0c0ee1d43f8dbd77597ac447f79474737f978))
+
 ## [2.14.5](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.4...v2.14.5) (2026-10-28)
 
 
