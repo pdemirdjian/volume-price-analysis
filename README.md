@@ -504,6 +504,7 @@ uv run python -m volume_price_analysis.agent.morning_agent --no-ai
 | `LOG_LEVEL` | `INFO` | MCP server stderr logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
 | `DATA_CACHE_TTL_SECONDS` | `900` | History cache TTL in seconds for MCP and briefing; `0` disables caching; invalid values fall back to `900` |
 | `SCHEDULER_HEARTBEAT_FILE` | `<tempdir>/morning-scheduler.heartbeat` | Liveness file written by the scheduler and read by `morning-healthcheck` |
+| `LEDGER_PATH` | unset | JSONL pick ledger appended after each successful briefing send and graded on later runs; unset records nothing and renders no scorecard |
 | `TZ` | `America/New_York` | Container timezone |
 
 Numeric scan variables must be numeric and finite; invalid values fail configuration.

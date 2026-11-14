@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -34,6 +35,7 @@ from .ai_client import (
 from .briefing import BriefingInputs, render, render_raw
 from .config import AgentConfig
 from .email_sender import SmtpCreds, build_briefing_message, build_error_message, send_email
+from .ledger import append_rows, grade_ledger, pick_rows, read_ledger
 from .picks import build_picks
 from .regime import REGIME_SMA_PERIOD, annotate_regime_conflicts, compute_market_regime
 
@@ -90,6 +92,8 @@ async def run_morning_briefing(
     2. Run deep options analysis on top candidates
     3. Generate AI briefing (unless --no-ai)
     4. Send email (unless --dry-run)
+    5. Append the picks and newly due grades to the ledger (only after a
+       successful AI-path send, and only when ``config.ledger_path`` is set)
 
     Args:
         data_source: Market-data seam used for the scan, the SPY regime fetch,
@@ -211,6 +215,24 @@ async def run_morning_briefing(
         if sym in conviction_by_symbol:
             analysis["conviction"] = conviction_by_symbol[sym]
 
+    # Step 2d: Ledger (PDE-195). Grade past picks whose horizon has elapsed so
+    # the scorecard can show them. Nothing is written here: the new grades and
+    # today's picks are appended only after a successful send. The briefing
+    # must never die on this path.
+    ledger_path = Path(config.ledger_path) if config.ledger_path else None
+    ledger_rows: list[dict[str, Any]] = []
+    new_grades: list[dict[str, Any]] = []
+    if ledger_path is None:
+        logger.info("LEDGER_PATH is not set: picks are not recorded and no scorecard is rendered")
+    elif not no_ai:
+        try:
+            ledger_rows = await asyncio.to_thread(read_ledger, ledger_path)
+            new_grades = await asyncio.to_thread(
+                grade_ledger, ledger_rows, source, as_of=briefing_date
+            )
+        except Exception:
+            logger.exception("Ledger grading failed; continuing without new grades")
+
     # Step 3: Generate briefing. model_text None renders the fallback body.
     degraded_reason: str | None = None
     model_text: str | None = None
@@ -260,6 +282,7 @@ async def run_morning_briefing(
         briefing_date=briefing_date,
         elapsed_s=elapsed_total,
         model_text=model_text,
+        ledger_rows=[*ledger_rows, *new_grades],
     )
     body = render_raw(inputs) if no_ai else render(inputs)
 
@@ -289,6 +312,20 @@ async def run_morning_briefing(
             ),
             creds,
         )
+        if ledger_path is not None:
+            today_rows = pick_rows(
+                picks,
+                briefing_date=briefing_date,
+                regime=regime.get("regime"),
+                holding_period=config.scan_holding_period,
+            )
+            try:
+                written = await asyncio.to_thread(
+                    append_rows, ledger_path, [*new_grades, *today_rows]
+                )
+                logger.info("Ledger: appended %d row(s) to %s", written, ledger_path)
+            except Exception:
+                logger.exception("Ledger write failed; the briefing was already sent")
 
     logger.info("Morning briefing complete in %.1fs", elapsed_total)
     return BriefingRunResult(

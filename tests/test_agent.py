@@ -2897,3 +2897,201 @@ async def test_configured_holding_period_reaches_earnings_window(capsys, holding
         assert f"within {holding_period} days" in provider.user_content
     else:
         assert "EARNINGS EVENT RISK" not in provider.user_content
+
+
+class TestLedger:
+    """PDE-195: picks are appended to LEDGER_PATH only after a successful send."""
+
+    NOW = datetime(2026, 9, 8, 12, 30, tzinfo=UTC)
+    SCAN = (
+        {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1, "atr": 3.0},
+        {"symbol": "TSLA", "composite_score": -2.5, "latest_price": 240.5},
+    )
+
+    async def _run(self, ledger_path, **kwargs):
+        config = _config(max_deep_analysis=1, ledger_path=str(ledger_path) if ledger_path else "")
+        return await run_morning_briefing(
+            config,
+            **{
+                "data_source": agent_source(["AAPL"]),
+                "now": self.NOW,
+                "scan": _FakeScan(
+                    _scan_result(top_bullish=[self.SCAN[0]], top_bearish=[self.SCAN[1]])
+                ),
+                "analyze": _FakeAnalyze({"AAPL": _analysis("AAPL", 5.2)}),
+                "provider": _FakeProvider(text="# Briefing"),
+                **kwargs,
+            },
+        )
+
+    @staticmethod
+    def _seed_due_pick(path) -> InMemoryDataSource:
+        """Seed a month-old pick row; return the source whose history grades it.
+
+        OLD closes +5% at 5 sessions and flat at 10 and 14.
+        """
+        row = {
+            "schema": 1,
+            "kind": "pick",
+            "briefing_date": "2026-08-10",
+            "symbol": "OLD",
+            "direction": "bullish",
+            "conviction": "HIGH",
+            "price": 100.0,
+            "stop": None,
+            "target": None,
+            "holding_period": 14,
+            "regime_conflict": False,
+        }
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        closes = [100.0] * 25
+        closes[9] = 105.0
+        history = pd.DataFrame(
+            {
+                "Date": pd.bdate_range("2026-08-03", periods=25),
+                "Open": closes,
+                "High": [c + 1 for c in closes],
+                "Low": [c - 1 for c in closes],
+                "Close": closes,
+                "Volume": [1_000_000] * 25,
+            }
+        )
+        return InMemoryDataSource(frames={"AAPL": _STUB_FRAME, "OLD": history})
+
+    @staticmethod
+    def _rows(path) -> list[dict]:
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    @pytest.mark.asyncio
+    async def test_successful_send_appends_one_row_per_pick(self, fake_smtp, tmp_path):
+        path = tmp_path / "picks.jsonl"
+
+        await self._run(path)
+
+        aapl, tsla = self._rows(path)
+        assert aapl == {
+            "schema": 1,
+            "kind": "pick",
+            "briefing_date": "2026-09-08",
+            "symbol": "AAPL",
+            "direction": "bullish",
+            "conviction": "MEDIUM",
+            "score": 5.2,
+            "price": 190.1,
+            "stop": pytest.approx(184.1),
+            "target": pytest.approx(202.1),
+            "holding_period": 14,
+            "regime": "unknown",
+            "regime_conflict": False,
+            "earnings_warning": None,
+        }
+        assert (tsla["symbol"], tsla["direction"], tsla["stop"]) == ("TSLA", "bearish", None)
+
+    @pytest.mark.asyncio
+    async def test_rerunning_the_same_date_writes_nothing_new(self, fake_smtp, tmp_path):
+        path = tmp_path / "picks.jsonl"
+        await self._run(path)
+        before = path.read_bytes()
+
+        await self._run(path)
+
+        assert len(fake_smtp.sent) == 2
+        assert path.read_bytes() == before
+
+    @pytest.mark.asyncio
+    async def test_row_carries_the_configured_holding_period_and_flags(self, fake_smtp, tmp_path):
+        path = tmp_path / "picks.jsonl"
+        await run_morning_briefing(
+            _config(ledger_path=str(path), scan_holding_period=7),
+            data_source=agent_source(earnings={"AAPL": datetime(2026, 9, 10, 16, tzinfo=UTC)}),
+            now=self.NOW,
+            scan=_FakeScan(_scan_result(top_bullish=[self.SCAN[0]])),
+            provider=_FakeProvider(),
+        )
+
+        (row,) = self._rows(path)
+        assert row["holding_period"] == 7
+        assert row["earnings_warning"] == "EARNINGS in 2 day(s) (2026-09-10)"
+
+    @pytest.mark.asyncio
+    async def test_unset_ledger_path_writes_nothing_and_logs_once(
+        self, fake_smtp, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        with caplog.at_level(logging.INFO):
+            await self._run(None)
+
+        assert list(tmp_path.iterdir()) == []
+        mentions = [r.getMessage() for r in caplog.records if "LEDGER_PATH" in r.getMessage()]
+        assert mentions == [
+            "LEDGER_PATH is not set: picks are not recorded and no scorecard is rendered"
+        ]
+
+    @pytest.mark.parametrize("mode", [{"dry_run": True}, {"no_ai": True}])
+    @pytest.mark.asyncio
+    async def test_dry_run_and_no_ai_leave_the_ledger_untouched(
+        self, fake_smtp, tmp_path, capsys, mode
+    ):
+        # A grade is due and today has picks: a real send would write both.
+        path = tmp_path / "picks.jsonl"
+        source = self._seed_due_pick(path)
+        before = path.read_bytes()
+
+        await self._run(path, data_source=source, **mode)
+
+        assert path.read_bytes() == before
+        if "dry_run" in mode:
+            # The dry run still previews the scorecard from grades held in memory.
+            assert "| HIGH | 100% / +5.00% (n=1) |" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_dry_run_does_not_create_a_missing_ledger(self, tmp_path, capsys):
+        path = tmp_path / "picks.jsonl"
+        await self._run(path, dry_run=True)
+        assert not path.exists()
+
+    @pytest.mark.asyncio
+    async def test_due_grades_reach_the_scorecard_and_the_ledger(self, fake_smtp, tmp_path):
+        path = tmp_path / "picks.jsonl"
+        source = self._seed_due_pick(path)
+
+        await self._run(path, data_source=source)
+
+        body = _sent_plain_body(fake_smtp)
+        assert "## Scorecard" in body
+        assert "| HIGH | 100% / +5.00% (n=1) | 0% / +0.00% (n=1) | 0% / +0.00% (n=1) |" in body
+        rows = self._rows(path)
+        assert [(r["kind"], r["symbol"], r.get("horizon")) for r in rows] == [
+            ("pick", "OLD", None),
+            ("grade", "OLD", 5),
+            ("grade", "OLD", 10),
+            ("grade", "OLD", 14),
+            ("pick", "AAPL", None),
+            ("pick", "TSLA", None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_scorecard_without_graded_rows(self, fake_smtp, tmp_path):
+        await self._run(tmp_path / "picks.jsonl")
+        assert "Scorecard" not in _sent_plain_body(fake_smtp)
+
+    @pytest.mark.asyncio
+    async def test_failed_send_writes_nothing(self, fake_smtp, tmp_path):
+        path = tmp_path / "picks.jsonl"
+        fake_smtp.sendmail_error = smtplib.SMTPException("relay refused")
+
+        with pytest.raises(smtplib.SMTPException):
+            await self._run(path)
+
+        assert not path.exists()
+
+    @pytest.mark.asyncio
+    async def test_unusable_ledger_path_never_fails_the_briefing(self, fake_smtp, tmp_path, caplog):
+        # A directory can be neither read nor appended to, on any platform.
+        result = await self._run(tmp_path)
+
+        assert result.email_sent
+        assert len(fake_smtp.sent) == 1
+        assert "Ledger grading failed" in caplog.text
+        assert "Ledger write failed" in caplog.text

@@ -77,7 +77,8 @@ gathers a frozen `BriefingInputs` (scan results, deep analyses, regime, briefing
 date, elapsed seconds, and the model's text or None) and makes one call.
 `render` returns the complete markdown: dated title, regime header, pick table,
 the model's prose (or the fallback body when `model_text` is None), and the
-stats footer. `render_raw` returns the `--no-ai` raw-data body (regime header
+stats footer; the scorecard section sits under the pick table once the ledger
+holds grade rows (`BriefingInputs.ledger_rows`). `render_raw` returns the `--no-ai` raw-data body (regime header
 plus the JSON dumps). The regime header's conflict count is the number of
 counter-regime rows in the pick table, so the header and the table agree.
 `email_sender` is only the markdown-to-HTML transport adapter;
@@ -87,9 +88,66 @@ counter-regime rows in the pick table, so the header and the table agree.
 
 A candidate rendered as a row of the briefing's pick table: the frozen
 `agent/picks.Pick` dataclass (`symbol`, `direction`, `conviction`, `score`,
-`price`, `regime_conflict`, `earnings_warning`). `build_picks` collects every
+`price`, `regime_conflict`, `earnings_warning`, `stop`, `target`). `build_picks` collects every
 scan candidate once in briefing priority order; `render_picks_table` renders them
 under the fixed `PICK_TABLE_HEADER` column order, which audits parse.
+
+## ledger
+
+The append-only record of the picks a briefing actually delivered and how they
+turned out: `agent/ledger.py`. It is a JSONL file at `LEDGER_PATH` (unset: nothing
+is recorded, logged once per run) whose lines are never rewritten. Every line
+carries `schema: 1`; later fields are additive. There are two kinds of row.
+
+A **pick row** (`kind: "pick"`) is one pick on one briefing date, appended only
+after a successful send (never on `--dry-run` or `--no-ai`), once per
+(`briefing_date`, `symbol`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `schema` | int | `1` |
+| `kind` | string | `"pick"` |
+| `briefing_date` | string | the briefing's Eastern calendar day, `YYYY-MM-DD` |
+| `symbol` | string | the pick's symbol |
+| `direction` | string | `bullish` or `bearish` |
+| `conviction` | string | `HIGH`, `MEDIUM`, or `LOW` |
+| `score` | number | composite score, signed |
+| `price` | number or null | entry reference: the close the scan priced the pick at |
+| `stop`, `target` | number or null | the pick's exit levels |
+| `holding_period` | int | the run's `SCAN_HOLDING_PERIOD`, in trading sessions |
+| `regime` | string | the run's regime verdict |
+| `regime_conflict` | bool | the pick is counter-regime |
+| `earnings_warning` | string or null | the pick's earnings note |
+
+A **grade row** (`kind: "grade"`) is one pick row's outcome at one horizon,
+appended once per (`briefing_date`, `symbol`, `horizon`) when that horizon has
+elapsed. A pick row whose `price` is null is never graded. Horizons are 5 and 10 trading sessions plus the pick row's
+`holding_period`, counted from the briefing date: the entry bar is the last
+session before it, and horizon N exits at the close of the N-th session on or
+after it.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `schema`, `kind` | int, string | `1`, `"grade"` |
+| `briefing_date`, `symbol` | string | the pick row being graded |
+| `horizon` | int | trading sessions held |
+| `exit_date` | string | date of the exit bar |
+| `signed_return` | number | close-to-close return from the entry bar (`backtest.forward_returns`), direction-signed: positive means the pick was right |
+| `stop_hit`, `target_hit` | bool or null | which level daily Low/High touched first within the horizon; a bar touching both counts as the stop; null when the pick row has no such level |
+
+`grade_ledger` computes the grade rows now due through the `DataSource` and
+writes nothing; `append_rows` is the only writer and is idempotent. The briefing
+grades on every AI-path run and appends the new grade rows together with the
+day's pick rows after the send. `scorecard_table` aggregates grade rows into hit
+rate (share of positive `signed_return`) and mean `signed_return` per horizon, by
+conviction and by regime alignment; the Briefing module renders it as the
+scorecard over the trailing `SCORECARD_WINDOW_DAYS` (90).
+`python -m volume_price_analysis.agent.ledger grade [--dry-run]` grades on
+demand and `... ledger report` dumps the whole ledger.
+
+_Avoided:_ **journal**, **trade log**, and **outcome** for a grade row. A grade
+row is not a trade: nothing was executed, and `signed_return` ignores the stop
+and target.
 
 ## conviction
 

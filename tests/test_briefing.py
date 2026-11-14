@@ -19,6 +19,41 @@ _BULLISH_REGIME = {
 }
 
 
+def _ledger_rows() -> list[dict]:
+    """Two graded ledger picks: HIGH/aligned AAPL and MEDIUM/counter-regime TSLA."""
+
+    def pick(symbol, conviction, regime_conflict):
+        return {
+            "schema": 1,
+            "kind": "pick",
+            "briefing_date": "2026-08-10",
+            "symbol": symbol,
+            "conviction": conviction,
+            "regime_conflict": regime_conflict,
+            "holding_period": 14,
+        }
+
+    def grade(symbol, horizon, signed_return):
+        return {
+            "schema": 1,
+            "kind": "grade",
+            "briefing_date": "2026-08-10",
+            "symbol": symbol,
+            "horizon": horizon,
+            "signed_return": signed_return,
+        }
+
+    return [
+        pick("AAPL", "HIGH", False),
+        pick("TSLA", "MEDIUM", True),
+        grade("AAPL", 5, 0.021),
+        grade("AAPL", 10, 0.034),
+        grade("AAPL", 14, 0.05),
+        grade("TSLA", 5, -0.012),
+        grade("TSLA", 10, 0.008),
+    ]
+
+
 def golden_inputs(**overrides) -> BriefingInputs:
     """The inputs that render tests/golden/briefing_body.md."""
     scan = {
@@ -60,6 +95,7 @@ def golden_inputs(**overrides) -> BriefingInputs:
             "## Executive Summary\n\nTape is constructive.\n\n"
             "## Top Picks\n\n- **AAPL** @ $190.10 | Score +5.2 | bullish | Conviction: MEDIUM\n"
         ),
+        ledger_rows=_ledger_rows(),
     )
     return dataclasses.replace(inputs, **overrides)
 
@@ -76,6 +112,29 @@ class TestRender:
     def test_inputs_are_frozen(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             golden_inputs().model_text = "x"  # type: ignore[misc]
+
+
+class TestRenderScorecard:
+    """PDE-195: the scorecard sits under the pick table once the ledger has grades."""
+
+    def test_section_follows_the_pick_table(self):
+        body = render(golden_inputs())
+        assert body.index("## Pick Summary") < body.index("## Scorecard")
+        assert body.index("## Scorecard") < body.index("## Executive Summary")
+        assert "| HIGH | 100% / +2.10% (n=1) | 100% / +3.40% (n=1) | 100% / +5.00% (n=1) |" in body
+
+    @pytest.mark.parametrize("rows", [[], _ledger_rows()[:2]], ids=["empty", "ungraded"])
+    def test_absent_without_graded_rows(self, rows):
+        body = render(golden_inputs(ledger_rows=rows))
+        assert "Scorecard" not in body
+        assert "|\n\n## Executive Summary" in body
+
+    def test_absent_when_every_graded_pick_is_older_than_the_window(self):
+        body = render(golden_inputs(briefing_date=date(2027, 3, 1)))
+        assert "Scorecard" not in body
+
+    def test_raw_body_has_no_scorecard(self):
+        assert "Scorecard" not in render_raw(golden_inputs())
 
 
 class TestRenderFallback:
