@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.16.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.15.0...v2.16.0) (2026-11-16)
+
+
+### Features
+
+* **PDE-196:** anchored VWAP indicator and MCP tool ([#624](https://github.com/pdemirdjian/volume-price-analysis/issues/624)) ([de876a2](https://github.com/pdemirdjian/volume-price-analysis/commit/de876a2f8997d87a89ac9eda342b9c6b1c9df40e))
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=3.3.0 ([#622](https://github.com/pdemirdjian/volume-price-analysis/issues/622)) ([1eac8b4](https://github.com/pdemirdjian/volume-price-analysis/commit/1eac8b42ea31f133c15e4bdbf960d4eec827f296))
+* **deps:** update dependency google-genai to v3 ([#610](https://github.com/pdemirdjian/volume-price-analysis/issues/610)) ([bd61c0e](https://github.com/pdemirdjian/volume-price-analysis/commit/bd61c0e2249910a9edbb9d61bd9015586a688284))
+
 ## [2.15.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.14.5...v2.15.0) (2026-11-15)
 
 
