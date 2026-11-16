@@ -17,7 +17,9 @@
   "rangeStrategy": "replace",
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
-  "dependencyDashboard": true,
+  "dependencyDashboard": {
+    "enabled": true
+  },
   "platformAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,
