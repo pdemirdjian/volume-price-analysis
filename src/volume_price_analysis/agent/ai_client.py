@@ -787,14 +787,14 @@ PROVIDERS: dict[str, BriefingProvider] = {
 def is_transient_ai_error(exc: Exception) -> bool:
     """Retry provider rate limits, server errors, and connection failures."""
     import anthropic
-    import httpx
+    import httpx2
     from google.genai.errors import APIError
 
     if isinstance(exc, anthropic.APIStatusError):
         return _is_transient_status(exc.status_code)
     if isinstance(exc, APIError):
         return _is_transient_status(exc.code)
-    return isinstance(exc, (anthropic.APIConnectionError, httpx.TransportError, OSError))
+    return isinstance(exc, (anthropic.APIConnectionError, httpx2.TransportError, OSError))
 
 
 # 408/409 match what the SDKs retried by default before we turned their retries off.

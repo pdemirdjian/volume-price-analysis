@@ -2511,11 +2511,13 @@ async def test_ai_failures_before_fallback(mocker, capsys, retry_sleep, failures
     error = TimeoutError()
     if status is not None:
         import anthropic
-        import httpx
+        import httpx2
 
         error = anthropic.APIStatusError(
             "test error",
-            response=httpx.Response(status, request=httpx.Request("POST", "https://example.test")),
+            response=httpx2.Response(
+                status, request=httpx2.Request("POST", "https://example.test")
+            ),
             body=None,
         )
     provider = mocker.Mock(side_effect=[error] * failures + ["Recovered model prose"])
@@ -2609,7 +2611,7 @@ def test_email_permanent_failure_is_not_retried(mocker, retry_sleep, error):
 )
 def test_ai_provider_status_retry_policy(provider_name, status, retryable):
     import anthropic
-    import httpx
+    import httpx2
     from google.genai.errors import APIError
 
     from volume_price_analysis.agent.ai_client import is_transient_ai_error
@@ -2617,7 +2619,9 @@ def test_ai_provider_status_retry_policy(provider_name, status, retryable):
     if provider_name == "anthropic":
         error = anthropic.APIStatusError(
             "test error",
-            response=httpx.Response(status, request=httpx.Request("POST", "https://example.test")),
+            response=httpx2.Response(
+                status, request=httpx2.Request("POST", "https://example.test")
+            ),
             body=None,
         )
     else:
@@ -2633,6 +2637,19 @@ def test_ai_error_without_status_code_is_not_retried():
     error = APIError(500, {"error": {"message": "test error"}})
     error.code = None  # type: ignore[assignment]
     assert is_transient_ai_error(error) is False
+
+
+@pytest.mark.parametrize("error_cls", ["ConnectError", "ReadTimeout", "RemoteProtocolError"])
+def test_gemini_httpx2_transport_errors_are_retried(error_cls):
+    # google-genai v3 sends requests through httpx2 and lets its transport errors propagate.
+    import httpx2
+
+    from volume_price_analysis.agent.ai_client import is_transient_ai_error
+
+    error = getattr(httpx2, error_cls)(
+        "boom", request=httpx2.Request("POST", "https://example.test")
+    )
+    assert is_transient_ai_error(error) is True
 
 
 @pytest.mark.parametrize(
