@@ -1,5 +1,6 @@
 """Volume-Price analysis indicators and calculations."""
 
+import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from . import interpretation as labels
+from .data_fetcher import DATE_PATTERN
 from .interpretation import (
     CMF_CONDITION_BANDS as CMF_CONDITION_BANDS,
 )
@@ -182,6 +184,18 @@ def calculate_vwap(data: pd.DataFrame) -> pd.Series:
     return vwap
 
 
+def _parse_anchor_date(date: str | None) -> datetime.date:
+    """Validate an explicit AVWAP anchor date without requiring fetched data."""
+    if date is None:
+        raise ValueError("date is required for a date anchor")
+    if not DATE_PATTERN.fullmatch(date):
+        raise ValueError("date must be a valid calendar date")
+    try:
+        return datetime.date.fromisoformat(date)
+    except ValueError as exc:
+        raise ValueError("date must be a valid calendar date") from exc
+
+
 def calculate_anchored_vwap(
     data: pd.DataFrame, anchor: str = "swing_low", date: str | None = None
 ) -> dict:
@@ -199,12 +213,7 @@ def calculate_anchored_vwap(
     if anchor == "period_start":
         start = 0
     elif anchor == "date":
-        if date is None:
-            raise ValueError("date is required for a date anchor")
-        try:
-            target = pd.Timestamp(date).date()
-        except (ValueError, TypeError) as exc:
-            raise ValueError("date must be a valid calendar date") from exc
+        target = _parse_anchor_date(date)
         matches = np.flatnonzero(pd.to_datetime(data["Date"]).dt.date == target)
         if not len(matches):
             raise ValueError("Anchor date has no bar in the fetched window")

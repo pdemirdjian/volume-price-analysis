@@ -4293,6 +4293,9 @@ class TestAnchoredVWAP:
             ],
             ignore_index=True,
         )
+        assert calculate_anchored_vwap(extended.iloc[:-1], anchor)["anchor"]["date"] == (
+            "2024-01-04T00:00:00"
+        )
         assert calculate_anchored_vwap(extended, anchor)["anchor"]["date"] == (
             "2024-01-08T00:00:00"
         )
@@ -4311,6 +4314,27 @@ class TestAnchoredVWAP:
     def test_invalid_anchors(self, flat_price_data, anchor, date, message):
         with pytest.raises(ValueError, match=message):
             calculate_anchored_vwap(flat_price_data, anchor, date)
+
+    @pytest.mark.parametrize(
+        "date",
+        [
+            "2024",
+            "2024-02",
+            "today",
+            "now",
+            "",
+            "NaT",
+            "nan",
+            "2024-01-02T00:00:00Z",
+            "2024-01-02T00:00:00-05:00",
+            "2024-02-30",
+            "2024-1-02",
+            "2024-01-02\n",
+        ],
+    )
+    def test_date_requires_strict_calendar_date(self, flat_price_data, date):
+        with pytest.raises(ValueError, match="date must be a valid calendar date"):
+            calculate_anchored_vwap(flat_price_data, "date", date)
 
     def test_atr_distance_and_zero_volume(self, sample_stock_data):
         result = calculate_anchored_vwap(sample_stock_data, "period_start")

@@ -529,3 +529,23 @@ async def test_anchored_vwap_default_and_tail():
     assert len(payload["recent_values"]) == 10
     assert payload["recent_values"][-1]["AVWAP"] == payload["latest_avwap"]
     assert payload["recent_values"][0]["AVWAP"] == pytest.approx(272 / 3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        ({"anchor": "bad"}, "anchor must be one of"),
+        ({"anchor": "date"}, "date is required"),
+        ({"anchor": "date", "date": "2024-02"}, "valid calendar date"),
+        ({"anchor": "date", "date": "2024-02-30"}, "valid calendar date"),
+    ],
+)
+async def test_anchored_vwap_invalid_args_rejected_before_fetch(args, message):
+    source = InMemoryDataSource({SYMBOL: make_frame()})
+    result = await dispatch(
+        "calculate_anchored_vwap", {"symbol": SYMBOL, **args}, data_source=source
+    )
+    assert result.is_error is True
+    assert message in json.loads(result.content[0].text)["error"]
+    assert source.fetch_calls == []

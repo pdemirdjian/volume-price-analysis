@@ -24,6 +24,7 @@ from .analysis import run_comprehensive_analysis, run_options_analysis, run_scan
 from .data_fetcher import DataSource
 from .indicators import (
     TREND_LOOKBACK,
+    _parse_anchor_date,
     analyze_volume_trends,
     calculate_accumulation_distribution,
     calculate_anchored_vwap,
@@ -73,6 +74,8 @@ def validate_arguments(arguments: dict[str, Any], schema: dict[str, Any]) -> Non
         elif kind == "string":
             if not isinstance(value, str):
                 raise ValueError(f"{name} must be a string")
+            if "enum" in prop and value not in prop["enum"]:
+                raise ValueError(f"{name} must be one of {prop['enum']}")
             continue
         elif kind == "array":
             if not isinstance(value, list):
@@ -253,6 +256,8 @@ async def _run_calculate_vwap(ctx: ToolContext) -> dict:
 
 async def _run_calculate_anchored_vwap(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
+    if ctx.args.get("anchor", "swing_low") == "date":
+        _parse_anchor_date(ctx.args.get("date"))
     data = ctx.fetch()
     result = calculate_anchored_vwap(
         data, ctx.args.get("anchor", "swing_low"), ctx.args.get("date")
@@ -497,6 +502,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         input_schema=_single_symbol_schema(
             anchor={
                 "type": "string",
+                "description": "Anchor used as the starting bar for VWAP",
                 "enum": ["date", "swing_low", "swing_high", "max_volume", "period_start"],
                 "default": "swing_low",
             },
