@@ -1,7 +1,5 @@
 """Volume-Price analysis indicators and calculations."""
 
-import math
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -10,60 +8,48 @@ if TYPE_CHECKING:
 import numpy as np
 import pandas as pd
 
+from . import interpretation as labels
+from .interpretation import (
+    CMF_CONDITION_BANDS as CMF_CONDITION_BANDS,
+)
+from .interpretation import (
+    CMF_EXTREME_BANDS as CMF_EXTREME_BANDS,
+)
+from .interpretation import (
+    CMF_PRESSURE_BANDS as CMF_PRESSURE_BANDS,
+)
+from .interpretation import (
+    CMF_SIGNAL_BANDS as CMF_SIGNAL_BANDS,
+)
+from .interpretation import (
+    MFI_CONDITION_BANDS as MFI_CONDITION_BANDS,
+)
+from .interpretation import (
+    MFI_OPTIONS_SIGNAL_BANDS as MFI_OPTIONS_SIGNAL_BANDS,
+)
+from .interpretation import (
+    MFI_TOOL_CONDITION_BANDS as MFI_TOOL_CONDITION_BANDS,
+)
+from .interpretation import (
+    MIN_SQUEEZE_DETECTION_PERIODS as MIN_SQUEEZE_DETECTION_PERIODS,
+)
+from .interpretation import (
+    SQUEEZE_THRESHOLD as SQUEEZE_THRESHOLD,
+)
+from .interpretation import (
+    SQUEEZE_WINDOW as SQUEEZE_WINDOW,
+)
+from .interpretation import (
+    threshold_verdict as threshold_verdict,
+)
 from .payloads import CompositeScore
 
 # --------------------------------------------------------------------------
 # Verdict helpers
 #
-# Every place that turns an indicator into a word goes through one of the two
-# functions below, so the "latest versus N bars back" rule and the
-# overbought/oversold ladders exist exactly once.
+# Trend comparison stays here; scalar thresholds and labels live in interpretation.
+# Re-export the earlier names above for compatibility with existing consumers.
 # --------------------------------------------------------------------------
-
-#: A threshold band: ``(operator, bound, label)``. See :func:`threshold_verdict`.
-ThresholdBand = tuple[str, float, str]
-
-#: MFI overbought/oversold ladder (default label: ``"Neutral"``).
-MFI_CONDITION_BANDS: tuple[ThresholdBand, ...] = (
-    (">", 80.0, "Overbought"),
-    ("<", 20.0, "Oversold"),
-)
-
-#: MFI ladder with the bounds spelled out in the label (default: ``"Neutral (20-80)"``).
-MFI_TOOL_CONDITION_BANDS: tuple[ThresholdBand, ...] = (
-    (">", 80.0, "Overbought (>80)"),
-    ("<", 20.0, "Oversold (<20)"),
-)
-
-#: MFI ladder driving the options directional hint (default: ``"neutral"``).
-MFI_OPTIONS_SIGNAL_BANDS: tuple[ThresholdBand, ...] = (
-    (">", 75.0, "consider_puts"),
-    ("<", 25.0, "consider_calls"),
-)
-
-#: CMF strong-flow ladder (default label: ``"Neutral"``).
-CMF_CONDITION_BANDS: tuple[ThresholdBand, ...] = (
-    (">", 0.25, "Strong buying"),
-    ("<", -0.25, "Strong selling"),
-)
-
-#: CMF strong-flow ladder in snake_case (default label: ``"neutral"``).
-CMF_SIGNAL_BANDS: tuple[ThresholdBand, ...] = (
-    (">", 0.25, "strong_buying"),
-    ("<", -0.25, "strong_selling"),
-)
-
-#: CMF sign ladder used by the CMF tool (default label: ``"Neutral (0)"``).
-CMF_PRESSURE_BANDS: tuple[ThresholdBand, ...] = (
-    (">", 0.0, "Buying Pressure (>0)"),
-    ("<", 0.0, "Selling Pressure (<0)"),
-)
-
-#: CMF ladder for the "extreme" MFI+CMF insight (default label: ``"neutral"``).
-CMF_EXTREME_BANDS: tuple[ThresholdBand, ...] = (
-    (">", 0.2, "elevated"),
-    ("<", -0.2, "depressed"),
-)
 
 #: Default number of positions back that a trend verdict compares against.
 TREND_LOOKBACK = 5
@@ -118,61 +104,6 @@ def trend_verdict(
     if latest < past:
         return falling
     return flat
-
-
-def threshold_verdict(
-    value: float | None,
-    bands: Sequence[ThresholdBand],
-    default: str,
-    *,
-    missing: str | None = None,
-) -> str:
-    """Return the label of the first band whose comparison holds for ``value``.
-
-    Ladders such as MFI's 80/20 overbought/oversold split are data rather than
-    code: each band is ``(operator, bound, label)`` where ``operator`` is one of
-    ``">"``, ``">="``, ``"<"`` or ``"<="``. Bands are evaluated in order, so the
-    first match wins.
-
-    Args:
-        value: The indicator value, or ``None`` when it could not be computed.
-        bands: Ordered bands to test.
-        default: Label returned when no band matches.
-        missing: Label returned when ``value`` is ``None`` or NaN. Defaults to
-            ``default``.
-
-    Returns:
-        The matching band's label, ``missing`` for an absent value, or ``default``.
-
-    Raises:
-        ValueError: If a band carries an unknown operator.
-    """
-    if value is None or (isinstance(value, float) and math.isnan(value)) or pd.isna(value):
-        return default if missing is None else missing
-
-    numeric = float(value)
-    for operator, bound, label in bands:
-        if operator == ">":
-            matched = numeric > bound
-        elif operator == ">=":
-            matched = numeric >= bound
-        elif operator == "<":
-            matched = numeric < bound
-        elif operator == "<=":
-            matched = numeric <= bound
-        else:
-            raise ValueError(f"unknown threshold operator: {operator!r}")
-        if matched:
-            return label
-
-    return default
-
-
-# Bollinger squeeze canonical configuration. Deliberately not parameterized:
-# every analysis path must report the same squeeze verdict for the same data.
-SQUEEZE_WINDOW = 20  # band period and trailing-baseline window
-SQUEEZE_THRESHOLD = 0.7  # squeeze = latest bandwidth below this fraction of the baseline
-MIN_SQUEEZE_DETECTION_PERIODS = 5  # fewer valid bandwidth points than this -> never a squeeze
 
 
 def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
@@ -587,7 +518,7 @@ def _bandwidth_squeeze(bandwidth: pd.Series) -> bool:
         baseline = valid.mean()
     else:
         return False
-    return bool(latest < baseline * SQUEEZE_THRESHOLD)
+    return labels.squeeze_on(latest, baseline)
 
 
 def detect_bollinger_squeeze(data: pd.DataFrame) -> bool:
@@ -1063,17 +994,14 @@ def calculate_adx(data: pd.DataFrame, period: int = 14) -> dict[str, Any]:
     current_minus_di: float = 0.0 if pd.isna(minus_di_val) else float(minus_di_val)  # type: ignore[arg-type]
 
     # Trend strength interpretation
-    if current_adx > 50:
-        trend_strength = "very_strong"
+    trend_strength = labels.adx_strength(current_adx)
+    if trend_strength == "very_strong":
         strength_desc = "Very strong trend - high conviction directional plays"
-    elif current_adx > 25:
-        trend_strength = "strong"
+    elif trend_strength == "strong":
         strength_desc = "Strong trend - good for directional options"
-    elif current_adx > 20:
-        trend_strength = "moderate"
+    elif trend_strength == "moderate":
         strength_desc = "Moderate trend - use caution with directional plays"
     else:
-        trend_strength = "weak"
         strength_desc = "Weak/no trend - consider premium selling strategies"
 
     # Trend direction
@@ -1817,10 +1745,10 @@ def calculate_composite_score(
         action = "Consider iron condors, strangles, or wait for clearer signals"
 
     # Signal quality based on ADX
-    if adx_data["adx"] > 30:
+    if labels.adx_options_tier(adx_data["adx"]) == "strong":
         signal_quality = "high"
         quality_note = "Strong trend supports directional trades"
-    elif adx_data["adx"] > 20:
+    elif labels.adx_strength(adx_data["adx"]) != "weak":
         signal_quality = "medium"
         quality_note = "Moderate trend - use appropriate position sizing"
     else:

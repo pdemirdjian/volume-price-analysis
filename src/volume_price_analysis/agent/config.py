@@ -46,6 +46,9 @@ class AgentConfig:
     scan_min_avg_daily_volume: float = 500_000
     scan_max_results: int = 15
 
+    # Pick ledger (JSONL). Empty = picks are not recorded and no scorecard is rendered.
+    ledger_path: str = ""
+
     def __repr__(self) -> str:
         return (
             f"AgentConfig(ai_provider={self.ai_provider!r}, "
@@ -54,7 +57,8 @@ class AgentConfig:
             f"email_to={self.email_to!r}, email_smtp_host={self.email_smtp_host!r}, "
             f"email_smtp_port={self.email_smtp_port!r}, "
             f"scan_universe={self.scan_universe!r}, "
-            f"max_deep_analysis={self.max_deep_analysis!r})"
+            f"max_deep_analysis={self.max_deep_analysis!r}, "
+            f"ledger_path={self.ledger_path!r})"
         )
 
     @classmethod
@@ -111,6 +115,7 @@ class AgentConfig:
             scan_max_iv_percentile=scan_number("max_iv_percentile", 70, float),
             scan_min_avg_daily_volume=scan_number("min_avg_daily_volume", 500_000, float),
             scan_max_results=scan_number("max_results", 15, int),
+            ledger_path=os.environ.get("LEDGER_PATH", ""),
         )
 
     def validate(self) -> list[str]:
