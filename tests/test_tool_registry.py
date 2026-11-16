@@ -70,6 +70,7 @@ MINIMAL_ARGS: dict[str, dict] = {
     "get_stock_data": {"symbol": SYMBOL},
     "calculate_obv": {"symbol": SYMBOL},
     "calculate_vwap": {"symbol": SYMBOL},
+    "calculate_anchored_vwap": {"symbol": SYMBOL, "anchor": "period_start"},
     "calculate_volume_profile": {"symbol": SYMBOL},
     "calculate_mfi": {"symbol": SYMBOL},
     "calculate_ad_line": {"symbol": SYMBOL},
@@ -86,6 +87,14 @@ MINIMAL_ARGS: dict[str, dict] = {
 # contract MCP clients depend on -- a registry record that quietly stops
 # emitting one of them is a breaking change, not a refactor.
 REQUIRED_KEYS: dict[str, set[str]] = {
+    "calculate_anchored_vwap": {
+        "symbol",
+        "latest_avwap",
+        "distance_percent",
+        "distance_atr",
+        "anchor",
+        "recent_values",
+    },
     "get_stock_data": {
         "symbol",
         "period",
@@ -198,8 +207,8 @@ REQUIRED_KEYS: dict[str, set[str]] = {
 class TestRegistryShape:
     """The registry is the single source of truth for the tool list."""
 
-    def test_registry_lists_twelve_tools(self):
-        assert len(TOOLS) == 12
+    def test_registry_lists_thirteen_tools(self):
+        assert len(TOOLS) == 13
         assert all(isinstance(spec, ToolSpec) for spec in TOOLS)
 
     def test_registry_names_are_unique(self):
@@ -504,3 +513,19 @@ class TestBoundaryValidation:
         assert result.is_error is True
         assert param in json.loads(result.content[0].text)["error"]
         assert source.fetch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_anchored_vwap_default_and_tail():
+    frame = make_frame(30)
+    # One strict low, confirmed three bars later; default must select it.
+    frame.loc[20, "Low"] = 50.0
+    source = InMemoryDataSource({SYMBOL: frame})
+    response = await dispatch("calculate_anchored_vwap", {"symbol": SYMBOL}, data_source=source)
+    assert not response.is_error
+    payload = json.loads(response.content[0].text)
+    assert payload["anchor"]["type"] == "swing_low"
+    assert payload["anchor"]["date"] == frame.loc[20, "Date"].isoformat()
+    assert len(payload["recent_values"]) == 10
+    assert payload["recent_values"][-1]["AVWAP"] == payload["latest_avwap"]
+    assert payload["recent_values"][0]["AVWAP"] == pytest.approx(272 / 3)

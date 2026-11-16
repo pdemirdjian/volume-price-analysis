@@ -26,6 +26,7 @@ from .indicators import (
     TREND_LOOKBACK,
     analyze_volume_trends,
     calculate_accumulation_distribution,
+    calculate_anchored_vwap,
     calculate_chaikin_money_flow,
     calculate_mfi,
     calculate_obv,
@@ -250,6 +251,23 @@ async def _run_calculate_vwap(ctx: ToolContext) -> dict:
     }
 
 
+async def _run_calculate_anchored_vwap(ctx: ToolContext) -> dict:
+    symbol = ctx.require_symbol()
+    data = ctx.fetch()
+    result = calculate_anchored_vwap(
+        data, ctx.args.get("anchor", "swing_low"), ctx.args.get("date")
+    )
+    series = result.pop("avwap_series")
+    # Slice positionally: fetched frames need not have a unique index.
+    tail = data.iloc[len(data) - len(series) :].copy()
+    tail["AVWAP"] = series.to_numpy()
+    return {
+        "symbol": symbol,
+        **result,
+        "recent_values": tail[["Date", "Close", "AVWAP"]].tail(10).to_dict(orient="records"),
+    }
+
+
 async def _run_calculate_volume_profile(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     num_bins = ctx.args.get("num_bins", 20)
@@ -461,10 +479,33 @@ TOOLS: tuple[ToolSpec, ...] = (
         name="calculate_vwap",
         description=(
             "Calculate Volume Weighted Average Price (VWAP) - average "
-            "price weighted by volume, used as a trading benchmark"
+            "price weighted by volume, used as a trading benchmark. "
+            "It is anchored at the start of the fetched period."
         ),
         input_schema=_single_symbol_schema(),
         run=_run_calculate_vwap,
+    ),
+    ToolSpec(
+        name="calculate_anchored_vwap",
+        description=(
+            "Calculate anchored VWAP from a confirmed swing pivot (three bars per side), "
+            "maximum-volume bar, exact date, or period start. Returns the retrospective "
+            "tail, current value, signed close distance in percent and ATR(14) units, "
+            "and anchor date/type/typical price. Missing pivots or dates raise errors; "
+            "undefined distances are null. Informational only."
+        ),
+        input_schema=_single_symbol_schema(
+            anchor={
+                "type": "string",
+                "enum": ["date", "swing_low", "swing_high", "max_volume", "period_start"],
+                "default": "swing_low",
+            },
+            date={
+                "type": "string",
+                "description": "Exact bar date YYYY-MM-DD; required for date anchor",
+            },
+        ),
+        run=_run_calculate_anchored_vwap,
     ),
     ToolSpec(
         name="calculate_volume_profile",

@@ -353,6 +353,12 @@ UNANCHORED_SNAPSHOT: dict[str, str] = {}
 
 #: Allow-list: function name -> why it is exempt from the sweep. A reason is mandatory.
 NON_CAUSAL: dict[str, str] = {
+    "calculate_anchored_vwap": (
+        "Retrospective series uses one anchor selected as of the final bar (latest confirmed "
+        "pivot or whole-window maximum volume), so extending the window can replace the "
+        "anchor and historical values. Callers must slice to the as-of bar first. Swing "
+        "confirmation boundaries are tested explicitly in TestAnchoredVWAP."
+    ),
     "calculate_volume_profile": (
         "Whole-window summary by design: bins span the window's full Low..High range, so the "
         "output has no per-bar meaning. Callers must slice to the as-of bar first."
