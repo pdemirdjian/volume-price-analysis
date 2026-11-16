@@ -24,8 +24,10 @@ from .analysis import run_comprehensive_analysis, run_options_analysis, run_scan
 from .data_fetcher import DataSource
 from .indicators import (
     TREND_LOOKBACK,
+    _parse_anchor_date,
     analyze_volume_trends,
     calculate_accumulation_distribution,
+    calculate_anchored_vwap,
     calculate_chaikin_money_flow,
     calculate_mfi,
     calculate_obv,
@@ -72,6 +74,8 @@ def validate_arguments(arguments: dict[str, Any], schema: dict[str, Any]) -> Non
         elif kind == "string":
             if not isinstance(value, str):
                 raise ValueError(f"{name} must be a string")
+            if "enum" in prop and value not in prop["enum"]:
+                raise ValueError(f"{name} must be one of {prop['enum']}")
             continue
         elif kind == "array":
             if not isinstance(value, list):
@@ -247,6 +251,25 @@ async def _run_calculate_vwap(ctx: ToolContext) -> dict:
         "price_vs_vwap": f"{((latest_close / latest_vwap - 1) * 100):.2f}%",
         "position": f"Price is {position} VWAP",
         "recent_values": data[["Date", "Close", "VWAP"]].tail(10).to_dict(orient="records"),  # type: ignore[call-overload]
+    }
+
+
+async def _run_calculate_anchored_vwap(ctx: ToolContext) -> dict:
+    symbol = ctx.require_symbol()
+    if ctx.args.get("anchor", "swing_low") == "date":
+        _parse_anchor_date(ctx.args.get("date"))
+    data = ctx.fetch()
+    result = calculate_anchored_vwap(
+        data, ctx.args.get("anchor", "swing_low"), ctx.args.get("date")
+    )
+    series = result.pop("avwap_series")
+    # Slice positionally: fetched frames need not have a unique index.
+    tail = data.iloc[len(data) - len(series) :].copy()
+    tail["AVWAP"] = series.to_numpy()
+    return {
+        "symbol": symbol,
+        **result,
+        "recent_values": tail[["Date", "Close", "AVWAP"]].tail(10).to_dict(orient="records"),
     }
 
 
@@ -461,10 +484,34 @@ TOOLS: tuple[ToolSpec, ...] = (
         name="calculate_vwap",
         description=(
             "Calculate Volume Weighted Average Price (VWAP) - average "
-            "price weighted by volume, used as a trading benchmark"
+            "price weighted by volume, used as a trading benchmark. "
+            "It is anchored at the start of the fetched period."
         ),
         input_schema=_single_symbol_schema(),
         run=_run_calculate_vwap,
+    ),
+    ToolSpec(
+        name="calculate_anchored_vwap",
+        description=(
+            "Calculate anchored VWAP from a confirmed swing pivot (three bars per side), "
+            "maximum-volume bar, exact date, or period start. Returns the retrospective "
+            "tail, current value, signed close distance in percent and ATR(14) units, "
+            "and anchor date/type/typical price. Missing pivots or dates raise errors; "
+            "undefined distances are null. Informational only."
+        ),
+        input_schema=_single_symbol_schema(
+            anchor={
+                "type": "string",
+                "description": "Anchor used as the starting bar for VWAP",
+                "enum": ["date", "swing_low", "swing_high", "max_volume", "period_start"],
+                "default": "swing_low",
+            },
+            date={
+                "type": "string",
+                "description": "Exact bar date YYYY-MM-DD; required for date anchor",
+            },
+        ),
+        run=_run_calculate_anchored_vwap,
     ),
     ToolSpec(
         name="calculate_volume_profile",

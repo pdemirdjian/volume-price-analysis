@@ -13,6 +13,7 @@ from volume_price_analysis.indicators import (
     analyze_volume_trends,
     calculate_accumulation_distribution,
     calculate_adx,
+    calculate_anchored_vwap,
     calculate_atr,
     calculate_bollinger_bands,
     calculate_chaikin_money_flow,
@@ -4230,3 +4231,141 @@ class TestThresholdVerdict:
     def test_unknown_operator_is_rejected(self):
         with pytest.raises(ValueError, match="operator"):
             threshold_verdict(1.0, (("~", 0.0, "nope"),), "default")
+
+
+class TestAnchoredVWAP:
+    def test_period_start_matches_vwap(self, sample_stock_data):
+        result = calculate_anchored_vwap(sample_stock_data, "period_start")
+        pd.testing.assert_series_equal(result["avwap_series"], calculate_vwap(sample_stock_data))
+
+    @pytest.mark.parametrize("anchor,start", [("date", 1), ("max_volume", 1)])
+    def test_weighted_values(self, anchor, start):
+        data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=3),
+                "High": [12.0, 22.0, 32.0],
+                "Low": [8.0, 18.0, 28.0],
+                "Close": [10.0, 20.0, 30.0],
+                "Volume": [1.0, 3.0, 1.0],
+            }
+        )
+        result = calculate_anchored_vwap(data, anchor, date="2024-01-02")
+        assert result["avwap_series"].tolist() == [20.0, 22.5]
+        assert result["latest_avwap"] == 22.5
+        assert result["distance_percent"] == pytest.approx(100 / 3)
+        assert result["distance_atr"] is None  # ATR warmup
+        assert result["anchor"] == {
+            "date": data["Date"].iloc[start].isoformat(),
+            "price": 20.0,
+            "type": anchor,
+        }
+
+    @pytest.mark.parametrize("anchor", ["swing_low", "swing_high"])
+    def test_only_confirmed_pivots(self, anchor):
+        values = [10.0, 11.0, 12.0, 20.0, 12.0, 11.0, 10.0, 30.0, 10.0]
+        if anchor == "swing_low":
+            values = [-v for v in values]
+        data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=len(values)),
+                "High": values,
+                "Low": values,
+                "Close": values,
+                "Volume": 1.0,
+            }
+        )
+        result = calculate_anchored_vwap(data, anchor)
+        assert result["anchor"]["date"] == "2024-01-04T00:00:00"
+        assert result["avwap_series"].index[0] == 3
+        # The newer extreme becomes eligible only when its third right bar prints.
+        extended = pd.concat(
+            [
+                data,
+                pd.DataFrame(
+                    {
+                        "Date": [pd.Timestamp("2024-01-10"), pd.Timestamp("2024-01-11")],
+                        "High": values[0],
+                        "Low": values[0],
+                        "Close": values[0],
+                        "Volume": 1.0,
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+        assert calculate_anchored_vwap(extended.iloc[:-1], anchor)["anchor"]["date"] == (
+            "2024-01-04T00:00:00"
+        )
+        assert calculate_anchored_vwap(extended, anchor)["anchor"]["date"] == (
+            "2024-01-08T00:00:00"
+        )
+
+    @pytest.mark.parametrize(
+        "anchor,date,message",
+        [
+            ("swing_low", None, "No confirmed"),
+            ("swing_high", None, "No confirmed"),
+            ("date", "1900-01-01", "no bar"),
+            ("date", None, "required"),
+            ("date", "invalid", "valid calendar"),
+            ("bad", None, "Unknown anchor"),
+        ],
+    )
+    def test_invalid_anchors(self, flat_price_data, anchor, date, message):
+        with pytest.raises(ValueError, match=message):
+            calculate_anchored_vwap(flat_price_data, anchor, date)
+
+    @pytest.mark.parametrize(
+        "date",
+        [
+            "2024",
+            "2024-02",
+            "today",
+            "now",
+            "",
+            "NaT",
+            "nan",
+            "2024-01-02T00:00:00Z",
+            "2024-01-02T00:00:00-05:00",
+            "2024-02-30",
+            "2024-1-02",
+            "2024-01-02\n",
+        ],
+    )
+    def test_date_requires_strict_calendar_date(self, flat_price_data, date):
+        with pytest.raises(ValueError, match="date must be a valid calendar date"):
+            calculate_anchored_vwap(flat_price_data, "date", date)
+
+    def test_atr_distance_and_zero_volume(self, sample_stock_data):
+        result = calculate_anchored_vwap(sample_stock_data, "period_start")
+        expected = (sample_stock_data["Close"].iloc[-1] - result["latest_avwap"]) / (
+            calculate_atr(sample_stock_data).iloc[-1]
+        )
+        assert result["distance_atr"] == pytest.approx(expected)
+        sample_stock_data["Volume"] = 0
+        result = calculate_anchored_vwap(sample_stock_data, "period_start")
+        assert result["latest_avwap"] is None
+        assert result["distance_percent"] is None
+        assert result["distance_atr"] is None
+
+    def test_empty_input(self):
+        with pytest.raises(ValueError, match="at least one bar"):
+            calculate_anchored_vwap(pd.DataFrame(), "period_start")
+
+    def test_single_bar_and_max_volume_tie(self):
+        data = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=2),
+                "High": [12.0, 22.0],
+                "Low": [8.0, 18.0],
+                "Close": [10.0, 20.0],
+                "Volume": [1.0, 1.0],
+            }
+        )
+        assert calculate_anchored_vwap(data, "max_volume")["anchor"]["date"] == (
+            "2024-01-01T00:00:00"
+        )
+        result = calculate_anchored_vwap(data.iloc[:1], "period_start")
+        assert result["latest_avwap"] == 10.0
+        assert result["distance_percent"] == 0.0
+        assert result["distance_atr"] is None

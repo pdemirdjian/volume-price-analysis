@@ -80,6 +80,7 @@ class TestListTools:
             "get_stock_data",
             "calculate_obv",
             "calculate_vwap",
+            "calculate_anchored_vwap",
             "calculate_volume_profile",
             "calculate_mfi",
             "calculate_ad_line",
@@ -91,7 +92,7 @@ class TestListTools:
             "calculate_rsi_divergence",
         ]
 
-        assert len(tools) == 12
+        assert len(tools) == 13
         for expected_tool in expected_tools:
             assert expected_tool in tool_names
 
@@ -122,7 +123,7 @@ class TestMcpV2ProtocolHandlers:
         """Protocol handler returns ListToolsResult with the same tools."""
         result = await _on_list_tools(None, None)  # type: ignore[arg-type]
         assert isinstance(result, ListToolsResult)
-        assert len(result.tools) == 12
+        assert len(result.tools) == 13
 
     @pytest.mark.asyncio
     async def test_on_call_tool_forwards_unknown_tool(self):

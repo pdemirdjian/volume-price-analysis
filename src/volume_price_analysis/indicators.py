@@ -1,5 +1,6 @@
 """Volume-Price analysis indicators and calculations."""
 
+import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from . import interpretation as labels
+from .data_fetcher import DATE_PATTERN
 from .interpretation import (
     CMF_CONDITION_BANDS as CMF_CONDITION_BANDS,
 )
@@ -180,6 +182,76 @@ def calculate_vwap(data: pd.DataFrame) -> pd.Series:
     vwap = (typical_price * data["Volume"]).cumsum() / cum_vol
     vwap = vwap.where(cum_vol != 0, np.nan)
     return vwap
+
+
+def _parse_anchor_date(date: str | None) -> datetime.date:
+    """Validate an explicit AVWAP anchor date without requiring fetched data."""
+    if date is None:
+        raise ValueError("date is required for a date anchor")
+    if not DATE_PATTERN.fullmatch(date):
+        raise ValueError("date must be a valid calendar date")
+    try:
+        return datetime.date.fromisoformat(date)
+    except ValueError as exc:
+        raise ValueError("date must be a valid calendar date") from exc
+
+
+def calculate_anchored_vwap(
+    data: pd.DataFrame, anchor: str = "swing_low", date: str | None = None
+) -> dict:
+    """Return a latest-bar AVWAP snapshot, including its retrospective series.
+
+    Swing anchors use the latest strict pivot confirmed by three subsequent bars.
+    Date anchors require an exact calendar-date match (no non-session fallback).
+    Max-volume ties select the first bar. Anchor price is the bar's typical price.
+    Missing anchors raise ValueError. Undefined distances (zero volume/ATR or ATR
+    warmup) are None. The series starts at the selected anchor, inclusive; it is
+    retrospective and must not be interpreted as historical anchor decisions.
+    """
+    if data.empty:
+        raise ValueError("Anchored VWAP requires at least one bar")
+    if anchor == "period_start":
+        start = 0
+    elif anchor == "date":
+        target = _parse_anchor_date(date)
+        matches = np.flatnonzero(pd.to_datetime(data["Date"]).dt.date == target)
+        if not len(matches):
+            raise ValueError("Anchor date has no bar in the fetched window")
+        start = int(matches[0])
+    elif anchor in ("swing_low", "swing_high"):
+        highs, lows = _structural_pivot_indices(data, 3)
+        pivots = lows if anchor == "swing_low" else highs
+        if not len(pivots):
+            raise ValueError(f"No confirmed {anchor} pivot in the fetched window")
+        start = int(pivots[-1])
+    elif anchor == "max_volume":
+        volumes = data["Volume"].to_numpy(dtype=float)
+        if np.isnan(volumes).all():
+            raise ValueError("No valid volume for max_volume anchor")
+        start = int(np.nanargmax(volumes))
+    else:
+        raise ValueError(f"Unknown anchor type: {anchor}")
+
+    series = calculate_vwap(data.iloc[start:])
+    current = float(series.iloc[-1])
+    close = float(data["Close"].iloc[-1])
+    atr = float(calculate_atr(data).iloc[-1])
+    bar = data.iloc[start]
+    return {
+        "avwap_series": series,
+        "latest_avwap": current if np.isfinite(current) else None,
+        "distance_percent": (close / current - 1) * 100
+        if np.isfinite(current) and current != 0
+        else None,
+        "distance_atr": (close - current) / atr
+        if np.isfinite(current) and np.isfinite(atr) and atr != 0
+        else None,
+        "anchor": {
+            "date": pd.Timestamp(bar["Date"]).isoformat(),
+            "price": float((bar["High"] + bar["Low"] + bar["Close"]) / 3),
+            "type": anchor,
+        },
+    }
 
 
 def calculate_volume_profile(data: pd.DataFrame, num_bins: int = 20) -> dict[str, list]:
