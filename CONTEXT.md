@@ -32,6 +32,8 @@ concurrency (`MAX_CONCURRENT_SCANS`), buckets each symbol as scanned, skipped
 absolute composite score, and returns a dict of `scan_parameters`, `summary`,
 `high_conviction_setups`, `top_bullish`, `top_bearish`, and `errors`. The scan
 result dict is the contract every downstream consumer reads.
+The keys consumers read are pinned by `output_schemas.SCAN_RESULT_SCHEMA`, which
+`scan_candidates` advertises as its MCP `outputSchema` and the registry test enforces.
 
 ## candidate
 

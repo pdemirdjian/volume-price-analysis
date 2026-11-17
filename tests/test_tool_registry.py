@@ -5,11 +5,22 @@ These tests drive every registry record through the public dispatcher seam
 module-level fetch.
 """
 
+import copy
 import datetime
 import json
+import math
 
+import jsonschema
 import pandas as pd
 import pytest
+from mcp.client.client import Client
+from mcp.server import Server, ServerRequestContext
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+)
 
 from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, InMemoryDataSource
 from volume_price_analysis.server import dispatch, handle_list_tools
@@ -262,6 +273,153 @@ class TestDispatchEveryTool:
         await spec.run(ctx)
 
         assert ctx.fetched_frame is None
+
+
+SCHEMA_TOOLS = {"scan_candidates", "options_analysis", "comprehensive_analysis"}
+SCHEMA_SPECS = [spec for spec in TOOLS if spec.output_schema is not None]
+
+
+def _legacy_text(payload: object) -> str:
+    """The text block every tool returned before structured output (PDE-197).
+
+    An independent copy of the pre-change formatting, so a change to the
+    server's serialisation shows up here rather than being mirrored.
+    """
+
+    def scrub(obj: object) -> object:
+        if isinstance(obj, dict):
+            return {k: scrub(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [scrub(v) for v in obj]
+        if isinstance(obj, float) and not math.isfinite(obj):
+            return None
+        return obj
+
+    return json.dumps(scrub(payload), indent=2, default=str)
+
+
+def _validator(schema: dict) -> jsonschema.Draft202012Validator:
+    jsonschema.Draft202012Validator.check_schema(schema)
+    return jsonschema.Draft202012Validator(schema)
+
+
+class TestStructuredOutput:
+    """High-value tools declare an output schema and return structured content (PDE-197)."""
+
+    def test_schema_tools_are_the_high_value_three(self):
+        assert {spec.name for spec in SCHEMA_SPECS} == SCHEMA_TOOLS
+
+    @pytest.mark.asyncio
+    async def test_list_tools_advertises_output_schema(self):
+        tools = await handle_list_tools()
+        assert [t.output_schema for t in tools] == [spec.output_schema for spec in TOOLS]
+
+    @pytest.mark.parametrize("spec", SCHEMA_SPECS, ids=lambda s: s.name)
+    def test_schemas_are_lenient_objects(self, spec):
+        schema = spec.output_schema
+        _validator(schema)
+        assert schema["type"] == "object"
+        assert schema["additionalProperties"] is True
+        assert set(schema["required"]) <= REQUIRED_KEYS[spec.name]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spec", TOOLS, ids=lambda s: s.name)
+    async def test_output_matches_schema_and_text_is_unchanged(self, spec):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        raw = await spec.run(ToolContext(args=dict(MINIMAL_ARGS[spec.name]), data_source=source))
+
+        result = await dispatch(spec.name, dict(MINIMAL_ARGS[spec.name]), data_source=source)
+
+        assert not result.is_error, result.content[0].text
+        assert result.content[0].text == _legacy_text(raw)
+        if spec.output_schema is None:
+            assert result.structured_content is None
+            return
+        assert result.structured_content == json.loads(result.content[0].text)
+        _validator(spec.output_schema).validate(result.structured_content)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spec", SCHEMA_SPECS, ids=lambda s: s.name)
+    async def test_renaming_a_required_key_fails_validation(self, spec):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        result = await dispatch(spec.name, dict(MINIMAL_ARGS[spec.name]), data_source=source)
+        validator = _validator(spec.output_schema)
+        for key in spec.output_schema["required"]:
+            drifted = copy.deepcopy(result.structured_content)
+            drifted[f"{key}_renamed"] = drifted.pop(key)
+            assert not validator.is_valid(drifted), f"{spec.name}: renaming {key} went unnoticed"
+
+    @pytest.mark.asyncio
+    async def test_renaming_a_nested_candidate_key_fails_validation(self):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        result = await dispatch(
+            "scan_candidates",
+            {"symbols": [SYMBOL], "min_score": 0, "min_adx": 0},
+            data_source=source,
+        )
+        payload = result.structured_content
+        validator = _validator(TOOLS_BY_NAME["scan_candidates"].output_schema)
+        validator.validate(payload)
+        bucket = "top_bullish" if payload["top_bullish"] else "top_bearish"
+        assert payload[bucket], "fixture must yield a candidate"
+        payload[bucket][0]["ticker"] = payload[bucket][0].pop("symbol")
+        assert not validator.is_valid(payload)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spec", SCHEMA_SPECS, ids=lambda s: s.name)
+    async def test_adding_a_field_keeps_output_valid(self, spec):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        result = await dispatch(spec.name, dict(MINIMAL_ARGS[spec.name]), data_source=source)
+        payload = copy.deepcopy(result.structured_content)
+        payload["new_field"] = {"anything": [1, "two", None]}
+        for value in payload.values():
+            if isinstance(value, dict):
+                value["new_nested_field"] = 1
+
+        _validator(spec.output_schema).validate(payload)
+
+    @pytest.mark.asyncio
+    async def test_error_result_carries_no_structured_content(self):
+        source = InMemoryDataSource()
+        result = await dispatch("options_analysis", {"symbol": SYMBOL}, data_source=source)
+
+        assert result.is_error is True
+        assert result.structured_content is None
+        assert "error" in json.loads(result.content[0].text)
+
+
+def _client_server(source: InMemoryDataSource) -> Server:
+    """A lowlevel server wired to the real list-tools and dispatcher, with an injected source."""
+
+    async def on_list(_ctx: ServerRequestContext, _p: PaginatedRequestParams | None):
+        return ListToolsResult(tools=await handle_list_tools())
+
+    async def on_call(_ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+        return await dispatch(params.name, params.arguments or {}, data_source=source)
+
+    return Server("test", on_list_tools=on_list, on_call_tool=on_call)
+
+
+class TestClientValidation:
+    """An MCP client re-validates structured content against the advertised schema."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", sorted(SCHEMA_TOOLS))
+    async def test_client_accepts_structured_result(self, name):
+        source = InMemoryDataSource({SYMBOL: make_frame()})
+        async with Client(_client_server(source)) as client:
+            result = await client.call_tool(name, MINIMAL_ARGS[name])
+
+        assert not result.is_error
+        assert result.structured_content == json.loads(result.content[0].text)
+
+    @pytest.mark.asyncio
+    async def test_client_does_not_reject_error_result(self):
+        async with Client(_client_server(InMemoryDataSource())) as client:
+            result = await client.call_tool("options_analysis", {"symbol": SYMBOL})
+
+        assert result.is_error is True
+        assert result.structured_content is None
 
 
 class TestFrameImmutability:

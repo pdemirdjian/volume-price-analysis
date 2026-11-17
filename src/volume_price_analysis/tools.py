@@ -41,6 +41,11 @@ from .interpretation import (
     MFI_TOOL_CONDITION_BANDS,
     threshold_verdict,
 )
+from .output_schemas import (
+    COMPREHENSIVE_ANALYSIS_SCHEMA,
+    OPTIONS_ANALYSIS_SCHEMA,
+    SCAN_RESULT_SCHEMA,
+)
 from .payloads import ComprehensiveAnalysis, OptionsAnalysis, ScanResult
 
 logger = logging.getLogger(__name__)
@@ -151,6 +156,9 @@ class ToolSpec:
     input_schema: dict[str, Any]
     run: Callable[[ToolContext], Awaitable[Any]]
     default_period: str = "1mo"
+    # JSON Schema of the result dict, advertised as the MCP ``outputSchema``. A tool
+    # that declares one also returns its result as ``structuredContent``.
+    output_schema: dict[str, Any] | None = None
 
 
 # --- Shared schema fragments -------------------------------------------------
@@ -596,6 +604,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         ),
         input_schema=_single_symbol_schema(),
         run=_run_comprehensive_analysis,
+        output_schema=COMPREHENSIVE_ANALYSIS_SCHEMA,
     ),
     ToolSpec(
         name="options_analysis",
@@ -635,6 +644,7 @@ TOOLS: tuple[ToolSpec, ...] = (
             },
         ),
         run=_run_options_analysis,
+        output_schema=OPTIONS_ANALYSIS_SCHEMA,
         default_period="3mo",
     ),
     ToolSpec(
@@ -723,6 +733,7 @@ TOOLS: tuple[ToolSpec, ...] = (
             "required": [],
         },
         run=_run_scan_candidates,
+        output_schema=SCAN_RESULT_SCHEMA,
         default_period="3mo",
     ),
     ToolSpec(
