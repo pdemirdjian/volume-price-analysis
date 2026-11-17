@@ -278,6 +278,49 @@ class TestDispatchEveryTool:
 SCHEMA_TOOLS = {"scan_candidates", "options_analysis", "comprehensive_analysis"}
 SCHEMA_SPECS = [spec for spec in TOOLS if spec.output_schema is not None]
 
+# Under MINIMAL_ARGS the sample frame scores below the default min_score, so every
+# scan list is empty. This scan yields a candidate and, for the symbol the
+# in-memory source lacks, an errors entry -- so list-item sub-schemas get exercised.
+MISSING_SYMBOL = "ZZZZ"
+POPULATED_SCAN_ARGS = {"symbols": [SYMBOL, MISSING_SYMBOL], "min_score": 0, "min_adx": 0}
+
+# (case id, tool name, arguments): every tool's minimal call plus the populated scan.
+OUTPUT_CASES = [(name, name, args) for name, args in MINIMAL_ARGS.items()] + [
+    ("scan_candidates_populated", "scan_candidates", POPULATED_SCAN_ARGS)
+]
+SCHEMA_CASES = [case for case in OUTPUT_CASES if TOOLS_BY_NAME[case[1]].output_schema]
+_CASE_IDS = [case[0] for case in OUTPUT_CASES]
+_SCHEMA_CASE_IDS = [case[0] for case in SCHEMA_CASES]
+
+# Consumer-read keys below the top level, by (path, key). The rename sweep must
+# reach each of them, so a schema that stops requiring one fails loudly.
+_CANDIDATE_KEYS = (
+    "symbol",
+    "composite_score",
+    "adx",
+    "iv_percentile",
+    "hv_percentile",
+    "latest_price",
+    "atr",
+    "signal_quality",
+    "key_levels",
+)
+NESTED_REQUIRED: dict[str, set[tuple[tuple, str]]] = {
+    "scan_candidates_populated": {(("top_bullish", 0), key) for key in _CANDIDATE_KEYS}
+    | {
+        (("errors", 0), "symbol"),
+        (("errors", 0), "error"),
+        (("scan_parameters",), "symbols_scanned"),
+        (("summary",), "total_candidates"),
+    },
+    "options_analysis": {
+        (("composite_signal",), "action"),
+        (("composite_signal",), "signal_quality"),
+        (("headline",), "rationale"),
+    },
+    "comprehensive_analysis": {(("headline",), "rationale")},
+}
+
 
 def _legacy_text(payload: object) -> str:
     """The text block every tool returned before structured output (PDE-197).
@@ -303,6 +346,49 @@ def _validator(schema: dict) -> jsonschema.Draft202012Validator:
     return jsonschema.Draft202012Validator(schema)
 
 
+def _source() -> InMemoryDataSource:
+    return InMemoryDataSource({SYMBOL: make_frame()})
+
+
+async def _structured(tool: str, args: dict) -> dict:
+    result = await dispatch(tool, dict(args), data_source=_source())
+    assert not result.is_error, result.content[0].text
+    return result.structured_content
+
+
+def _required_paths(schema: dict, payload: dict, path: tuple = ()):
+    """Yield ``(path, key)`` for every required key the schema imposes on ``payload``.
+
+    Descends into object properties and the first item of each array of objects.
+    """
+    for key in schema.get("required", []):
+        yield path, key
+    for key, sub in schema.get("properties", {}).items():
+        value = payload.get(key)
+        if sub.get("type") == "object" and isinstance(value, dict):
+            yield from _required_paths(sub, value, (*path, key))
+        elif "items" in sub and isinstance(value, list) and value and isinstance(value[0], dict):
+            yield from _required_paths(sub["items"], value[0], (*path, key, 0))
+
+
+def _dig(payload: object, path: tuple) -> dict:
+    for step in path:
+        payload = payload[step]  # type: ignore[index]
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _all_dicts(obj: object):
+    """Every dict in ``obj``, including dicts inside lists, outermost first."""
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from _all_dicts(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _all_dicts(item)
+
+
 class TestStructuredOutput:
     """High-value tools declare an output schema and return structured content (PDE-197)."""
 
@@ -319,16 +405,28 @@ class TestStructuredOutput:
         schema = spec.output_schema
         _validator(schema)
         assert schema["type"] == "object"
-        assert schema["additionalProperties"] is True
         assert set(schema["required"]) <= REQUIRED_KEYS[spec.name]
+        for sub in _all_dicts(schema):
+            if sub.get("type") == "object":
+                assert sub.get("additionalProperties") is True, sub
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("spec", TOOLS, ids=lambda s: s.name)
-    async def test_output_matches_schema_and_text_is_unchanged(self, spec):
-        source = InMemoryDataSource({SYMBOL: make_frame()})
-        raw = await spec.run(ToolContext(args=dict(MINIMAL_ARGS[spec.name]), data_source=source))
+    async def test_populated_scan_has_candidates_and_errors(self):
+        """Guard: the populated case really exercises the list-item sub-schemas."""
+        payload = await _structured("scan_candidates", POPULATED_SCAN_ARGS)
+        assert payload["top_bullish"] or payload["top_bearish"]
+        assert payload["errors"] == [
+            {"symbol": MISSING_SYMBOL, "error": f"No data found for symbol {MISSING_SYMBOL}"}
+        ]
 
-        result = await dispatch(spec.name, dict(MINIMAL_ARGS[spec.name]), data_source=source)
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("case", "tool", "args"), OUTPUT_CASES, ids=_CASE_IDS)
+    async def test_output_matches_schema_and_text_is_unchanged(self, case, tool, args):
+        spec = TOOLS_BY_NAME[tool]
+        source = _source()
+        raw = await spec.run(ToolContext(args=dict(args), data_source=source))
+
+        result = await dispatch(tool, dict(args), data_source=source)
 
         assert not result.is_error, result.content[0].text
         assert result.content[0].text == _legacy_text(raw)
@@ -339,44 +437,34 @@ class TestStructuredOutput:
         _validator(spec.output_schema).validate(result.structured_content)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("spec", SCHEMA_SPECS, ids=lambda s: s.name)
-    async def test_renaming_a_required_key_fails_validation(self, spec):
-        source = InMemoryDataSource({SYMBOL: make_frame()})
-        result = await dispatch(spec.name, dict(MINIMAL_ARGS[spec.name]), data_source=source)
-        validator = _validator(spec.output_schema)
-        for key in spec.output_schema["required"]:
-            drifted = copy.deepcopy(result.structured_content)
-            drifted[f"{key}_renamed"] = drifted.pop(key)
-            assert not validator.is_valid(drifted), f"{spec.name}: renaming {key} went unnoticed"
+    @pytest.mark.parametrize(("case", "tool", "args"), SCHEMA_CASES, ids=_SCHEMA_CASE_IDS)
+    async def test_renaming_a_required_key_fails_validation(self, case, tool, args):
+        schema = TOOLS_BY_NAME[tool].output_schema
+        payload = await _structured(tool, args)
+        validator = _validator(schema)
+        paths = list(_required_paths(schema, payload))
+
+        assert NESTED_REQUIRED.get(case, set()) <= set(paths)
+        unnoticed = []
+        for path, key in paths:
+            drifted = copy.deepcopy(payload)
+            target = _dig(drifted, path)
+            target[f"{key}_renamed"] = target.pop(key)
+            if validator.is_valid(drifted):
+                unnoticed.append((path, key))
+        assert not unnoticed, f"{case}: renames went unnoticed: {unnoticed}"
 
     @pytest.mark.asyncio
-    async def test_renaming_a_nested_candidate_key_fails_validation(self):
-        source = InMemoryDataSource({SYMBOL: make_frame()})
-        result = await dispatch(
-            "scan_candidates",
-            {"symbols": [SYMBOL], "min_score": 0, "min_adx": 0},
-            data_source=source,
-        )
-        payload = result.structured_content
-        validator = _validator(TOOLS_BY_NAME["scan_candidates"].output_schema)
-        validator.validate(payload)
-        bucket = "top_bullish" if payload["top_bullish"] else "top_bearish"
-        assert payload[bucket], "fixture must yield a candidate"
-        payload[bucket][0]["ticker"] = payload[bucket][0].pop("symbol")
-        assert not validator.is_valid(payload)
+    @pytest.mark.parametrize(("case", "tool", "args"), SCHEMA_CASES, ids=_SCHEMA_CASE_IDS)
+    async def test_adding_a_field_keeps_output_valid(self, case, tool, args):
+        payload = await _structured(tool, args)
+        for obj in list(_all_dicts(payload)):
+            obj["new_field"] = {"anything": [1, "two", None]}
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("spec", SCHEMA_SPECS, ids=lambda s: s.name)
-    async def test_adding_a_field_keeps_output_valid(self, spec):
-        source = InMemoryDataSource({SYMBOL: make_frame()})
-        result = await dispatch(spec.name, dict(MINIMAL_ARGS[spec.name]), data_source=source)
-        payload = copy.deepcopy(result.structured_content)
-        payload["new_field"] = {"anything": [1, "two", None]}
-        for value in payload.values():
-            if isinstance(value, dict):
-                value["new_nested_field"] = 1
-
-        _validator(spec.output_schema).validate(payload)
+        _validator(TOOLS_BY_NAME[tool].output_schema).validate(payload)
+        if case == "scan_candidates_populated":
+            assert "new_field" in payload["errors"][0]
+            assert "new_field" in (payload["top_bullish"] or payload["top_bearish"])[0]
 
     @pytest.mark.asyncio
     async def test_error_result_carries_no_structured_content(self):
@@ -404,11 +492,10 @@ class TestClientValidation:
     """An MCP client re-validates structured content against the advertised schema."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", sorted(SCHEMA_TOOLS))
-    async def test_client_accepts_structured_result(self, name):
-        source = InMemoryDataSource({SYMBOL: make_frame()})
-        async with Client(_client_server(source)) as client:
-            result = await client.call_tool(name, MINIMAL_ARGS[name])
+    @pytest.mark.parametrize(("case", "tool", "args"), SCHEMA_CASES, ids=_SCHEMA_CASE_IDS)
+    async def test_client_accepts_structured_result(self, case, tool, args):
+        async with Client(_client_server(_source())) as client:
+            result = await client.call_tool(tool, dict(args))
 
         assert not result.is_error
         assert result.structured_content == json.loads(result.content[0].text)

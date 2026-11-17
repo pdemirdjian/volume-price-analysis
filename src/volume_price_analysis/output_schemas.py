@@ -27,7 +27,7 @@ def _object(required: list[str], **properties: dict[str, Any]) -> dict[str, Any]
 
 
 _HEADLINE = _object(
-    ["recommendation", "composite_score", "signal_quality"],
+    ["recommendation", "composite_score", "signal_quality", "rationale"],
     recommendation=_STRING,
     composite_score=_NUMBER,
     signal_quality=_STRING,
@@ -35,9 +35,22 @@ _HEADLINE = _object(
 )
 
 _CANDIDATE = _object(
-    ["symbol", "composite_score"],
+    [
+        "symbol",
+        "composite_score",
+        "adx",
+        "iv_percentile",
+        "hv_percentile",
+        "latest_price",
+        "atr",
+        "signal_quality",
+        "key_levels",
+    ],
     symbol=_STRING,
     composite_score=_NUMBER,
+    adx=_NUMBER,
+    iv_percentile=_NUMBER,
+    hv_percentile=_NUMBER,
     latest_price=_NUMBER,
     atr=_NUMBER,
     signal_quality=_STRING,
@@ -55,7 +68,7 @@ SCAN_RESULT_SCHEMA = _object(
         "top_bearish",
         "errors",
     ],
-    scan_parameters=_object([], symbols_scanned=_INTEGER),
+    scan_parameters=_object(["symbols_scanned"], symbols_scanned=_INTEGER),
     summary=_object(
         ["total_candidates", "bullish_setups", "bearish_setups", "high_conviction"],
         total_candidates=_INTEGER,
@@ -66,7 +79,7 @@ SCAN_RESULT_SCHEMA = _object(
     high_conviction_setups=_CANDIDATES,
     top_bullish=_CANDIDATES,
     top_bearish=_CANDIDATES,
-    errors={"type": "array", "items": _object(["symbol"], symbol=_STRING, error=_STRING)},
+    errors={"type": "array", "items": _object(["symbol", "error"], symbol=_STRING, error=_STRING)},
     market_regime=_OBJECT,
 )
 
@@ -86,7 +99,7 @@ OPTIONS_ANALYSIS_SCHEMA = _object(
     latest_price=_NUMBER,
     headline=_HEADLINE,
     composite_signal=_object(
-        ["score", "recommendation"],
+        ["score", "recommendation", "action", "signal_quality"],
         score=_NUMBER,
         recommendation=_STRING,
         action=_STRING,
