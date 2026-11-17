@@ -305,6 +305,41 @@ _CANDIDATE_KEYS = (
     "signal_quality",
     "key_levels",
 )
+_PROFILE_READS = {
+    (("volume_profile",), key)
+    for key in ("point_of_control", "value_area_high", "value_area_low", "current_position")
+}
+
+
+def _reads(path: tuple, *keys: str) -> set[tuple[tuple, str]]:
+    return {(path, key) for key in keys}
+
+
+# What agent/ai_client.py's _project_deep_analysis reads from an options_analysis.
+_BRIEFING_PROJECTION_READS = (
+    _PROFILE_READS
+    | _reads(("trend_analysis",), "adx", "rsi")
+    | _reads(("trend_analysis", "adx"), "value", "trend_strength", "trend_direction")
+    | _reads(("trend_analysis", "rsi"), "value", "condition", "divergence_type")
+    | _reads(
+        ("volatility_analysis",), "iv_percentile_proxy", "expected_move", "atr", "bollinger_bands"
+    )
+    | _reads(
+        ("volatility_analysis", "iv_percentile_proxy"),
+        "percentile",
+        "hv_percentile",
+        "options_implication",
+    )
+    | _reads(("volatility_analysis", "expected_move"), "percent", "upper_target", "lower_target")
+    | _reads(("volatility_analysis", "atr"), "daily_range", "stop_loss_suggestion")
+    | _reads(("volatility_analysis", "bollinger_bands"), "position", "squeeze_detected")
+    | _reads(("volume_indicators", "obv"), "trend")
+    | _reads(("volume_indicators", "accumulation_distribution"), "signal")
+    | _reads(("volume_indicators", "mfi"), "condition")
+    | _reads(("volume_indicators", "cmf"), "signal")
+    | _reads(("volume_indicators", "relative_volume"), "current_rvol")
+    | _reads(("volume_indicators", "volume_breakout"), "is_breakout")
+)
 NESTED_REQUIRED: dict[str, set[tuple[tuple, str]]] = {
     "scan_candidates_populated": {(("top_bullish", 0), key) for key in _CANDIDATE_KEYS}
     | {
@@ -317,8 +352,16 @@ NESTED_REQUIRED: dict[str, set[tuple[tuple, str]]] = {
         (("composite_signal",), "action"),
         (("composite_signal",), "signal_quality"),
         (("headline",), "rationale"),
+    }
+    | _BRIEFING_PROJECTION_READS,
+    "comprehensive_analysis": {(("headline",), "rationale")}
+    | _PROFILE_READS
+    | {
+        (("volume_indicators", "obv"), "trend"),
+        (("volume_indicators", "mfi"), "condition"),
+        (("volume_indicators", "relative_volume"), "current_rvol"),
+        (("volume_indicators", "volume_breakout"), "is_breakout"),
     },
-    "comprehensive_analysis": {(("headline",), "rationale")},
 }
 
 

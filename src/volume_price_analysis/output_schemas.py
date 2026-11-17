@@ -83,6 +83,89 @@ SCAN_RESULT_SCHEMA = _object(
     market_regime=_OBJECT,
 )
 
+_BOOLEAN: dict[str, Any] = {"type": "boolean"}
+
+# Nested sections the briefing agent projects by name (agent/ai_client.py,
+# ``_project_deep_analysis``). Every key below is emitted on every successful result.
+_VOLUME_PROFILE_LEVELS = _object(
+    ["point_of_control", "value_area_high", "value_area_low", "current_position"],
+    point_of_control=_NUMBER,
+    value_area_high=_NUMBER,
+    value_area_low=_NUMBER,
+    current_position=_STRING,
+)
+_OBV = _object(["trend"], trend=_STRING)
+_MFI = _object(["condition"], condition=_STRING)
+_RELATIVE_VOLUME = _object(["current_rvol"], current_rvol=_NUMBER)
+_VOLUME_BREAKOUT = _object(["is_breakout"], is_breakout=_BOOLEAN)
+
+_OPTIONS_TREND = _object(
+    ["adx", "rsi"],
+    adx=_object(
+        ["value", "trend_strength", "trend_direction"],
+        value=_NUMBER,
+        trend_strength=_STRING,
+        trend_direction=_STRING,
+    ),
+    rsi=_object(
+        ["value", "condition", "divergence_type"],
+        value=_NUMBER,
+        condition=_STRING,
+        divergence_type=_STRING,
+    ),
+)
+
+_OPTIONS_VOLATILITY = _object(
+    ["iv_percentile_proxy", "expected_move", "atr", "bollinger_bands"],
+    iv_percentile_proxy=_object(
+        ["percentile", "hv_percentile", "options_implication"],
+        percentile=_NUMBER,
+        hv_percentile=_NUMBER,
+        options_implication=_STRING,
+    ),
+    expected_move=_object(
+        ["percent", "upper_target", "lower_target"],
+        percent=_NUMBER,
+        upper_target=_NUMBER,
+        lower_target=_NUMBER,
+    ),
+    atr=_object(
+        ["daily_range", "stop_loss_suggestion"],
+        daily_range=_STRING,
+        stop_loss_suggestion=_STRING,
+    ),
+    bollinger_bands=_object(
+        ["position", "squeeze_detected"], position=_STRING, squeeze_detected=_BOOLEAN
+    ),
+)
+
+_OPTIONS_VOLUME = _object(
+    [
+        "obv",
+        "accumulation_distribution",
+        "mfi",
+        "cmf",
+        "relative_volume",
+        "volume_breakout",
+    ],
+    obv=_OBV,
+    accumulation_distribution=_object(["signal"], signal=_STRING),
+    mfi=_MFI,
+    cmf=_object(["signal"], signal=_STRING),
+    relative_volume=_RELATIVE_VOLUME,
+    volume_breakout=_VOLUME_BREAKOUT,
+)
+
+# comprehensive_analysis has no in-repo reader; its sections that share a producer
+# and key path with options_analysis pin the same keys.
+_COMPREHENSIVE_VOLUME = _object(
+    ["obv", "mfi", "relative_volume", "volume_breakout"],
+    obv=_OBV,
+    mfi=_MFI,
+    relative_volume=_RELATIVE_VOLUME,
+    volume_breakout=_VOLUME_BREAKOUT,
+)
+
 OPTIONS_ANALYSIS_SCHEMA = _object(
     [
         "symbol",
@@ -105,10 +188,10 @@ OPTIONS_ANALYSIS_SCHEMA = _object(
         action=_STRING,
         signal_quality=_STRING,
     ),
-    trend_analysis=_OBJECT,
-    volatility_analysis=_OBJECT,
-    volume_indicators=_OBJECT,
-    volume_profile=_OBJECT,
+    trend_analysis=_OPTIONS_TREND,
+    volatility_analysis=_OPTIONS_VOLATILITY,
+    volume_indicators=_OPTIONS_VOLUME,
+    volume_profile=_VOLUME_PROFILE_LEVELS,
     options_insights={"type": "array", "items": _STRING},
 )
 
@@ -126,9 +209,9 @@ COMPREHENSIVE_ANALYSIS_SCHEMA = _object(
     symbol=_STRING,
     latest_price=_NUMBER,
     headline=_HEADLINE,
-    volume_indicators=_OBJECT,
+    volume_indicators=_COMPREHENSIVE_VOLUME,
     price_indicators=_OBJECT,
     volatility_indicators=_OBJECT,
-    volume_profile=_OBJECT,
+    volume_profile=_VOLUME_PROFILE_LEVELS,
     summary={"type": "array", "items": _STRING},
 )
