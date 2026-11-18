@@ -5,11 +5,22 @@ These tests drive every registry record through the public dispatcher seam
 module-level fetch.
 """
 
+import copy
 import datetime
 import json
+import math
 
+import jsonschema
 import pandas as pd
 import pytest
+from mcp.client.client import Client
+from mcp.server import Server, ServerRequestContext
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+)
 
 from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, InMemoryDataSource
 from volume_price_analysis.server import dispatch, handle_list_tools
@@ -262,6 +273,283 @@ class TestDispatchEveryTool:
         await spec.run(ctx)
 
         assert ctx.fetched_frame is None
+
+
+SCHEMA_TOOLS = {"scan_candidates", "options_analysis", "comprehensive_analysis"}
+SCHEMA_SPECS = [spec for spec in TOOLS if spec.output_schema is not None]
+
+# Under MINIMAL_ARGS the sample frame scores below the default min_score, so every
+# scan list is empty. This scan yields a candidate and, for the symbol the
+# in-memory source lacks, an errors entry -- so list-item sub-schemas get exercised.
+MISSING_SYMBOL = "ZZZZ"
+POPULATED_SCAN_ARGS = {"symbols": [SYMBOL, MISSING_SYMBOL], "min_score": 0, "min_adx": 0}
+
+# (case id, tool name, arguments): every tool's minimal call plus the populated scan.
+OUTPUT_CASES = [(name, name, args) for name, args in MINIMAL_ARGS.items()] + [
+    ("scan_candidates_populated", "scan_candidates", POPULATED_SCAN_ARGS)
+]
+SCHEMA_CASES = [case for case in OUTPUT_CASES if TOOLS_BY_NAME[case[1]].output_schema]
+_CASE_IDS = [case[0] for case in OUTPUT_CASES]
+_SCHEMA_CASE_IDS = [case[0] for case in SCHEMA_CASES]
+
+# Consumer-read keys below the top level, by (path, key). The rename sweep must
+# reach each of them, so a schema that stops requiring one fails loudly.
+_CANDIDATE_KEYS = (
+    "symbol",
+    "composite_score",
+    "adx",
+    "iv_percentile",
+    "hv_percentile",
+    "latest_price",
+    "atr",
+    "signal_quality",
+    "key_levels",
+)
+_PROFILE_READS = {
+    (("volume_profile",), key)
+    for key in ("point_of_control", "value_area_high", "value_area_low", "current_position")
+}
+
+
+def _reads(path: tuple, *keys: str) -> set[tuple[tuple, str]]:
+    return {(path, key) for key in keys}
+
+
+# What agent/ai_client.py's _project_deep_analysis reads from an options_analysis.
+_BRIEFING_PROJECTION_READS = (
+    _PROFILE_READS
+    | _reads(("trend_analysis",), "adx", "rsi")
+    | _reads(("trend_analysis", "adx"), "value", "trend_strength", "trend_direction")
+    | _reads(("trend_analysis", "rsi"), "value", "condition", "divergence_type")
+    | _reads(
+        ("volatility_analysis",), "iv_percentile_proxy", "expected_move", "atr", "bollinger_bands"
+    )
+    | _reads(
+        ("volatility_analysis", "iv_percentile_proxy"),
+        "percentile",
+        "hv_percentile",
+        "options_implication",
+    )
+    | _reads(("volatility_analysis", "expected_move"), "percent", "upper_target", "lower_target")
+    | _reads(("volatility_analysis", "atr"), "daily_range", "stop_loss_suggestion")
+    | _reads(("volatility_analysis", "bollinger_bands"), "position", "squeeze_detected")
+    | _reads(("volume_indicators", "obv"), "trend")
+    | _reads(("volume_indicators", "accumulation_distribution"), "signal")
+    | _reads(("volume_indicators", "mfi"), "condition")
+    | _reads(("volume_indicators", "cmf"), "signal")
+    | _reads(("volume_indicators", "relative_volume"), "current_rvol")
+    | _reads(("volume_indicators", "volume_breakout"), "is_breakout")
+)
+NESTED_REQUIRED: dict[str, set[tuple[tuple, str]]] = {
+    "scan_candidates_populated": {(("top_bullish", 0), key) for key in _CANDIDATE_KEYS}
+    | {
+        (("errors", 0), "symbol"),
+        (("errors", 0), "error"),
+        (("scan_parameters",), "symbols_scanned"),
+        (("summary",), "total_candidates"),
+    },
+    "options_analysis": {
+        (("composite_signal",), "action"),
+        (("composite_signal",), "signal_quality"),
+        (("headline",), "rationale"),
+    }
+    | _BRIEFING_PROJECTION_READS,
+    "comprehensive_analysis": {(("headline",), "rationale")}
+    | _PROFILE_READS
+    | {
+        (("volume_indicators", "obv"), "trend"),
+        (("volume_indicators", "mfi"), "condition"),
+        (("volume_indicators", "relative_volume"), "current_rvol"),
+        (("volume_indicators", "volume_breakout"), "is_breakout"),
+    },
+}
+
+
+def _legacy_text(payload: object) -> str:
+    """The text block every tool returned before structured output (PDE-197).
+
+    An independent copy of the pre-change formatting, so a change to the
+    server's serialisation shows up here rather than being mirrored.
+    """
+
+    def scrub(obj: object) -> object:
+        if isinstance(obj, dict):
+            return {k: scrub(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [scrub(v) for v in obj]
+        if isinstance(obj, float) and not math.isfinite(obj):
+            return None
+        return obj
+
+    return json.dumps(scrub(payload), indent=2, default=str)
+
+
+def _validator(schema: dict) -> jsonschema.Draft202012Validator:
+    jsonschema.Draft202012Validator.check_schema(schema)
+    return jsonschema.Draft202012Validator(schema)
+
+
+def _source() -> InMemoryDataSource:
+    return InMemoryDataSource({SYMBOL: make_frame()})
+
+
+async def _structured(tool: str, args: dict) -> dict:
+    result = await dispatch(tool, dict(args), data_source=_source())
+    assert not result.is_error, result.content[0].text
+    return result.structured_content
+
+
+def _required_paths(schema: dict, payload: dict, path: tuple = ()):
+    """Yield ``(path, key)`` for every required key the schema imposes on ``payload``.
+
+    Descends into object properties and the first item of each array of objects.
+    """
+    for key in schema.get("required", []):
+        yield path, key
+    for key, sub in schema.get("properties", {}).items():
+        value = payload.get(key)
+        if sub.get("type") == "object" and isinstance(value, dict):
+            yield from _required_paths(sub, value, (*path, key))
+        elif "items" in sub and isinstance(value, list) and value and isinstance(value[0], dict):
+            yield from _required_paths(sub["items"], value[0], (*path, key, 0))
+
+
+def _dig(payload: object, path: tuple) -> dict:
+    for step in path:
+        payload = payload[step]  # type: ignore[index]
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _all_dicts(obj: object):
+    """Every dict in ``obj``, including dicts inside lists, outermost first."""
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from _all_dicts(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _all_dicts(item)
+
+
+class TestStructuredOutput:
+    """High-value tools declare an output schema and return structured content (PDE-197)."""
+
+    def test_schema_tools_are_the_high_value_three(self):
+        assert {spec.name for spec in SCHEMA_SPECS} == SCHEMA_TOOLS
+
+    @pytest.mark.asyncio
+    async def test_list_tools_advertises_output_schema(self):
+        tools = await handle_list_tools()
+        assert [t.output_schema for t in tools] == [spec.output_schema for spec in TOOLS]
+
+    @pytest.mark.parametrize("spec", SCHEMA_SPECS, ids=lambda s: s.name)
+    def test_schemas_are_lenient_objects(self, spec):
+        schema = spec.output_schema
+        _validator(schema)
+        assert schema["type"] == "object"
+        assert set(schema["required"]) <= REQUIRED_KEYS[spec.name]
+        for sub in _all_dicts(schema):
+            if sub.get("type") == "object":
+                assert sub.get("additionalProperties") is True, sub
+
+    @pytest.mark.asyncio
+    async def test_populated_scan_has_candidates_and_errors(self):
+        """Guard: the populated case really exercises the list-item sub-schemas."""
+        payload = await _structured("scan_candidates", POPULATED_SCAN_ARGS)
+        assert payload["top_bullish"] or payload["top_bearish"]
+        assert payload["errors"] == [
+            {"symbol": MISSING_SYMBOL, "error": f"No data found for symbol {MISSING_SYMBOL}"}
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("case", "tool", "args"), OUTPUT_CASES, ids=_CASE_IDS)
+    async def test_output_matches_schema_and_text_is_unchanged(self, case, tool, args):
+        spec = TOOLS_BY_NAME[tool]
+        source = _source()
+        raw = await spec.run(ToolContext(args=dict(args), data_source=source))
+
+        result = await dispatch(tool, dict(args), data_source=source)
+
+        assert not result.is_error, result.content[0].text
+        assert result.content[0].text == _legacy_text(raw)
+        if spec.output_schema is None:
+            assert result.structured_content is None
+            return
+        assert result.structured_content == json.loads(result.content[0].text)
+        _validator(spec.output_schema).validate(result.structured_content)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("case", "tool", "args"), SCHEMA_CASES, ids=_SCHEMA_CASE_IDS)
+    async def test_renaming_a_required_key_fails_validation(self, case, tool, args):
+        schema = TOOLS_BY_NAME[tool].output_schema
+        payload = await _structured(tool, args)
+        validator = _validator(schema)
+        paths = list(_required_paths(schema, payload))
+
+        assert NESTED_REQUIRED.get(case, set()) <= set(paths)
+        unnoticed = []
+        for path, key in paths:
+            drifted = copy.deepcopy(payload)
+            target = _dig(drifted, path)
+            target[f"{key}_renamed"] = target.pop(key)
+            if validator.is_valid(drifted):
+                unnoticed.append((path, key))
+        assert not unnoticed, f"{case}: renames went unnoticed: {unnoticed}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("case", "tool", "args"), SCHEMA_CASES, ids=_SCHEMA_CASE_IDS)
+    async def test_adding_a_field_keeps_output_valid(self, case, tool, args):
+        payload = await _structured(tool, args)
+        for obj in list(_all_dicts(payload)):
+            obj["new_field"] = {"anything": [1, "two", None]}
+
+        _validator(TOOLS_BY_NAME[tool].output_schema).validate(payload)
+        if case == "scan_candidates_populated":
+            assert "new_field" in payload["errors"][0]
+            assert "new_field" in (payload["top_bullish"] or payload["top_bearish"])[0]
+
+    @pytest.mark.asyncio
+    async def test_error_result_carries_no_structured_content(self):
+        source = InMemoryDataSource()
+        result = await dispatch("options_analysis", {"symbol": SYMBOL}, data_source=source)
+
+        assert result.is_error is True
+        assert result.structured_content is None
+        assert "error" in json.loads(result.content[0].text)
+
+
+def _client_server(source: InMemoryDataSource) -> Server:
+    """A lowlevel server wired to the real list-tools and dispatcher, with an injected source."""
+
+    async def on_list(_ctx: ServerRequestContext, _p: PaginatedRequestParams | None):
+        return ListToolsResult(tools=await handle_list_tools())
+
+    async def on_call(_ctx: ServerRequestContext, params: CallToolRequestParams) -> CallToolResult:
+        return await dispatch(params.name, params.arguments or {}, data_source=source)
+
+    return Server("test", on_list_tools=on_list, on_call_tool=on_call)
+
+
+class TestClientValidation:
+    """An MCP client re-validates structured content against the advertised schema."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("case", "tool", "args"), SCHEMA_CASES, ids=_SCHEMA_CASE_IDS)
+    async def test_client_accepts_structured_result(self, case, tool, args):
+        async with Client(_client_server(_source())) as client:
+            result = await client.call_tool(tool, dict(args))
+
+        assert not result.is_error
+        assert result.structured_content == json.loads(result.content[0].text)
+
+    @pytest.mark.asyncio
+    async def test_client_does_not_reject_error_result(self):
+        async with Client(_client_server(InMemoryDataSource())) as client:
+            result = await client.call_tool("options_analysis", {"symbol": SYMBOL})
+
+        assert result.is_error is True
+        assert result.structured_content is None
 
 
 class TestFrameImmutability:

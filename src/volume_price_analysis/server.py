@@ -2,7 +2,10 @@
 
 This module is only the MCP adapter: it advertises the tool registry, routes
 one call to one registry record, and formats every result -- success or
-failure -- through a single ``CallToolResult`` path. Tool behaviour lives in
+failure -- through a single ``CallToolResult`` path. Tools that declare an
+``output_schema`` also return their result as ``structuredContent``; error
+results never do, so a client's output-schema check (skipped for errors) is
+never asked to validate an error payload. Tool behaviour lives in
 :mod:`volume_price_analysis.tools`.
 """
 
@@ -53,7 +56,12 @@ def _json_response(result: object) -> str:
 async def handle_list_tools() -> list[Tool]:
     """List available volume-price analysis tools, derived from the registry."""
     return [
-        Tool(name=spec.name, description=spec.description, input_schema=spec.input_schema)
+        Tool(
+            name=spec.name,
+            description=spec.description,
+            input_schema=spec.input_schema,
+            output_schema=spec.output_schema,
+        )
         for spec in TOOLS
     ]
 
@@ -88,7 +96,13 @@ async def dispatch(
         )
         result = await spec.run(ctx)
 
-        return CallToolResult(content=[TextContent(type="text", text=_json_response(result))])
+        text = _json_response(result)
+        # Structured content is the JSON text parsed back, so the two can never
+        # disagree and NaN/Infinity/non-JSON values are already normalised.
+        structured = json.loads(text) if spec.output_schema is not None else None
+        return CallToolResult(
+            content=[TextContent(type="text", text=text)], structured_content=structured
+        )
 
     except ValueError as e:
         logger.warning("Tool %s validation error: %s", name, str(e))
