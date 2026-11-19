@@ -58,7 +58,21 @@ class ScanResultScanParameters(TypedDict):
     volatility_basis: str
 
 
+class BreadthSummary(TypedDict):
+    universe: str
+    symbols_counted: int
+    pct_above_sma20: float | None
+    pct_above_sma50: float | None
+    up_volume: float
+    down_volume: float
+    up_down_volume_ratio: float | None
+    new_highs: int
+    new_lows: int
+    net_new_highs: int
+
+
 class ScanResultSummary(TypedDict):
+    breadth: NotRequired[BreadthSummary]
     total_candidates: int
     bullish_setups: int
     bearish_setups: int

@@ -54,3 +54,11 @@ source, blurring the seam the tests and the backtest depend on.
   aggregation, not to stand in for scoring.
 - Revisit only if `score_symbol` needs I/O of its own (e.g. earnings dates in
   the gate), which would remove the reason it is separate.
+
+## Amendment (PDE-210, 2026-11-19)
+
+The scan's fetch step now also reduces the frame to a breadth observation, so the
+worker calls `analysis.scan_symbol`, which returns `(candidate, observation)`.
+`analyze_single_symbol` keeps its name, signature, and behaviour as a wrapper
+returning the candidate; `score_symbol` is untouched. `run_scan` tests that
+control concurrency or error aggregation patch `scan_symbol` instead.

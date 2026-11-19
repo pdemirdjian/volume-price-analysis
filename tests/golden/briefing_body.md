@@ -1,6 +1,6 @@
 # Morning Market Briefing — Friday, September 4, 2026
 
-**Market Regime: BULLISH** — SPY closed at 500.00, 1.2% above its 20-day SMA (494.07) as of 2026-09-03. 1 high-conviction pick flagged as counter-regime.
+**Market Regime: BULLISH (narrow)** — SPY closed at 500.00, 1.2% above its 20-day SMA (494.07) as of 2026-09-03. Breadth: 38% of 498 S&P 500 symbols above their 20-day SMA (45% above their 50-day), up/down volume 0.69, net new 20-day highs -22. 1 high-conviction pick flagged as counter-regime.
 
 ## Pick Summary
 

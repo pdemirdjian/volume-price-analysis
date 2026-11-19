@@ -31,6 +31,18 @@ REGIME_SMA_PERIOD = 20
 # as a directional tape.
 REGIME_DIRECTIONS = ("bullish", "bearish")
 
+# Breadth qualifier thresholds (PDE-210), read against the scan's
+# ``summary.breadth.pct_above_sma20`` -- the same 20-day basis as the verdict.
+# Participation is the share of counted sp500 symbols on the verdict's side of
+# their SMA20 (above for bullish, below for bearish): at least
+# BREADTH_BROAD_PCT is "broad", at most BREADTH_NARROW_PCT is "narrow", in
+# between is "mixed". Fewer than BREADTH_MIN_SYMBOLS counted symbols (e.g. a
+# small custom scan) gets no qualifier. Breadth qualifies the verdict only; it
+# never flips it or changes ``regime_conflict``.
+BREADTH_BROAD_PCT = 60.0
+BREADTH_NARROW_PCT = 40.0
+BREADTH_MIN_SYMBOLS = 20
+
 
 def compute_market_regime(spy_data: pd.DataFrame | None, today: date | None = None) -> dict:
     """Classify the market regime from SPY daily data.
@@ -140,22 +152,64 @@ def annotate_regime_conflicts(scan_results: Mapping[str, Any], regime: dict) -> 
     return cast(ScanResult, result)
 
 
-def format_regime_header(regime: dict, conflict_count: int = 0) -> str:
-    """Render the regime verdict as a markdown line for the top of the email."""
+def breadth_qualifier(verdict: str, breadth: Mapping[str, Any] | None) -> str | None:
+    """Qualify a decided verdict as ``broad``, ``mixed``, or ``narrow`` from scan breadth.
+
+    None when the verdict is undecided, breadth is missing or undefined, or
+    fewer than ``BREADTH_MIN_SYMBOLS`` symbols were counted.
+    """
+    if verdict not in REGIME_DIRECTIONS or not breadth:
+        return None
+    pct_above = breadth.get("pct_above_sma20")
+    if pct_above is None or breadth.get("symbols_counted", 0) < BREADTH_MIN_SYMBOLS:
+        return None
+    participation = pct_above if verdict == "bullish" else 100.0 - pct_above
+    if participation >= BREADTH_BROAD_PCT:
+        return "broad"
+    if participation <= BREADTH_NARROW_PCT:
+        return "narrow"
+    return "mixed"
+
+
+def _breadth_sentence(breadth: Mapping[str, Any]) -> str:
+    sma50 = breadth.get("pct_above_sma50")
+    sma50_part = f" ({sma50:.0f}% above their 50-day)" if sma50 is not None else ""
+    ratio = breadth.get("up_down_volume_ratio")
+    ratio_part = f"{ratio:.2f}" if ratio is not None else "n/a"
+    return (
+        f" Breadth: {breadth['pct_above_sma20']:.0f}% of {breadth['symbols_counted']} "
+        f"S&P 500 symbols above their 20-day SMA{sma50_part}, up/down volume {ratio_part}, "
+        f"net new 20-day highs {breadth.get('net_new_highs', 0):+d}."
+    )
+
+
+def format_regime_header(
+    regime: dict, conflict_count: int = 0, breadth: Mapping[str, Any] | None = None
+) -> str:
+    """Render the regime verdict as a markdown line for the top of the email.
+
+    ``breadth`` is the scan's ``summary.breadth``; when it yields a qualifier
+    (see ``breadth_qualifier``) the verdict reads e.g. ``BULLISH (narrow)`` and
+    a breadth sentence follows the SPY sentence. The verdict itself is unchanged.
+    """
     verdict = regime.get("regime", "unknown")
     if verdict not in REGIME_DIRECTIONS:
         reason = regime.get("reason", "no reason recorded")
         return f"**Market Regime: UNKNOWN** — regime check unavailable ({reason})."
 
+    qualifier = breadth_qualifier(verdict, breadth)
+    label = verdict.upper() + (f" ({qualifier})" if qualifier else "")
     relation = "above" if verdict == "bullish" else "below"
     pct = abs(regime.get("close_vs_sma_pct", 0.0))
     as_of = regime.get("as_of")
     as_of_part = f" as of {as_of}" if as_of else ""
     header = (
-        f"**Market Regime: {verdict.upper()}** — SPY closed at "
+        f"**Market Regime: {label}** — SPY closed at "
         f"{regime.get('spy_close', 0.0):.2f}, {pct:.1f}% {relation} its "
         f"{REGIME_SMA_PERIOD}-day SMA ({regime.get('sma20', 0.0):.2f}){as_of_part}."
     )
+    if qualifier and breadth is not None:
+        header += _breadth_sentence(breadth)
     if conflict_count:
         picks = "pick" if conflict_count == 1 else "picks"
         header += f" {conflict_count} high-conviction {picks} flagged as counter-regime."

@@ -117,8 +117,12 @@ def _picks(inputs: BriefingInputs) -> list[Pick]:
 
 
 def _regime_header(inputs: BriefingInputs, picks: list[Pick]) -> str:
-    """The regime verdict line; the conflict count is the table's flagged rows."""
-    return format_regime_header(inputs.regime, sum(p.regime_conflict for p in picks))
+    """The regime verdict line; the conflict count is the table's flagged rows.
+
+    The scan's ``summary.breadth`` adds the breadth qualifier (PDE-210).
+    """
+    breadth = inputs.scan_results.get("summary", {}).get("breadth")
+    return format_regime_header(inputs.regime, sum(p.regime_conflict for p in picks), breadth)
 
 
 def _scorecard(inputs: BriefingInputs) -> str:

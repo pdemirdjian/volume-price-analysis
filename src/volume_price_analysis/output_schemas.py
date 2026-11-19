@@ -75,6 +75,16 @@ SCAN_RESULT_SCHEMA = _object(
         bullish_setups=_INTEGER,
         bearish_setups=_INTEGER,
         high_conviction=_INTEGER,
+        # Additive (PDE-210): typed when present, not required.
+        breadth=_object(
+            ["universe", "symbols_counted"],
+            universe=_STRING,
+            symbols_counted=_INTEGER,
+            pct_above_sma20=_NUMBER,
+            pct_above_sma50=_NUMBER,
+            up_down_volume_ratio=_NUMBER,
+            net_new_highs=_INTEGER,
+        ),
     ),
     high_conviction_setups=_CANDIDATES,
     top_bullish=_CANDIDATES,

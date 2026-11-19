@@ -525,7 +525,7 @@ class TestRunScan:
                 raise InsufficientDataError("SMALL: insufficient history")
             if symbol == "BADX":
                 raise ValueError("No data found")
-            return {
+            candidate = {
                 "symbol": symbol,
                 "composite_score": 3.0,
                 "recommendation": "bullish",
@@ -543,8 +543,9 @@ class TestRunScan:
                 "latest_price": 100.0,
                 "key_levels": {"upper_target": 103.0, "lower_target": 97.0},
             }
+            return candidate, None
 
-        mocker.patch("volume_price_analysis.analysis.analyze_single_symbol", side_effect=_analyze)
+        mocker.patch("volume_price_analysis.analysis.scan_symbol", side_effect=_analyze)
 
         result = await run_scan(symbols=["GOOD", "SMALL", "BADX"], min_score=0, min_adx=0)
         summary = result["summary"]
@@ -585,25 +586,28 @@ class TestRunScan:
     async def test_zero_score_candidate_in_bullish(self, mocker):
         """A candidate with composite_score == 0 should appear in top_bullish when min_score=0."""
         mocker.patch(
-            "volume_price_analysis.analysis.analyze_single_symbol",
-            return_value={
-                "symbol": "FLAT",
-                "composite_score": 0.0,
-                "recommendation": "neutral",
-                "signal_quality": "low",
-                "adx": 25.0,
-                "trend_strength": "weak",
-                "trend_direction": "neutral",
-                "rsi": 50.0,
-                "rsi_divergence": "none",
-                "iv_percentile": 50.0,
-                "hv_percentile": 50.0,
-                "iv_implication": "average",
-                "expected_move_pct": 3.0,
-                "rvol": 1.0,
-                "latest_price": 100.0,
-                "key_levels": {"upper_target": 103.0, "lower_target": 97.0},
-            },
+            "volume_price_analysis.analysis.scan_symbol",
+            return_value=(
+                {
+                    "symbol": "FLAT",
+                    "composite_score": 0.0,
+                    "recommendation": "neutral",
+                    "signal_quality": "low",
+                    "adx": 25.0,
+                    "trend_strength": "weak",
+                    "trend_direction": "neutral",
+                    "rsi": 50.0,
+                    "rsi_divergence": "none",
+                    "iv_percentile": 50.0,
+                    "hv_percentile": 50.0,
+                    "iv_implication": "average",
+                    "expected_move_pct": 3.0,
+                    "rvol": 1.0,
+                    "latest_price": 100.0,
+                    "key_levels": {"upper_target": 103.0, "lower_target": 97.0},
+                },
+                None,
+            ),
         )
 
         result = await run_scan(symbols=["FLAT"], min_score=0, min_adx=0)
@@ -877,8 +881,8 @@ class TestRunScanInjectedUniverses:
     @pytest.mark.asyncio
     async def test_universes_override_is_used(self, mocker):
         mocker.patch(
-            "volume_price_analysis.analysis.analyze_single_symbol",
-            return_value=None,
+            "volume_price_analysis.analysis.scan_symbol",
+            return_value=(None, None),
         )
         result = await run_scan(
             universe="tiny",
@@ -890,8 +894,8 @@ class TestRunScanInjectedUniverses:
     @pytest.mark.asyncio
     async def test_unknown_universe_falls_back_within_override(self, mocker):
         mocker.patch(
-            "volume_price_analysis.analysis.analyze_single_symbol",
-            return_value=None,
+            "volume_price_analysis.analysis.scan_symbol",
+            return_value=(None, None),
         )
         result = await run_scan(
             universe="nope",
@@ -904,8 +908,8 @@ class TestRunScanInjectedUniverses:
     async def test_unknown_universe_without_full_market_raises(self, mocker):
         """An override with no 'full_market' has nothing to fall back to."""
         mocker.patch(
-            "volume_price_analysis.analysis.analyze_single_symbol",
-            return_value=None,
+            "volume_price_analysis.analysis.scan_symbol",
+            return_value=(None, None),
         )
         with pytest.raises(ValueError, match="no 'full_market' fallback"):
             await run_scan(universe="nope", universes={"tiny": ["AAA"]})
