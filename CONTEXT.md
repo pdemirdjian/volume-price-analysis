@@ -187,7 +187,12 @@ worker. `run_scan` reduces the observations of scanned symbols once with
 `breadth.summarize_breadth` into `summary.breadth`: `universe` (`"sp500"`),
 `symbols_counted`, `pct_above_sma20`, `pct_above_sma50`, `up_volume`,
 `down_volume`, `up_down_volume_ratio` (null without down volume), `new_highs`,
-`new_lows`, and `net_new_highs`. Skipped and errored symbols are not counted.
+`new_lows`, and `net_new_highs`. A new 20-day high (low) is a last-session High
+(Low) strictly beyond every one of the prior 19 sessions; ties, flat series, and
+symbols with under 20 bars are neither. Each symbol counts once, and only
+observations dated on the latest session among the counted members count (a
+symbol whose data ends a session early is dropped). Skipped and errored symbols
+are not counted.
 
 Breadth only qualifies the regime: `agent/regime.breadth_qualifier` labels a
 decided verdict `broad`, `mixed`, or `narrow` from the share of counted symbols

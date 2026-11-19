@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -21,9 +22,11 @@ def _obs(
     volume: float = 1_000.0,
     high: bool = False,
     low: bool = False,
+    session: date | None = date(2026, 3, 27),
 ) -> BreadthObservation:
     return BreadthObservation(
         symbol=symbol,
+        session=session,
         above_sma20=sma20,
         above_sma50=sma50,
         up_close=up,
@@ -112,11 +115,62 @@ class TestSummarizeBreadth:
         assert summary["down_volume"] == 10.0
         assert summary["net_new_highs"] == -1
 
+    def test_duplicate_symbols_count_once(self):
+        observations = [_obs("AAPL", volume=10), _obs("AAPL", volume=10), _obs("MSFT", volume=5)]
+        summary = summarize_breadth(observations, {"AAPL", "MSFT"})
+        assert summary["symbols_counted"] == 2
+        assert summary["up_volume"] == 15.0
+
+    def test_stale_sessions_are_not_counted(self):
+        latest, prior = date(2026, 3, 27), date(2026, 3, 26)
+        observations = [
+            _obs("AAA", up=True, volume=100, high=True, session=latest),
+            # BBB's data ends a session early: its last bar is not the latest session.
+            _obs("BBB", sma20=False, up=False, volume=1e9, low=True, session=prior),
+        ]
+        summary = summarize_breadth(observations, {"AAA", "BBB"})
+        assert summary["symbols_counted"] == 1
+        assert summary["pct_above_sma20"] == 100.0
+        assert summary["down_volume"] == 0.0
+        assert summary["new_lows"] == 0
+
+    def test_stale_non_members_do_not_set_the_latest_session(self):
+        observations = [
+            _obs("AAA", session=date(2026, 3, 26)),
+            _obs("SPY", session=date(2026, 3, 27)),
+        ]
+        assert summarize_breadth(observations, {"AAA"})["symbols_counted"] == 1
+
 
 class TestObserveBreadth:
     def test_rising_frame(self):
-        obs = observe_breadth("AAA", _frame([float(i) for i in range(1, 61)], volume=7.0))
-        assert obs == _obs("AAA", sma20=True, sma50=True, up=True, volume=7.0, high=True)
+        frame = _frame([float(i) for i in range(1, 61)], volume=7.0)
+        obs = observe_breadth("AAA", frame)
+        assert obs == _obs(
+            "AAA",
+            sma20=True,
+            sma50=True,
+            up=True,
+            volume=7.0,
+            high=True,
+            session=frame["Date"].iloc[-1].date(),
+        )
+
+    def test_flat_series_is_neither_new_high_nor_low(self):
+        obs = observe_breadth("AAA", _frame([10.0] * 30))
+        assert obs is not None
+        assert (obs.new_high, obs.new_low) == (False, False)
+
+    def test_tie_with_a_prior_high_is_not_a_new_high(self):
+        closes = [float(i) for i in range(1, 30)] + [29.0]
+        obs = observe_breadth("AAA", _frame(closes))
+        assert obs is not None
+        assert obs.new_high is False
+
+    def test_short_series_has_no_new_high_or_low(self):
+        obs = observe_breadth("AAA", _frame([float(i) for i in range(1, 20)]))  # 19 bars
+        assert obs is not None
+        assert (obs.new_high, obs.new_low) == (False, False)
 
     def test_falling_frame(self):
         obs = observe_breadth("AAA", _frame([float(i) for i in range(60, 0, -1)]))
@@ -140,7 +194,7 @@ class TestObserveBreadth:
         """Workers return observations, never frames, so scan memory stays bounded."""
         obs = observe_breadth("AAA", _frame([float(i) for i in range(1, 61)]))
         for value in dataclasses.asdict(obs).values():  # type: ignore[arg-type]
-            assert value is None or isinstance(value, (str, bool, float, int))
+            assert value is None or isinstance(value, (str, bool, float, int, date))
 
 
 class TestScanSymbolBreadthIsCausal:
@@ -192,3 +246,16 @@ class TestRunScanBreadth:
             data_source=source,
         )
         assert result["summary"]["breadth"]["symbols_counted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_case_duplicate_symbols_count_once(self):
+        from volume_price_analysis.analysis import run_scan
+
+        up = _frame([float(i) for i in range(1, 61)])
+        source = InMemoryDataSource({"AAPL": up, "MSFT": up})
+        result = await run_scan(
+            symbols=["AAPL", "aapl", "MSFT"],
+            universes={"sp500": ["AAPL", "MSFT"], "full_market": []},
+            data_source=source,
+        )
+        assert result["summary"]["breadth"]["symbols_counted"] == 2

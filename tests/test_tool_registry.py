@@ -340,6 +340,20 @@ _BRIEFING_PROJECTION_READS = (
     | _reads(("volume_indicators", "relative_volume"), "current_rvol")
     | _reads(("volume_indicators", "volume_breakout"), "is_breakout")
 )
+# Every summary.breadth key run_scan emits; the briefing header reads them (PDE-210).
+_BREADTH_KEYS = (
+    "universe",
+    "symbols_counted",
+    "pct_above_sma20",
+    "pct_above_sma50",
+    "up_volume",
+    "down_volume",
+    "up_down_volume_ratio",
+    "new_highs",
+    "new_lows",
+    "net_new_highs",
+)
+
 NESTED_REQUIRED: dict[str, set[tuple[tuple, str]]] = {
     "scan_candidates_populated": {(("top_bullish", 0), key) for key in _CANDIDATE_KEYS}
     | {
@@ -347,7 +361,9 @@ NESTED_REQUIRED: dict[str, set[tuple[tuple, str]]] = {
         (("errors", 0), "error"),
         (("scan_parameters",), "symbols_scanned"),
         (("summary",), "total_candidates"),
-    },
+        (("summary",), "breadth"),
+    }
+    | {(("summary", "breadth"), key) for key in _BREADTH_KEYS},
     "options_analysis": {
         (("composite_signal",), "action"),
         (("composite_signal",), "signal_quality"),

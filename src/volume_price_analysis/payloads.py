@@ -72,7 +72,6 @@ class BreadthSummary(TypedDict):
 
 
 class ScanResultSummary(TypedDict):
-    breadth: NotRequired[BreadthSummary]
     total_candidates: int
     bullish_setups: int
     bearish_setups: int
@@ -80,6 +79,7 @@ class ScanResultSummary(TypedDict):
     skipped: int
     errors: int
     rate_limit_errors: int
+    breadth: BreadthSummary
 
 
 class ScanResult(TypedDict):

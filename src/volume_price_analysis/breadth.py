@@ -12,6 +12,7 @@ Only sp500 members are counted, whatever universe was scanned, so ETFs
 import math
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
+from datetime import date
 
 import pandas as pd
 
@@ -20,7 +21,8 @@ from .payloads import BreadthSummary
 BREADTH_UNIVERSE = "sp500"
 BREADTH_SHORT_SMA = 20
 BREADTH_LONG_SMA = 50
-# Sessions in the "new N-day high/low" window, the last session included.
+# Sessions in the "new N-day high/low" window, the last session included: a new high
+# is a last-session High strictly above every High of the prior N - 1 sessions.
 BREADTH_HIGH_LOW_WINDOW = 20
 
 
@@ -30,10 +32,12 @@ class BreadthObservation:
 
     ``above_sma20``/``above_sma50`` are None when there are fewer closes than
     the SMA needs. ``up_close`` is True for a close above the prior close,
-    False for below, and None when unchanged.
+    False for below, and None when unchanged. ``session`` is the last bar's
+    date (None when the frame has no ``Date`` column).
     """
 
     symbol: str
+    session: date | None
     above_sma20: bool | None
     above_sma50: bool | None
     up_close: bool | None
@@ -53,8 +57,10 @@ def observe_breadth(symbol: str, data: pd.DataFrame) -> BreadthObservation | Non
 
     Reads only the bars it is handed: callers apply the ``as_of`` cutoff first.
     Returns None with fewer than two bars or a missing last close or volume.
-    A new high (low) is a last-session High (Low) at or beyond every High (Low)
-    in the trailing ``BREADTH_HIGH_LOW_WINDOW`` sessions.
+    A new high (low) is a last-session High (Low) strictly above (below) every
+    High (Low) of the prior ``BREADTH_HIGH_LOW_WINDOW - 1`` sessions, so ties and
+    flat series are neither; with fewer than ``BREADTH_HIGH_LOW_WINDOW`` bars
+    both are False.
     """
     if len(data) < 2:
         return None
@@ -65,15 +71,23 @@ def observe_breadth(symbol: str, data: pd.DataFrame) -> BreadthObservation | Non
         return None
 
     closes = data["Close"].dropna()
-    window = data.iloc[-BREADTH_HIGH_LOW_WINDOW:]
+    new_high = new_low = False
+    if len(data) >= BREADTH_HIGH_LOW_WINDOW:
+        prior = data.iloc[-BREADTH_HIGH_LOW_WINDOW:-1]
+        new_high = bool(data["High"].iloc[-1] > prior["High"].max())
+        new_low = bool(data["Low"].iloc[-1] < prior["Low"].min())
+    session = None
+    if "Date" in data.columns and pd.notna(data["Date"].iloc[-1]):
+        session = pd.Timestamp(data["Date"].iloc[-1]).date()
     return BreadthObservation(
         symbol=symbol,
+        session=session,
         above_sma20=_above_sma(closes, BREADTH_SHORT_SMA),
         above_sma50=_above_sma(closes, BREADTH_LONG_SMA),
         up_close=None if last_close == prev_close else bool(last_close > prev_close),
         volume=float(volume),
-        new_high=bool(window["High"].iloc[-1] >= window["High"].max()),
-        new_low=bool(window["Low"].iloc[-1] <= window["Low"].min()),
+        new_high=new_high,
+        new_low=new_low,
     )
 
 
@@ -89,12 +103,21 @@ def summarize_breadth(
 ) -> BreadthSummary:
     """Summarise the observations of ``members`` (the sp500) into the scan's breadth.
 
+    Each symbol counts once (the first observation wins), and only observations
+    dated on the latest session among the members count: a symbol whose data
+    ends a session early would otherwise add a prior session to the totals.
     Percentages are over the counted symbols whose SMA is defined (None when
     none is). ``up_down_volume_ratio`` is last-session volume of up closes over
     down closes (unchanged closes count in neither); None when there is no down
     volume, so the result always serialises as strict JSON.
     """
-    counted = [o for o in observations if o.symbol in members]
+    by_symbol: dict[str, BreadthObservation] = {}
+    for o in observations:
+        if o.symbol in members:
+            by_symbol.setdefault(o.symbol, o)
+    sessions = [o.session for o in by_symbol.values() if o.session is not None]
+    latest = max(sessions, default=None)
+    counted = [o for o in by_symbol.values() if latest is None or o.session == latest]
     up_volume = sum(o.volume for o in counted if o.up_close is True)
     down_volume = sum(o.volume for o in counted if o.up_close is False)
     ratio = up_volume / down_volume if down_volume > 0 else None

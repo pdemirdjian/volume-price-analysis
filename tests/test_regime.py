@@ -335,6 +335,20 @@ class TestRegimeHeaderBreadth:
             "50-day), up/down volume 1.40, net new 20-day highs +12."
         ) in header
 
+    def test_bearish_header_is_qualified(self):
+        bearish = {
+            "regime": "bearish",
+            "spy_close": 550.0,
+            "sma20": 600.0,
+            "close_vs_sma_pct": -8.33,
+            "as_of": "2026-08-28",
+        }
+        header = format_regime_header(bearish, 2, breadth=_breadth(25.0, net_new_highs=-40))
+        assert header.startswith("**Market Regime: BEARISH (broad)** — SPY closed at 550.00")
+        assert "Breadth: 25% of 500 S&P 500 symbols above their 20-day SMA" in header
+        assert "net new 20-day highs -40." in header
+        assert header.endswith("2 high-conviction picks flagged as counter-regime.")
+
     def test_header_without_breadth_is_unchanged(self):
         assert format_regime_header(_BULLISH, 1) == format_regime_header(_BULLISH, 1, None)
         assert "Breadth" not in format_regime_header(_BULLISH)
