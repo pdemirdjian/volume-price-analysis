@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.17.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.16.0...v2.17.0) (2026-11-19)
+
+
+### Features
+
+* **PDE-197:** declare outputSchema and return structuredContent for high-value tools ([#627](https://github.com/pdemirdjian/volume-price-analysis/issues/627)) ([a2f545c](https://github.com/pdemirdjian/volume-price-analysis/commit/a2f545cbf428244f3690b50dd85b2cd936b8409b))
+* **PDE-210:** market breadth qualifier in the regime from the scan's own data ([#629](https://github.com/pdemirdjian/volume-price-analysis/issues/629)) ([1c9c4c6](https://github.com/pdemirdjian/volume-price-analysis/commit/1c9c4c6b2951c190fe30f03c0e47721cdebbed4f))
+
 ## [2.16.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.15.0...v2.16.0) (2026-11-16)
 
 
