@@ -4,9 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from volume_price_analysis.agent.picks import build_picks
 from volume_price_analysis.agent.regime import (
+    BREADTH_MIN_SYMBOLS,
     REGIME_SMA_PERIOD,
     annotate_regime_conflicts,
+    breadth_qualifier,
     compute_market_regime,
     format_regime_header,
 )
@@ -269,3 +272,115 @@ class TestFormatRegimeHeader:
             conflict_count=0,
         )
         assert "flagged" not in header.lower()
+
+
+def _breadth(pct20: float | None, counted: int = 500, **extra) -> dict:
+    return {
+        "universe": "sp500",
+        "symbols_counted": counted,
+        "pct_above_sma20": pct20,
+        "pct_above_sma50": 55.0,
+        "up_down_volume_ratio": 1.4,
+        "net_new_highs": 12,
+        **extra,
+    }
+
+
+_BULLISH = {
+    "regime": "bullish",
+    "spy_close": 650.0,
+    "sma20": 600.0,
+    "close_vs_sma_pct": 8.33,
+    "as_of": "2026-08-28",
+}
+
+
+class TestBreadthQualifier:
+    """PDE-210: breadth qualifies the verdict; it never changes it."""
+
+    @pytest.mark.parametrize(
+        ("verdict", "pct20", "expected"),
+        [
+            ("bullish", 60.0, "broad"),
+            ("bullish", 50.0, "mixed"),
+            ("bullish", 40.0, "narrow"),
+            # A bearish verdict is broad when most symbols sit *below* their SMA.
+            ("bearish", 40.0, "broad"),
+            ("bearish", 50.0, "mixed"),
+            ("bearish", 60.0, "narrow"),
+        ],
+    )
+    def test_thresholds(self, verdict, pct20, expected):
+        assert breadth_qualifier(verdict, _breadth(pct20)) == expected
+
+    @pytest.mark.parametrize(
+        ("verdict", "breadth"),
+        [
+            ("unknown", _breadth(80.0)),
+            ("bullish", None),
+            ("bullish", _breadth(None)),
+            ("bullish", _breadth(80.0, counted=BREADTH_MIN_SYMBOLS - 1)),
+        ],
+    )
+    def test_no_qualifier(self, verdict, breadth):
+        assert breadth_qualifier(verdict, breadth) is None
+
+
+class TestRegimeHeaderBreadth:
+    def test_header_carries_qualifier_and_breadth_line(self):
+        header = format_regime_header(_BULLISH, breadth=_breadth(38.4))
+        assert header.startswith("**Market Regime: BULLISH (narrow)** — SPY closed at 650.00")
+        assert (
+            "Breadth: 38% of 500 S&P 500 symbols above their 20-day SMA (55% above their "
+            "50-day), up/down volume 1.40, net new 20-day highs +12."
+        ) in header
+
+    def test_bearish_header_is_qualified(self):
+        bearish = {
+            "regime": "bearish",
+            "spy_close": 550.0,
+            "sma20": 600.0,
+            "close_vs_sma_pct": -8.33,
+            "as_of": "2026-08-28",
+        }
+        header = format_regime_header(bearish, 2, breadth=_breadth(25.0, net_new_highs=-40))
+        assert header.startswith("**Market Regime: BEARISH (broad)** — SPY closed at 550.00")
+        assert "Breadth: 25% of 500 S&P 500 symbols above their 20-day SMA" in header
+        assert "net new 20-day highs -40." in header
+        assert header.endswith("2 high-conviction picks flagged as counter-regime.")
+
+    def test_header_without_breadth_is_unchanged(self):
+        assert format_regime_header(_BULLISH, 1) == format_regime_header(_BULLISH, 1, None)
+        assert "Breadth" not in format_regime_header(_BULLISH)
+
+    def test_undefined_ratio_reads_na(self):
+        header = format_regime_header(
+            _BULLISH, breadth=_breadth(70.0, up_down_volume_ratio=None, pct_above_sma50=None)
+        )
+        assert "BULLISH (broad)" in header
+        assert "50-day" not in header
+        assert "up/down volume n/a" in header
+
+    def test_unknown_regime_ignores_breadth(self):
+        header = format_regime_header({"regime": "unknown", "reason": "x"}, breadth=_breadth(90))
+        assert "Breadth" not in header
+
+
+class TestBreadthLeavesVerdictAlone:
+    def test_regime_conflicts_identical_with_and_without_breadth(self):
+        scan = {
+            "summary": {"total_candidates": 2},
+            "high_conviction_setups": [make_candidate("AAPL", 5.0), make_candidate("XOM", -5.0)],
+            "top_bullish": [make_candidate("AAPL", 5.0)],
+            "top_bearish": [make_candidate("XOM", -5.0)],
+        }
+        # Narrow bullish breadth that "disagrees" with the verdict changes nothing.
+        with_breadth = {**scan, "summary": {**scan["summary"], "breadth": _breadth(10.0)}}
+        regime = compute_market_regime(make_spy_data([100.0 + i for i in range(30)]))
+        assert regime["regime"] == "bullish"
+
+        plain = annotate_regime_conflicts(scan, regime)
+        qualified = annotate_regime_conflicts(with_breadth, regime)
+        for key in ("market_regime", "high_conviction_setups", "top_bullish", "top_bearish"):
+            assert plain[key] == qualified[key]
+        assert build_picks(scan, [], regime=regime) == build_picks(with_breadth, [], regime=regime)

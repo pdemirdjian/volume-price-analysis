@@ -58,7 +58,21 @@ def golden_inputs(**overrides) -> BriefingInputs:
     """The inputs that render tests/golden/briefing_body.md."""
     scan = {
         "scan_parameters": {"symbols_scanned": 540},
-        "summary": {"total_candidates": 3},
+        "summary": {
+            "total_candidates": 3,
+            "breadth": {
+                "universe": "sp500",
+                "symbols_counted": 498,
+                "pct_above_sma20": 38.2,
+                "pct_above_sma50": 44.6,
+                "up_volume": 1.1e9,
+                "down_volume": 1.6e9,
+                "up_down_volume_ratio": 0.69,
+                "new_highs": 9,
+                "new_lows": 31,
+                "net_new_highs": -22,
+            },
+        },
         "high_conviction_setups": [
             {
                 "symbol": "AAPL",
@@ -270,4 +284,4 @@ class TestRenderRaw:
     def test_no_deep_section_without_analyses(self):
         body = render_raw(golden_inputs(deep_analyses=[]))
         assert "Deep Analysis Results" not in body
-        assert body.startswith("**Market Regime: BULLISH**")
+        assert body.startswith("**Market Regime: BULLISH (narrow)**")

@@ -20,6 +20,7 @@ from pytickersymbols import PyTickerSymbols
 from yfinance.exceptions import YFRateLimitError
 
 from . import interpretation as labels
+from .breadth import BREADTH_UNIVERSE, BreadthObservation, observe_breadth, summarize_breadth
 from .data_fetcher import DEFAULT_TIMEOUT, DataSource, get_default_data_source
 from .indicator_suite import adaptive_periods, build_snapshot
 from .indicators import (
@@ -358,11 +359,44 @@ def analyze_single_symbol(
         data_source: Market-data seam; None uses the production adapter.
         as_of: Exclude bars dated on or after this date; None keeps all fetched bars.
     """
+    candidate, _ = scan_symbol(
+        symbol,
+        period,
+        holding_period,
+        min_score,
+        min_adx,
+        max_iv,
+        direction,
+        min_avg_volume,
+        data_source,
+        as_of,
+    )
+    return candidate
+
+
+def scan_symbol(
+    symbol: str,
+    period: str,
+    holding_period: int,
+    min_score: float,
+    min_adx: float,
+    max_iv: float,
+    direction: str,
+    min_avg_volume: float = 0,
+    data_source: DataSource | None = None,
+    as_of: date | None = None,
+) -> tuple[ScanCandidate | None, BreadthObservation | None]:
+    """The scan worker's fetch step: one fetch, scored and reduced to breadth.
+
+    Same arguments, cutoff, and skip/error behaviour as ``analyze_single_symbol``,
+    plus the symbol's breadth observation, taken from the same ``as_of``-cut
+    bars so breadth stays causal. The frame is dropped on return.
+    """
     source = data_source if data_source is not None else get_default_data_source()
     sym_data = source.fetch(symbol, period=period)
     if as_of is not None:
         sym_data = sym_data[pd.to_datetime(sym_data["Date"]).dt.date < as_of]
-    return score_symbol(
+    candidate = score_symbol(
         sym_data,
         symbol,
         holding_period,
@@ -372,6 +406,7 @@ def analyze_single_symbol(
         direction,
         min_avg_volume,
     )
+    return candidate, observe_breadth(symbol, sym_data)
 
 
 def score_symbol(
@@ -533,18 +568,18 @@ async def _analyze_symbol_async(
     min_avg_volume: float = 0,
     data_source: DataSource | None = None,
     as_of: date | None = None,
-) -> tuple[str, ScanCandidate | None, str | None, bool, bool]:
+) -> tuple[str, ScanCandidate | None, BreadthObservation | None, str | None, bool, bool]:
     """
     Async wrapper for symbol analysis with concurrency limiting.
 
-    Returns (symbol, candidate_or_none, error_or_none, skipped, rate_limited). ``skipped`` is
-    True when the symbol had insufficient history (a non-error skip).
+    Returns (symbol, candidate_or_none, breadth_or_none, error_or_none, skipped, rate_limited).
+    ``skipped`` is True when the symbol had insufficient history (a non-error skip).
     """
     async with semaphore:
         try:
-            result = await asyncio.get_running_loop().run_in_executor(
+            result, breadth = await asyncio.get_running_loop().run_in_executor(
                 _SCAN_EXECUTOR,
-                analyze_single_symbol,
+                scan_symbol,
                 symbol,
                 period,
                 holding_period,
@@ -556,11 +591,11 @@ async def _analyze_symbol_async(
                 data_source,
                 as_of,
             )
-            return (symbol, result, None, False, False)
+            return (symbol, result, breadth, None, False, False)
         except InsufficientDataError:
-            return (symbol, None, None, True, False)
+            return (symbol, None, None, None, True, False)
         except Exception as e:
-            return (symbol, None, redact_error_message(str(e)), False, _is_rate_limit(e))
+            return (symbol, None, None, redact_error_message(str(e)), False, _is_rate_limit(e))
 
 
 async def run_scan(
@@ -681,12 +716,13 @@ async def run_scan(
     #   - scanned: successfully analyzed (may or may not become a candidate)
     candidates = []
     errors = []
+    observations: list[BreadthObservation] = []
     scanned = 0
     skipped = 0
 
     rate_limit_errors = 0
 
-    for sym, candidate, error, was_skipped, rate_limited in results:
+    for sym, candidate, breadth, error, was_skipped, rate_limited in results:
         rate_limit_errors += int(rate_limited)
         if error:
             errors.append({"symbol": sym, "error": error})
@@ -694,6 +730,8 @@ async def run_scan(
             skipped += 1
         else:
             scanned += 1
+            if breadth is not None:
+                observations.append(breadth)
             if candidate is not None:
                 candidates.append(candidate)
 
@@ -745,6 +783,8 @@ async def run_scan(
             "skipped": skipped,
             "errors": len(errors),
             "rate_limit_errors": rate_limit_errors,
+            # Over the scanned sp500 members only, whatever universe was scanned (PDE-210).
+            "breadth": summarize_breadth(observations, set(universes.get(BREADTH_UNIVERSE, ()))),
         },
         "high_conviction_setups": high_conviction[:5] if high_conviction else [],
         "top_bullish": bullish[:max_results] if bullish else [],

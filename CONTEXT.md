@@ -30,8 +30,8 @@ candidates: `analysis.run_scan`. It fans out over symbols with bounded
 concurrency (`MAX_CONCURRENT_SCANS`), buckets each symbol as scanned, skipped
 (insufficient history, `MIN_SCAN_HISTORY`), or errored, sorts survivors by
 absolute composite score, and returns a dict of `scan_parameters`, `summary`,
-`high_conviction_setups`, `top_bullish`, `top_bearish`, and `errors`. The scan
-result dict is the contract every downstream consumer reads.
+`high_conviction_setups`, `top_bullish`, `top_bearish`, and `errors`; `summary`
+carries the scan's breadth under `summary.breadth`. The scan result dict is the contract every downstream consumer reads.
 The keys consumers read are pinned by `output_schemas.SCAN_RESULT_SCHEMA`, which
 `scan_candidates` advertises as its MCP `outputSchema` and the registry test enforces.
 
@@ -169,10 +169,39 @@ the final `REGIME_SMA_PERIOD` (20) closes and returns `bullish`, `bearish`, or
 `unknown` with a `reason`. `annotate_regime_conflicts` attaches the verdict under
 `market_regime` and adds a `regime_conflict` note to any high-conviction candidate
 whose direction opposes the verdict ("bullish setup against a bearish tape");
-`format_regime_header` renders the header line with the conflict count.
+`format_regime_header` renders the header line with the conflict count and,
+when the scan's breadth allows, a breadth qualifier on the verdict.
 
 _Avoided:_ **tape** as a term of its own — it appears only inside the conflict
 note's wording.
+
+## breadth
+
+How widely the market participates in a move, measured over the sp500 members of
+whatever universe the scan covered — never ETFs, leveraged or inverse ones
+included — from bars the scan already fetched. Each scan worker reduces its
+`as_of`-cut frame to a `breadth.BreadthObservation` (`breadth.observe_breadth`:
+close above SMA20 / SMA50, up close, last-session volume, new 20-day high / low),
+returned with its candidate by `analysis.scan_symbol`; no frame outlives the
+worker. `run_scan` reduces the observations of scanned symbols once with
+`breadth.summarize_breadth` into `summary.breadth`: `universe` (`"sp500"`),
+`symbols_counted`, `pct_above_sma20`, `pct_above_sma50`, `up_volume`,
+`down_volume`, `up_down_volume_ratio` (null without down volume), `new_highs`,
+`new_lows`, and `net_new_highs`. A new 20-day high (low) is a last-session High
+(Low) strictly beyond every one of the prior 19 sessions; ties, flat series, and
+symbols with under 20 bars are neither. Each symbol counts once, and only
+observations dated on the latest session among the counted members count (a
+symbol whose data ends a session early is dropped). Skipped and errored symbols
+are not counted.
+
+Breadth only qualifies the regime: `agent/regime.breadth_qualifier` labels a
+decided verdict `broad`, `mixed`, or `narrow` from the share of counted symbols
+on the verdict's side of their SMA20 (`BREADTH_BROAD_PCT` 60 /
+`BREADTH_NARROW_PCT` 40; none below `BREADTH_MIN_SYMBOLS` 20), and the header
+reads e.g. `BULLISH (narrow)`. It never changes the verdict or `regime_conflict`.
+The backtest has no breadth.
+
+_Avoided:_ **participation** and **market internals** as names for the summary.
 
 ## high-conviction gate
 
