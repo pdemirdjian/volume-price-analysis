@@ -103,7 +103,10 @@ compares it with 20-day realised volatility ("iv_vs_hv": rich / fair / cheap);
 "expiry" — label it the "options-implied move to <expiry>", distinct from the
 HV ±1σ targets, and compare it with the pick's stop distance. Use the IV/HV
 verdict to choose the structure: rich options favour spreads or selling
-premium, cheap options favour buying premium outright.
+premium, cheap options favour buying premium outright. If "iv_vs_hv" /
+"iv_hv20_ratio" is null (realised vol unavailable), report the measured ATM IV
+and liquidity but leave the options unclassified — do not call them rich or
+cheap, and do not fall back to the HV percentile for that verdict.
 If "liquid" is false, repeat its "liquidity_flags" wherever the pick appears
 and under Risk Warnings; keep the pick ranked exactly as given — illiquidity
 is a caution, never a reason to drop or demote it. When "available" is false

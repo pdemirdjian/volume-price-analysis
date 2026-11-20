@@ -143,6 +143,23 @@ def _scorecard(inputs: BriefingInputs) -> str:
     )
 
 
+def _sampled_expiries_note(inputs: BriefingInputs) -> str:
+    """Name the option snapshots' sampled expiries; "" when no option data is shown."""
+    sampled = sorted(
+        {
+            f"{m.get('expiry')} ({m.get('days_to_expiry')} DTE)"
+            for a in inputs.deep_analyses
+            if isinstance(m := a.get("option_market"), dict) and m.get("available")
+        }
+    )
+    if not sampled:
+        return ""
+    return (
+        "Option-market figures (ATM IV, implied move, liquidity) are from the sampled "
+        f"expiry {', '.join(sampled)}, not the 14-day holding period. "
+    )
+
+
 def _stats_line(inputs: BriefingInputs) -> str:
     """The footer appended to every rendered briefing."""
     symbols_scanned = inputs.scan_results.get("scan_parameters", {}).get("symbols_scanned")
@@ -151,8 +168,9 @@ def _stats_line(inputs: BriefingInputs) -> str:
     return (
         f"\n\n---\n"
         f"**14-day holding period** - Indicators, expected moves, and strategies "
-        f"are calibrated for approx. 14 DTE options. Shorter-duration plays (0-5 DTE) "
-        f"may need different setups.\n\n"
+        f"are calibrated for approx. 14 DTE options. "
+        f"{_sampled_expiries_note(inputs)}"
+        f"Shorter-duration plays (0-5 DTE) may need different setups.\n\n"
         f"*Generated in {inputs.elapsed_s:.1f}s | "
         f"{scanned_part}"
         f"{total_candidates} candidates found | "

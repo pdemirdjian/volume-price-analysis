@@ -226,3 +226,43 @@ def test_only_junk_strikes_is_unavailable():
 def test_nearest_strike_far_from_spot_is_unavailable():
     snap = option_market_snapshot(_chain(), price=130.0, hv20=0.25, today=TODAY)
     assert snap == {"available": False, "reason": "no strike near the money"}
+
+
+def _single_strike(call, put, strike=95.0) -> OptionChain:
+    """One common strike; ``call`` / ``put`` are (bid, ask)."""
+    return OptionChain(
+        expiry=EXPIRY,
+        calls=_legs([(strike, *call, 0.30, 500.0)]),
+        puts=_legs([(strike, *put, 0.30, 500.0)]),
+    )
+
+
+def test_quotes_below_intrinsic_are_unavailable():
+    # Price $100, strike $95: the call has $5 intrinsic but is quoted ~$1.05.
+    chain = _single_strike(call=(1.00, 1.10), put=(1.00, 1.10))
+    snap = option_market_snapshot(chain, price=100.0, hv20=0.25, today=TODAY)
+    assert snap["available"] is False
+    assert "intrinsic" in snap["reason"]
+
+
+def test_quotes_consistent_with_intrinsic_are_kept():
+    chain = _single_strike(call=(5.50, 5.70), put=(1.00, 1.10))
+    snap = option_market_snapshot(chain, price=100.0, hv20=0.25, today=TODAY)
+    assert snap["available"] is True
+    assert snap["atm_strike"] == 95.0
+
+
+def test_spread_exactly_at_the_limit_is_liquid():
+    at_limit = (100.0, 1.90, 2.10, 0.30, 500.0)  # 0.20 / 2.00 = 10.0% of mid
+    snap = option_market_snapshot(_chain(call_atm=at_limit), price=100.0, hv20=0.25, today=TODAY)
+    assert snap["atm_spread_pct"] == MAX_SPREAD_PCT
+    assert snap["liquid"] is True
+    assert snap["liquidity_flags"] == []
+
+
+def test_spread_just_above_the_limit_is_flagged_with_one_decimal():
+    above = (100.0, 1.898, 2.102, 0.30, 500.0)  # 0.204 / 2.00 = 10.2% of mid
+    snap = option_market_snapshot(_chain(call_atm=above), price=100.0, hv20=0.25, today=TODAY)
+    assert snap["atm_spread_pct"] == pytest.approx(10.2)
+    assert snap["liquid"] is False
+    assert snap["liquidity_flags"] == ["wide ATM bid-ask spread (10.2% of mid)"]

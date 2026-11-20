@@ -144,6 +144,10 @@ class TestRender:
         assert "- AAPL: 2026-09-25 (21 DTE) · ATM IV 28.0% · IV/HV20 0.70 (cheap)" in body
         assert "illiquid options" in body
         assert footnote not in render(golden_inputs())
+        footer = body.split("\n---\n")[-1]
+        assert "14-day holding period" in footer
+        assert "sampled expiry 2026-09-25 (21 DTE)" in footer
+        assert "sampled expiry" not in render(golden_inputs())
 
     def test_inputs_are_frozen(self):
         with pytest.raises(dataclasses.FrozenInstanceError):

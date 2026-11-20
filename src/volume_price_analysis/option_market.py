@@ -42,6 +42,11 @@ MAX_QUOTE_AGE_DAYS = 5
 # Farthest the nearest common strike may sit from spot, as a fraction of spot. Beyond
 # this the "ATM" straddle is dominated by intrinsic value and overstates the move.
 MAX_ATM_DISTANCE = 0.10
+# How far (as % of spot) a leg's mid may sit below its intrinsic value before the
+# quotes are judged inconsistent with the reference price. 1% absorbs the lag
+# between the latest close and the quote snapshot plus penny rounding; a larger
+# shortfall means the quotes are stale or belong to a different underlying price.
+INTRINSIC_TOLERANCE_PCT = 1.0
 
 _LEG_COLUMNS = ("strike", "bid", "ask", "impliedVolatility", "openInterest")
 
@@ -163,10 +168,17 @@ def option_market_snapshot(
         if isinstance(usable, str):
             return _unavailable(usable)
         legs.append(usable)
+    tolerance = spot * INTRINSIC_TOLERANCE_PCT / 100
+    for (mid, *_), intrinsic in zip(
+        legs, (max(spot - strike, 0.0), max(strike - spot, 0.0)), strict=True
+    ):
+        if mid < intrinsic - tolerance:
+            return _unavailable("ATM quotes are below intrinsic value (stale or mismatched)")
 
     atm_iv = (legs[0][1] + legs[1][1]) / 2
     straddle = legs[0][0] + legs[1][0]
-    spread_pct = max(leg[2] for leg in legs)
+    # Flag on the stored (rounded) spread so the flag never contradicts the value.
+    spread_pct = round(max(leg[2] for leg in legs), 2)
     hv = _finite(hv20)
     # Classify on the displayed (rounded) ratio so the label never contradicts it.
     ratio = round(atm_iv / hv, 2) if hv is not None and hv > 0 else None
@@ -183,7 +195,7 @@ def option_market_snapshot(
     if min(leg[3] for leg in legs) < MIN_LEG_OPEN_INTEREST:
         flags.append(f"low ATM open interest (<{MIN_LEG_OPEN_INTEREST} per leg)")
     if spread_pct > MAX_SPREAD_PCT:
-        flags.append(f"wide ATM bid-ask spread ({spread_pct:.0f}% of mid)")
+        flags.append(f"wide ATM bid-ask spread ({spread_pct:.1f}% of mid)")
 
     return {
         "available": True,
@@ -196,7 +208,7 @@ def option_market_snapshot(
         "expected_move_dollars": round(straddle, 2),
         "expected_move_pct": round(straddle / spot * 100, 2),
         "atm_open_interest": legs[0][3] + legs[1][3],
-        "atm_spread_pct": round(spread_pct, 2),
+        "atm_spread_pct": spread_pct,
         "liquid": not flags,
         "liquidity_flags": flags,
     }

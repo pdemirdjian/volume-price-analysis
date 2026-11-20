@@ -3225,6 +3225,11 @@ class TestOptionMarketInBriefing:
         assert '"option_market"' in SYSTEM_PROMPT
         assert "never a reason to drop or demote" in SYSTEM_PROMPT
 
+    def test_null_verdict_leaves_options_unclassified(self):
+        block = SYSTEM_PROMPT.split("OPTIONS MARKET:", 1)[1].split("\n\n", 1)[0]
+        assert '"iv_vs_hv" /\n"iv_hv20_ratio" is null' in block
+        assert "leave the options unclassified" in block
+
     def test_hv_inference_framing_applies_only_without_option_data(self):
         honesty = SYSTEM_PROMPT.split("VOLATILITY HONESTY:", 1)[1].split("\n\n", 1)[0]
         assert 'no available "option_market"' in honesty
