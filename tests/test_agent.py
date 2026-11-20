@@ -3224,3 +3224,25 @@ class TestOptionMarketInBriefing:
     def test_prompt_explains_the_block(self):
         assert '"option_market"' in SYSTEM_PROMPT
         assert "never a reason to drop or demote" in SYSTEM_PROMPT
+
+    def test_hv_inference_framing_applies_only_without_option_data(self):
+        honesty = SYSTEM_PROMPT.split("VOLATILITY HONESTY:", 1)[1].split("\n\n", 1)[0]
+        assert 'no available "option_market"' in honesty
+        assert "measured IV/HV verdict" in honesty
+
+    def test_non_14_dte_block_reaches_the_prompt_with_its_own_expiry_framing(self):
+        market = {"available": True, "expiry": "2026-09-25", "days_to_expiry": 21}
+        provider = _FakeProvider()
+        generate_briefing(
+            scan_results={"summary": {"total_candidates": 1}},
+            deep_analyses=[_analysis("AAPL", 4.2, option_market=market)],
+            provider=provider,
+            model="m",
+            api_key="k",
+        )
+        projected = _prompt_deep(provider.user_content, "AAPL")["option_market"]
+        assert projected["days_to_expiry"] == 21
+        assert 'framed on that block\'s sampled "expiry"' in SYSTEM_PROMPT
+        assert 'framed\n     on its "expiry" / "days_to_expiry"; otherwise with 14-day DTE' in (
+            SYSTEM_PROMPT
+        )

@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis.option_market import (
+    MAX_QUOTE_AGE_DAYS,
     MAX_SPREAD_PCT,
     MIN_LEG_OPEN_INTEREST,
     OptionChain,
@@ -73,7 +74,8 @@ def test_snapshot_computes_atm_iv_ratio_expected_move_and_liquidity():
 
 @pytest.mark.parametrize(
     ("hv20", "label"),
-    [(0.40, "cheap"), (0.32, "fair"), (0.25, "rich")],
+    # 0.32 / 0.40 displays as 0.80 and must read "fair", not "cheap".
+    [(0.45, "cheap"), (0.40, "fair"), (0.32, "fair"), (0.25, "rich")],
 )
 def test_iv_vs_hv_label(hv20, label):
     snap = option_market_snapshot(_chain(), price=100.0, hv20=hv20, today=TODAY)
@@ -156,6 +158,71 @@ def test_expired_chain_is_unavailable():
 
 def test_numbers_are_finite_and_json_friendly():
     snap = option_market_snapshot(_chain(), price=100.0, hv20=0.25, today=TODAY)
-    for key in ("atm_iv", "iv_hv20_ratio", "expected_move_pct", "atm_spread_pct"):
+    for key in (
+        "atm_strike",
+        "atm_iv",
+        "iv_hv20_ratio",
+        "expected_move_dollars",
+        "expected_move_pct",
+        "atm_spread_pct",
+    ):
         assert isinstance(snap[key], float) and math.isfinite(snap[key])
     assert isinstance(snap["atm_open_interest"], int)
+
+
+def _with_last_trade(chain: OptionChain, traded) -> OptionChain:
+    return OptionChain(
+        expiry=chain.expiry,
+        calls=chain.calls.assign(lastTradeDate=traded),
+        puts=chain.puts.assign(lastTradeDate=traded),
+    )
+
+
+def test_plausible_but_old_quotes_are_unavailable():
+    old = pd.Timestamp(TODAY, tz="UTC") - pd.Timedelta(days=MAX_QUOTE_AGE_DAYS + 1)
+    snap = option_market_snapshot(
+        _with_last_trade(_chain(), old), price=100.0, hv20=0.25, today=TODAY
+    )
+    assert snap["available"] is False
+    assert "stale" in snap["reason"]
+
+
+@pytest.mark.parametrize(
+    "traded",
+    [
+        pd.Timestamp(TODAY, tz="UTC") - pd.Timedelta(days=MAX_QUOTE_AGE_DAYS),
+        pd.NaT,
+        "not a date",
+    ],
+)
+def test_recent_or_unknown_last_trade_keeps_the_block(traded):
+    snap = option_market_snapshot(
+        _with_last_trade(_chain(), traded), price=100.0, hv20=0.25, today=TODAY
+    )
+    assert snap["available"] is True
+
+
+def test_junk_strikes_are_ignored_when_choosing_atm():
+    chain = _chain()
+    junk = _legs([(float("nan"), 1, 1.1, 0.3, 500.0), (-100.4, 1, 1.1, 0.3, 500.0)])
+    chain = OptionChain(
+        expiry=EXPIRY,
+        calls=pd.concat([chain.calls, junk, junk.assign(strike="abc")], ignore_index=True),
+        puts=pd.concat([chain.puts, junk], ignore_index=True),
+    )
+    snap = option_market_snapshot(chain, price=100.4, hv20=0.25, today=TODAY)
+    assert snap["available"] is True
+    assert snap["atm_strike"] == 100.0
+    assert math.isfinite(snap["expected_move_dollars"])
+
+
+def test_only_junk_strikes_is_unavailable():
+    junk = _legs([(float("nan"), 1, 1.1, 0.3, 500.0)]).assign(strike=["abc"])
+    chain = OptionChain(expiry=EXPIRY, calls=junk, puts=junk.copy())
+    snap = option_market_snapshot(chain, price=100.0, hv20=0.25, today=TODAY)
+    assert snap["available"] is False
+
+
+def test_nearest_strike_far_from_spot_is_unavailable():
+    snap = option_market_snapshot(_chain(), price=130.0, hv20=0.25, today=TODAY)
+    assert snap == {"available": False, "reason": "no strike near the money"}

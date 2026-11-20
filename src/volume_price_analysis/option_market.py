@@ -34,6 +34,14 @@ IV_HV_RICH = 1.2
 IV_HV_CHEAP = 0.8
 # yfinance reports ~1e-5 IV for strikes it has no live quote for; treat as missing.
 MIN_USABLE_IV = 0.01
+# Oldest ATM ``lastTradeDate`` (calendar days before ``today``) still treated as live.
+# Five days spans a weekend plus a market holiday (Friday trade, Monday holiday,
+# Tuesday pre-market briefing = 4 days); an ATM leg idle longer than that has not
+# traded for a full week of sessions, so its bid/ask is likely a stale quote.
+MAX_QUOTE_AGE_DAYS = 5
+# Farthest the nearest common strike may sit from spot, as a fraction of spot. Beyond
+# this the "ATM" straddle is dominated by intrinsic value and overstates the move.
+MAX_ATM_DISTANCE = 0.10
 
 _LEG_COLUMNS = ("strike", "bid", "ask", "impliedVolatility", "openInterest")
 
@@ -76,8 +84,25 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _usable_leg(leg: pd.Series) -> tuple[float, float, float, int] | str:
+def _quote_age_days(leg: pd.Series, today: date) -> int | None:
+    """Calendar days since the leg's ``lastTradeDate``; None when absent or unparseable."""
+    raw = leg.get("lastTradeDate")
+    if raw is None:
+        return None
+    try:
+        traded = pd.Timestamp(raw)
+    except TypeError, ValueError:
+        return None
+    if pd.isna(traded):
+        return None
+    return int((today - traded.date()).days)
+
+
+def _usable_leg(leg: pd.Series, today: date) -> tuple[float, float, float, int] | str:
     """Return ``(mid, iv, spread % of mid, open interest)``, or why the leg is unusable."""
+    age = _quote_age_days(leg, today)
+    if age is not None and age > MAX_QUOTE_AGE_DAYS:
+        return f"ATM option last traded {age} days ago (stale quotes)"
     bid, ask, iv = _finite(leg["bid"]), _finite(leg["ask"]), _finite(leg["impliedVolatility"])
     if bid is None or ask is None or bid <= 0 or ask <= 0:
         return "ATM quotes have no live bid/ask (stale or pre-market)"
@@ -90,6 +115,14 @@ def _usable_leg(leg: pd.Series) -> tuple[float, float, float, int] | str:
     return mid, iv, (ask - bid) / mid * 100, 0 if oi is None else int(oi)
 
 
+def _by_strike(legs: pd.DataFrame) -> pd.DataFrame:
+    """Index legs by numeric strike, dropping junk, non-finite and non-positive strikes."""
+    strikes = pd.to_numeric(legs["strike"], errors="coerce")
+    valid = strikes.notna() & strikes.map(lambda k: math.isfinite(k) and k > 0)
+    cleaned = legs.loc[valid].assign(strike=strikes[valid].astype(float))
+    return cleaned.drop_duplicates("strike").set_index("strike")
+
+
 def option_market_snapshot(
     chain: OptionChain, *, price: float, hv20: float | None, today: date
 ) -> OptionMarket:
@@ -97,7 +130,7 @@ def option_market_snapshot(
 
     Args:
         chain: One expiry's calls and puts (``strike, bid, ask,
-            impliedVolatility, openInterest``).
+            impliedVolatility, openInterest``, optionally ``lastTradeDate``).
         price: Underlying reference price (latest close).
         hv20: Annualised 20-day historical volatility as a fraction, or None.
         today: The briefing date, for days to expiry.
@@ -115,17 +148,18 @@ def option_market_snapshot(
     if any(c not in frame.columns for frame in (chain.calls, chain.puts) for c in _LEG_COLUMNS):
         return _unavailable("option chain is missing quote columns")
 
-    calls = chain.calls.drop_duplicates("strike").set_index("strike")
-    puts = chain.puts.drop_duplicates("strike").set_index("strike")
+    calls, puts = _by_strike(chain.calls), _by_strike(chain.puts)
     strikes = calls.index.intersection(puts.index)
     if strikes.empty:
         return _unavailable("no strike listed for both calls and puts")
     strike = float(min(strikes, key=lambda k: abs(float(k) - spot)))
+    if abs(strike - spot) / spot > MAX_ATM_DISTANCE:
+        return _unavailable("no strike near the money")
     call, put = calls.loc[strike], puts.loc[strike]
 
     legs = []
     for leg in (call, put):
-        usable = _usable_leg(leg)
+        usable = _usable_leg(leg, today)
         if isinstance(usable, str):
             return _unavailable(usable)
         legs.append(usable)
@@ -134,7 +168,8 @@ def option_market_snapshot(
     straddle = legs[0][0] + legs[1][0]
     spread_pct = max(leg[2] for leg in legs)
     hv = _finite(hv20)
-    ratio = atm_iv / hv if hv is not None and hv > 0 else None
+    # Classify on the displayed (rounded) ratio so the label never contradicts it.
+    ratio = round(atm_iv / hv, 2) if hv is not None and hv > 0 else None
     if ratio is None:
         label = None
     elif ratio > IV_HV_RICH:
@@ -156,7 +191,7 @@ def option_market_snapshot(
         "days_to_expiry": days,
         "atm_strike": strike,
         "atm_iv": round(atm_iv, 4),
-        "iv_hv20_ratio": None if ratio is None else round(ratio, 2),
+        "iv_hv20_ratio": ratio,
         "iv_vs_hv": label,
         "expected_move_dollars": round(straddle, 2),
         "expected_move_pct": round(straddle / spot * 100, 2),

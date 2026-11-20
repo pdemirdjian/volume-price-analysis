@@ -123,6 +123,28 @@ class TestRender:
             "briefing_body.md from render(golden_inputs()) and review the diff."
         )
 
+    def test_option_market_footnote_sits_between_table_and_scorecard(self):
+        market = {
+            "available": True,
+            "expiry": "2026-09-25",
+            "days_to_expiry": 21,
+            "atm_iv": 0.28,
+            "iv_hv20_ratio": 0.7,
+            "iv_vs_hv": "cheap",
+            "expected_move_pct": 4.1,
+            "atm_open_interest": 50,
+            "atm_spread_pct": 3.0,
+            "liquid": False,
+            "liquidity_flags": ["low ATM open interest (<100 per leg)"],
+        }
+        deep = [{"symbol": "AAPL", "latest_price": 190.25, "option_market": market}]
+        body = render(golden_inputs(deep_analyses=deep))
+        footnote = "Options (ATM, expiry nearest the holding period):"
+        assert body.index("## Pick Summary") < body.index(footnote) < body.index("## Scorecard")
+        assert "- AAPL: 2026-09-25 (21 DTE) · ATM IV 28.0% · IV/HV20 0.70 (cheap)" in body
+        assert "illiquid options" in body
+        assert footnote not in render(golden_inputs())
+
     def test_inputs_are_frozen(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             golden_inputs().model_text = "x"  # type: ignore[misc]

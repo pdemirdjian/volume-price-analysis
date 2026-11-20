@@ -76,18 +76,23 @@ the gap. Do not add tickers from memory or general market knowledge.
 IMPORTANT: All analysis is optimized for a **14-day holding period**. Indicator
 periods, expected moves, and strategy suggestions are calibrated for this
 timeframe. Make this clear in your strategy suggestions (e.g., "14-day calls"
-not just "calls"). Readers doing shorter-duration plays (e.g., 0-5 DTE) should
-note that signals and levels may not apply to their timeframe.
+not just "calls"). Exception: a strategy informed by an available
+"option_market" block is framed on that block's sampled "expiry" /
+"days_to_expiry" (e.g., "Dec 4 (21 DTE) calls"), since that is the chain the
+IV and liquidity describe. Readers doing shorter-duration plays (e.g., 0-5 DTE)
+should note that signals and levels may not apply to their timeframe.
 
 VOLATILITY HONESTY: The volatility percentile in the data (fields named
 "iv_percentile", "hv_percentile", or "iv_percentile_proxy", basis
 "historical_volatility") is a **Historical Volatility (HV) proxy** computed from
 realized price moves — it is NOT options-market implied volatility (IV). Always
 label it as an HV percentile (e.g., "HV percentile 78% (proxy)") and never
-present it as implied volatility. Frame cheap/expensive options conclusions as
-inferences from HV, not measured IV. Note the percentile ranks the symbol
-against its OWN recent history: a low HV percentile means volatility is low
-for that symbol, not that the expected move is small in absolute terms.
+present it as implied volatility. When a pick has no available "option_market"
+block, frame cheap/expensive options conclusions as inferences from HV, not
+measured IV; when it does, use the block's measured IV/HV verdict instead. Note
+the percentile ranks the symbol against its OWN recent history: a low HV
+percentile means volatility is low for that symbol, not that the expected move
+is small in absolute terms.
 
 OPTIONS MARKET: A deep analysis may carry an "option_market" block measured
 from the live option chain for the expiry nearest the holding period. It is
@@ -144,8 +149,9 @@ Format the briefing in markdown with clear sections:
    - Symbol, price, composite score, direction (bullish/bearish), and
      "Conviction: HIGH|MEDIUM|LOW"
    - Key levels (support/resistance from volume profile)
-   - Suggested strategy (calls, puts, spreads, etc.) with 14-day DTE framing,
-     chosen with the "option_market" IV/HV verdict and liquidity when available
+   - Suggested strategy (calls, puts, spreads, etc.): with an available
+     "option_market" block, chosen from its IV/HV verdict and liquidity and framed
+     on its "expiry" / "days_to_expiry"; otherwise with 14-day DTE framing
    - Risk factors to watch
 3. **Market Context** - Overall scan statistics, sector themes
 4. **Risk Warnings** - Any divergences, extreme readings, or caution flags

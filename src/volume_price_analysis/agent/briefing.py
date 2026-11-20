@@ -45,7 +45,8 @@ def render(inputs: BriefingInputs) -> str:
     The template (dated title, regime verdict, fixed pick table, the option-market
     footnote when any pick was deep-analysed, scorecard, footer) is
     rendered here, never by the model, so the date is always real and the pick
-    block always parses (PDE-69). ``tests/golden/briefing_body.md`` pins it.
+    block always parses (PDE-69). ``tests/golden/briefing_body.md`` pins the layout
+    without option data; ``TestRender`` covers the option-market footnote.
     """
     picks = _picks(inputs)
     text = inputs.model_text if inputs.model_text is not None else _fallback_body(inputs)
