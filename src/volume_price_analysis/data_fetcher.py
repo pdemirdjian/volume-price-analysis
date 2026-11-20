@@ -17,6 +17,8 @@ from typing import Protocol, runtime_checkable
 import pandas as pd
 import yfinance as yf
 
+from .option_market import OptionChain, select_expiry
+
 logger = logging.getLogger(__name__)
 
 # Default timeout for yfinance requests (in seconds)
@@ -76,6 +78,11 @@ class DataSource(Protocol):
     :meth:`earnings_date` returns a timezone-aware ``datetime`` for the next
     known earnings event, or ``None`` when the provider has no usable date.
     Unlike ``fetch``, it reports "unknown" rather than raising.
+
+    :meth:`fetch_option_chain` returns the :class:`OptionChain` for the listed
+    expiry closest to ``target_dte`` days after ``today``, or ``None`` when the
+    symbol lists no options or the fetch fails. Like ``earnings_date`` it
+    reports "unavailable" rather than raising, and it is never cached.
     """
 
     def fetch(
@@ -92,6 +99,12 @@ class DataSource(Protocol):
 
     def earnings_date(self, symbol: str) -> datetime.datetime | None:
         """Return the next known earnings datetime (tz-aware), or None if unknown."""
+        ...
+
+    def fetch_option_chain(
+        self, symbol: str, *, target_dte: int, today: datetime.date
+    ) -> OptionChain | None:
+        """Return the chain for the expiry nearest ``target_dte``, or None if unavailable."""
         ...
 
 
@@ -292,6 +305,34 @@ class YFinanceDataSource:
             logger.debug("Earnings lookup failed for %s", symbol, exc_info=True)
             return None
 
+    def fetch_option_chain(
+        self, symbol: str, *, target_dte: int, today: datetime.date
+    ) -> OptionChain | None:
+        """Fetch the chain for the listed expiry closest to ``target_dte`` days out.
+
+        Two yfinance calls: ``Ticker.options`` (expiry list) and
+        ``Ticker.option_chain(expiry)``. Any failure or an empty chain is
+        reported as ``None``, never raised.
+        """
+        if not validate_symbol_format(symbol):
+            return None
+        try:
+            ticker = yf.Ticker(symbol)
+            expiries = [datetime.date.fromisoformat(e) for e in ticker.options]
+            expiry = select_expiry(expiries, today=today, target_dte=target_dte)
+            if expiry is None:
+                return None
+            chain = ticker.option_chain(expiry.isoformat())
+            calls, puts = chain.calls, chain.puts
+        except Exception:
+            logger.debug("Option chain lookup failed for %s", symbol, exc_info=True)
+            return None
+        if not isinstance(calls, pd.DataFrame) or not isinstance(puts, pd.DataFrame):
+            return None
+        if calls.empty or puts.empty:
+            return None
+        return OptionChain(expiry=expiry, calls=calls.copy(), puts=puts.copy())
+
 
 class InMemoryDataSource:
     """Test ``DataSource`` backed by in-memory dicts.
@@ -305,6 +346,8 @@ class InMemoryDataSource:
         earnings: symbol -> earnings datetime (tz-aware by convention).
         errors: symbol -> exception raised by ``fetch`` instead of returning
             data, for exercising failure paths.
+        option_chains: symbol -> the chain ``fetch_option_chain`` returns
+            (whatever ``target_dte`` is asked for); unconfigured symbols get None.
     """
 
     def __init__(
@@ -312,12 +355,15 @@ class InMemoryDataSource:
         frames: dict[str, pd.DataFrame] | None = None,
         earnings: dict[str, datetime.datetime | None] | None = None,
         errors: dict[str, Exception] | None = None,
+        option_chains: dict[str, OptionChain | None] | None = None,
     ) -> None:
         self.frames: dict[str, pd.DataFrame] = dict(frames or {})
         self.earnings: dict[str, datetime.datetime | None] = dict(earnings or {})
         self.errors: dict[str, Exception] = dict(errors or {})
+        self.option_chains: dict[str, OptionChain | None] = dict(option_chains or {})
         self.fetch_calls: list[str] = []
         self.earnings_calls: list[str] = []
+        self.option_chain_calls: list[tuple[str, int, datetime.date]] = []
 
     def fetch(
         self,
@@ -344,6 +390,13 @@ class InMemoryDataSource:
         """Return the configured earnings datetime, or None when unconfigured."""
         self.earnings_calls.append(symbol)
         return self.earnings.get(symbol)
+
+    def fetch_option_chain(
+        self, symbol: str, *, target_dte: int, today: datetime.date
+    ) -> OptionChain | None:
+        """Return the configured chain for ``symbol``, or None when unconfigured."""
+        self.option_chain_calls.append((symbol, target_dte, today))
+        return self.option_chains.get(symbol)
 
 
 # Module-level production adapter, shared so its history cache is process-wide.

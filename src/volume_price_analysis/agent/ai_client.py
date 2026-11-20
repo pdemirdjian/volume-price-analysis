@@ -89,6 +89,22 @@ inferences from HV, not measured IV. Note the percentile ranks the symbol
 against its OWN recent history: a low HV percentile means volatility is low
 for that symbol, not that the expected move is small in absolute terms.
 
+OPTIONS MARKET: A deep analysis may carry an "option_market" block measured
+from the live option chain for the expiry nearest the holding period. It is
+the ONLY source of real implied volatility. When "available" is true:
+"atm_iv" is the ATM implied volatility (annualised fraction); "iv_hv20_ratio"
+compares it with 20-day realised volatility ("iv_vs_hv": rich / fair / cheap);
+"expected_move_pct" / "expected_move_dollars" is the ATM straddle mid to
+"expiry" — label it the "options-implied move to <expiry>", distinct from the
+HV ±1σ targets, and compare it with the pick's stop distance. Use the IV/HV
+verdict to choose the structure: rich options favour spreads or selling
+premium, cheap options favour buying premium outright.
+If "liquid" is false, repeat its "liquidity_flags" wherever the pick appears
+and under Risk Warnings; keep the pick ranked exactly as given — illiquidity
+is a caution, never a reason to drop or demote it. When "available" is false
+(or the block is absent), say real option data was unavailable and frame the
+strategy from the HV proxy only; never invent IV, open interest, or spreads.
+
 MARKET REGIME: The scan data may include a "market_regime" verdict (SPY's
 prior-session close vs its 20-day SMA), and individual picks may carry a
 "regime_conflict" note meaning their direction fights that regime. State the
@@ -128,7 +144,8 @@ Format the briefing in markdown with clear sections:
    - Symbol, price, composite score, direction (bullish/bearish), and
      "Conviction: HIGH|MEDIUM|LOW"
    - Key levels (support/resistance from volume profile)
-   - Suggested strategy (calls, puts, spreads, etc.) with 14-day DTE framing
+   - Suggested strategy (calls, puts, spreads, etc.) with 14-day DTE framing,
+     chosen with the "option_market" IV/HV verdict and liquidity when available
    - Risk factors to watch
 3. **Market Context** - Overall scan statistics, sector themes
 4. **Risk Warnings** - Any divergences, extreme readings, or caution flags
@@ -559,6 +576,11 @@ def _project_deep_analysis(analysis: OptionsAnalysis) -> dict:
     insights = analysis.get("options_insights")
     if insights:
         projected["insights"] = insights
+
+    # Option-chain snapshot (PDE-247): small and already model-ready.
+    option_market = analysis.get("option_market")
+    if isinstance(option_market, dict):
+        projected["option_market"] = option_market
 
     # Fixed conviction label (PDE-69): the model echoes this verbatim.
     if analysis.get("conviction"):

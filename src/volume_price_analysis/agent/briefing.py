@@ -16,7 +16,7 @@ from typing import Any
 from ..payloads import OptionsAnalysis
 from .ai_client import format_briefing_date
 from .ledger import SCORECARD_WINDOW_DAYS, scorecard_table
-from .picks import Pick, build_picks, render_picks_table
+from .picks import Pick, build_picks, render_options_footnote, render_picks_table
 from .regime import annotate_regime_conflicts, format_regime_header
 
 
@@ -42,16 +42,20 @@ class BriefingInputs:
 def render(inputs: BriefingInputs) -> str:
     """Render the complete markdown body of the delivered briefing.
 
-    The template (dated title, regime verdict, fixed pick table, scorecard, footer) is
+    The template (dated title, regime verdict, fixed pick table, the option-market
+    footnote when any pick was deep-analysed, scorecard, footer) is
     rendered here, never by the model, so the date is always real and the pick
     block always parses (PDE-69). ``tests/golden/briefing_body.md`` pins it.
     """
     picks = _picks(inputs)
     text = inputs.model_text if inputs.model_text is not None else _fallback_body(inputs)
+    options = render_options_footnote(picks)
+    options_block = f"{options}\n\n" if options else ""
     return (
         f"# Morning Market Briefing — {format_briefing_date(inputs.briefing_date)}\n\n"
         f"{_regime_header(inputs, picks)}\n\n"
         f"## Pick Summary\n\n{render_picks_table(picks)}\n\n"
+        f"{options_block}"
         f"{_scorecard(inputs)}"
         f"{text}"
         f"{_stats_line(inputs)}"
