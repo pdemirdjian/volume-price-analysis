@@ -762,7 +762,7 @@ class TestProviderRegistry:
         assert set(PROVIDERS) == {"gemini", "anthropic"}
 
     def test_resolve_model_defaults_per_provider(self):
-        assert resolve_model("gemini") == "gemini-2.5-pro"
+        assert resolve_model("gemini") == "gemini-3.8-flash"
         assert resolve_model("anthropic") == "claude-sonnet-4-6"
 
     def test_resolve_model_honours_explicit_override(self):
@@ -2506,7 +2506,7 @@ def retry_sleep(mocker):
     return mocker.patch("volume_price_analysis.retry._sleep")
 
 
-@pytest.mark.parametrize("failures, status", [(2, None), (3, None), (1, 400), (1, 401)])
+@pytest.mark.parametrize("failures, status", [(3, None), (4, None), (1, 400), (1, 401)])
 async def test_ai_failures_before_fallback(mocker, capsys, retry_sleep, failures, status):
     error = TimeoutError()
     if status is not None:
@@ -2529,10 +2529,11 @@ async def test_ai_failures_before_fallback(mocker, capsys, retry_sleep, failures
         provider=provider,
     )
     body = capsys.readouterr().out
-    assert provider.call_count == (1 if status is not None else 3)
-    expected_delays = [] if status is not None else [mocker.call(2), mocker.call(4)]
-    assert retry_sleep.call_args_list == expected_delays
-    recovered = failures == 2
+    # The briefing call gets its own, longer budget: 4 attempts, 15s/30s/60s.
+    calls = 1 if status is not None else min(failures + 1, 4)
+    assert provider.call_count == calls
+    assert retry_sleep.call_args_list == [mocker.call(d) for d in (15, 30, 60)[: calls - 1]]
+    recovered = status is None and failures < 4
     assert result.degraded is (not recovered)
     assert ("## Fallback Briefing (AI unavailable)" in body) is (not recovered)
     if recovered:
@@ -2541,6 +2542,9 @@ async def test_ai_failures_before_fallback(mocker, capsys, retry_sleep, failures
     else:
         assert "Recovered model prose" not in body
         assert "used fallback briefing" in result.reason
+        # The run log names the failure, so a fallback can be diagnosed later.
+        expected = "TimeoutError" if status is None else f"APIStatusError {status}"
+        assert f"({expected})" in result.reason
 
 
 @pytest.mark.parametrize(
