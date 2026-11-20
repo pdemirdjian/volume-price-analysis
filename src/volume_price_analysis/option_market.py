@@ -103,8 +103,8 @@ def _quote_age_days(leg: pd.Series, today: date) -> int | None:
     return int((today - traded.date()).days)
 
 
-def _usable_leg(leg: pd.Series, today: date) -> tuple[float, float, float, int] | str:
-    """Return ``(mid, iv, spread % of mid, open interest)``, or why the leg is unusable."""
+def _usable_leg(leg: pd.Series, today: date) -> tuple[float, float, float, int | None] | str:
+    """Return ``(mid, iv, spread % of mid, open interest or None)``, or why it is unusable."""
     age = _quote_age_days(leg, today)
     if age is not None and age > MAX_QUOTE_AGE_DAYS:
         return f"ATM option last traded {age} days ago (stale quotes)"
@@ -117,14 +117,15 @@ def _usable_leg(leg: pd.Series, today: date) -> tuple[float, float, float, int] 
         return "ATM implied volatility is missing"
     mid = (bid + ask) / 2
     oi = _finite(leg["openInterest"])
-    return mid, iv, (ask - bid) / mid * 100, 0 if oi is None else int(oi)
+    return mid, iv, (ask - bid) / mid * 100, None if oi is None else int(oi)
 
 
 def _by_strike(legs: pd.DataFrame) -> pd.DataFrame:
     """Index legs by numeric strike, dropping junk, non-finite and non-positive strikes."""
-    strikes = pd.to_numeric(legs["strike"], errors="coerce")
-    valid = strikes.notna() & strikes.map(lambda k: math.isfinite(k) and k > 0)
-    cleaned = legs.loc[valid].assign(strike=strikes[valid].astype(float))
+    # float64 turns pd.NA (nullable dtypes) into NaN; NaN and inf fail both comparisons.
+    strikes = pd.to_numeric(legs["strike"], errors="coerce").astype("float64")
+    valid = (strikes > 0) & (strikes < math.inf)
+    cleaned = legs.loc[valid].assign(strike=strikes[valid])
     return cleaned.drop_duplicates("strike").set_index("strike")
 
 
@@ -177,8 +178,8 @@ def option_market_snapshot(
 
     atm_iv = (legs[0][1] + legs[1][1]) / 2
     straddle = legs[0][0] + legs[1][0]
-    # Flag on the stored (rounded) spread so the flag never contradicts the value.
-    spread_pct = round(max(leg[2] for leg in legs), 2)
+    # Flag on the stored spread at its displayed 1-dp precision so they never disagree.
+    spread_pct = round(max(leg[2] for leg in legs), 1)
     hv = _finite(hv20)
     # Classify on the displayed (rounded) ratio so the label never contradicts it.
     ratio = round(atm_iv / hv, 2) if hv is not None and hv > 0 else None
@@ -192,7 +193,11 @@ def option_market_snapshot(
         label = "fair"
 
     flags = []
-    if min(leg[3] for leg in legs) < MIN_LEG_OPEN_INTEREST:
+    open_interest = [leg[3] for leg in legs]
+    known_oi = [oi for oi in open_interest if oi is not None]
+    if len(known_oi) < len(open_interest):
+        flags.append("ATM open interest unknown")
+    if known_oi and min(known_oi) < MIN_LEG_OPEN_INTEREST:
         flags.append(f"low ATM open interest (<{MIN_LEG_OPEN_INTEREST} per leg)")
     if spread_pct > MAX_SPREAD_PCT:
         flags.append(f"wide ATM bid-ask spread ({spread_pct:.1f}% of mid)")
@@ -207,7 +212,7 @@ def option_market_snapshot(
         "iv_vs_hv": label,
         "expected_move_dollars": round(straddle, 2),
         "expected_move_pct": round(straddle / spot * 100, 2),
-        "atm_open_interest": legs[0][3] + legs[1][3],
+        "atm_open_interest": None if len(known_oi) < 2 else sum(known_oi),
         "atm_spread_pct": spread_pct,
         "liquid": not flags,
         "liquidity_flags": flags,

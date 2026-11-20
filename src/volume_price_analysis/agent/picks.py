@@ -271,6 +271,10 @@ def _pct(value: Any, *, scale: float = 1.0, digits: int = 1) -> str:
     return f"{number:.{digits}f}%" if isfinite(number) else "—"
 
 
+def _or_dash(value: Any) -> str:
+    return "—" if value is None else str(value)
+
+
 def _options_line(pick: Pick, market: Mapping[str, Any]) -> str:
     if not market.get("available"):
         return f"- {pick.symbol}: option data unavailable ({market.get('reason') or 'unknown'})"
@@ -284,7 +288,7 @@ def _options_line(pick: Pick, market: Mapping[str, Any]) -> str:
         f"ATM IV {_pct(market.get('atm_iv'), scale=100)}",
         f"IV/HV20 {iv_hv}",
         f"implied move {move}",
-        f"ATM OI {market.get('atm_open_interest')}",
+        f"ATM OI {_or_dash(market.get('atm_open_interest'))}",
         f"spread {_pct(market.get('atm_spread_pct'))}",
     ]
     flags = market.get("liquidity_flags") or []

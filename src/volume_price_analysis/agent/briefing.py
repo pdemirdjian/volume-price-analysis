@@ -59,7 +59,7 @@ def render(inputs: BriefingInputs) -> str:
         f"{options_block}"
         f"{_scorecard(inputs)}"
         f"{text}"
-        f"{_stats_line(inputs)}"
+        f"{_stats_line(inputs, picks)}"
     )
 
 
@@ -143,33 +143,34 @@ def _scorecard(inputs: BriefingInputs) -> str:
     )
 
 
-def _sampled_expiries_note(inputs: BriefingInputs) -> str:
-    """Name the option snapshots' sampled expiries; "" when no option data is shown."""
+def _calibration_note(picks: Sequence[Pick]) -> str:
+    """The footer's calibration sentence, naming any expiry the option footnote shows."""
     sampled = sorted(
         {
             f"{m.get('expiry')} ({m.get('days_to_expiry')} DTE)"
-            for a in inputs.deep_analyses
-            if isinstance(m := a.get("option_market"), dict) and m.get("available")
+            for p in picks
+            if (m := p.option_market) is not None and m.get("available")
         }
     )
     if not sampled:
-        return ""
+        return (
+            "Indicators, expected moves, and strategies are calibrated for approx. 14 DTE options. "
+        )
     return (
-        "Option-market figures (ATM IV, implied move, liquidity) are from the sampled "
-        f"expiry {', '.join(sampled)}, not the 14-day holding period. "
+        "Indicators, signals, and HV expected moves use the 14-day holding period; "
+        "option-based strategies, ATM IV, implied moves, and liquidity use the sampled "
+        f"expiry {', '.join(sampled)}. "
     )
 
 
-def _stats_line(inputs: BriefingInputs) -> str:
+def _stats_line(inputs: BriefingInputs, picks: Sequence[Pick]) -> str:
     """The footer appended to every rendered briefing."""
     symbols_scanned = inputs.scan_results.get("scan_parameters", {}).get("symbols_scanned")
     total_candidates = inputs.scan_results.get("summary", {}).get("total_candidates", 0)
     scanned_part = f"{symbols_scanned} symbols scanned | " if symbols_scanned else ""
     return (
         f"\n\n---\n"
-        f"**14-day holding period** - Indicators, expected moves, and strategies "
-        f"are calibrated for approx. 14 DTE options. "
-        f"{_sampled_expiries_note(inputs)}"
+        f"**14-day holding period** - {_calibration_note(picks)}"
         f"Shorter-duration plays (0-5 DTE) may need different setups.\n\n"
         f"*Generated in {inputs.elapsed_s:.1f}s | "
         f"{scanned_part}"

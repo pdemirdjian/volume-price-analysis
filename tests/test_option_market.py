@@ -106,11 +106,14 @@ def test_wide_spread_is_flagged():
     assert any("spread" in f for f in snap["liquidity_flags"])
 
 
-def test_missing_open_interest_counts_as_zero():
+def test_unknown_open_interest_is_flagged_not_faked():
     no_oi = (100.0, 2.9, 3.1, 0.30, float("nan"))
     snap = option_market_snapshot(_chain(call_atm=no_oi), price=100.0, hv20=0.25, today=TODAY)
-    assert snap["atm_open_interest"] == 400
+    assert snap["available"] is True
+    assert snap["atm_open_interest"] is None
     assert snap["liquid"] is False
+    # The known put leg (OI 400) is not thin, so only the unknown flag appears.
+    assert snap["liquidity_flags"] == ["ATM open interest unknown"]
 
 
 @pytest.mark.parametrize(
@@ -266,3 +269,15 @@ def test_spread_just_above_the_limit_is_flagged_with_one_decimal():
     assert snap["atm_spread_pct"] == pytest.approx(10.2)
     assert snap["liquid"] is False
     assert snap["liquidity_flags"] == ["wide ATM bid-ask spread (10.2% of mid)"]
+
+
+def test_nullable_strike_column_with_na_is_handled():
+    chain = _chain()
+    calls = pd.concat(
+        [chain.calls, _legs([(1.0, 1, 1.1, 0.3, 500.0)]).assign(strike=[pd.NA])],
+        ignore_index=True,
+    ).astype({"strike": "Float64"})
+    chain = OptionChain(expiry=EXPIRY, calls=calls, puts=chain.puts.astype({"strike": "Float64"}))
+    snap = option_market_snapshot(chain, price=100.4, hv20=0.25, today=TODAY)
+    assert snap["available"] is True
+    assert snap["atm_strike"] == 100.0

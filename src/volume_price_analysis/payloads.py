@@ -446,7 +446,7 @@ class OptionMarket(TypedDict, total=False):
     iv_vs_hv: str | None
     expected_move_dollars: float
     expected_move_pct: float
-    atm_open_interest: int
+    atm_open_interest: int | None
     atm_spread_pct: float
     liquid: bool
     liquidity_flags: list[str]

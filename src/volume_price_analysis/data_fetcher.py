@@ -324,8 +324,9 @@ class YFinanceDataSource:
                 return None
             chain = ticker.option_chain(expiry.isoformat())
             calls, puts = chain.calls, chain.puts
-        except Exception:
-            logger.debug("Option chain lookup failed for %s", symbol, exc_info=True)
+        except Exception as e:
+            # An outage or 429 must be visible: it reads as "no option chain" downstream.
+            logger.warning("Option chain fetch failed for %s: %s", symbol, e)
             return None
         if not isinstance(calls, pd.DataFrame) or not isinstance(puts, pd.DataFrame):
             return None

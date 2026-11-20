@@ -147,7 +147,19 @@ class TestRender:
         footer = body.split("\n---\n")[-1]
         assert "14-day holding period" in footer
         assert "sampled expiry 2026-09-25 (21 DTE)" in footer
+        assert "option-based strategies" in footer
+        assert "strategies are calibrated for approx. 14 DTE" not in footer
         assert "sampled expiry" not in render(golden_inputs())
+
+    def test_footer_ignores_option_data_the_body_does_not_show(self):
+        # A deep analysis with no matching pick never reaches the footnote,
+        # so the footer must not claim its expiry either.
+        market = {"available": True, "expiry": "2026-09-25", "days_to_expiry": 21}
+        deep = [{"symbol": "NFLX", "option_market": market}]
+        body = render(golden_inputs(deep_analyses=deep))
+        assert "Options (ATM" not in body
+        assert "sampled expiry" not in body
+        assert "strategies are calibrated for approx. 14 DTE" in body
 
     def test_inputs_are_frozen(self):
         with pytest.raises(dataclasses.FrozenInstanceError):

@@ -509,18 +509,24 @@ class TestFetchOptionChain:
         assert list(chain.calls["strike"]) == [100.0]
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_yfinance_without_listed_options_returns_none(self, mock_ticker):
+    def test_yfinance_without_listed_options_returns_none(self, mock_ticker, caplog):
         mock_ticker.return_value.options = ()
         source = YFinanceDataSource()
-        assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is None
+        with caplog.at_level("WARNING", logger="volume_price_analysis.data_fetcher"):
+            assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is None
         mock_ticker.return_value.option_chain.assert_not_called()
+        assert not caplog.records
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
-    def test_yfinance_failure_returns_none(self, mock_ticker):
+    def test_yfinance_failure_returns_none_and_warns(self, mock_ticker, caplog):
         mock_ticker.return_value.options = ("2026-12-04",)
         mock_ticker.return_value.option_chain.side_effect = RuntimeError("Yahoo down")
         source = YFinanceDataSource()
-        assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is None
+        with caplog.at_level("WARNING", logger="volume_price_analysis.data_fetcher"):
+            assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is None
+        (record,) = caplog.records
+        assert record.levelname == "WARNING"
+        assert "AAPL" in record.getMessage() and "Yahoo down" in record.getMessage()
 
     @patch("volume_price_analysis.data_fetcher.yf.Ticker")
     def test_yfinance_empty_chain_returns_none(self, mock_ticker):

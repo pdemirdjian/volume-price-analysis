@@ -326,6 +326,10 @@ class TestOptionMarket:
         market = {**_LIQUID_MARKET, "iv_hv20_ratio": None, "iv_vs_hv": None}
         assert "IV/HV20 — ·" in render_options_footnote([self._pick(market)])
 
+    def test_unknown_open_interest_renders_a_dash(self):
+        market = {**_LIQUID_MARKET, "atm_open_interest": None}
+        assert "ATM OI — ·" in render_options_footnote([self._pick(market)])
+
     def test_no_blocks_renders_nothing(self):
         assert render_options_footnote([Pick("AAPL", "bullish", "LOW", 1.0)]) == ""
 
