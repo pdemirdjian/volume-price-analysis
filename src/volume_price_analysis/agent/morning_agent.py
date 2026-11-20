@@ -24,10 +24,13 @@ from zoneinfo import ZoneInfo
 from ..analysis import passes_high_conviction_gate, run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
 from ..payloads import OptionsAnalysis, ScanResult
-from ..retry import RETRY_ATTEMPTS, RETRY_BASE_DELAY_SECONDS, retry_call
+from ..retry import retry_call
 from .ai_client import (
+    AI_RETRY_ATTEMPTS,
+    AI_RETRY_BASE_DELAY_SECONDS,
     PROVIDERS,
     BriefingProvider,
+    describe_ai_error,
     generate_briefing,
     is_transient_ai_error,
     resolve_model,
@@ -261,14 +264,15 @@ async def run_morning_briefing(
                         picks=picks,
                     ).text
                 ),
-                attempts=RETRY_ATTEMPTS,
-                base_delay=RETRY_BASE_DELAY_SECONDS,
+                attempts=AI_RETRY_ATTEMPTS,
+                base_delay=AI_RETRY_BASE_DELAY_SECONDS,
                 retry_on=is_transient_ai_error,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("AI briefing generation failed")
             degraded_reason = (
-                f"AI briefing generation failed via {config.ai_provider}; used fallback briefing"
+                f"AI briefing generation failed via {config.ai_provider} "
+                f"({describe_ai_error(exc)}); used fallback briefing"
             )
             logger.warning("Using fallback briefing — AI provider was unavailable")
 
