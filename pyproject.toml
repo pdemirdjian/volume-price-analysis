@@ -39,8 +39,8 @@ dependencies = [
     "yfinance>=1.7.0,<2",
     "pandas>=3.1.0,<4",
     "numpy>=2.5.4,<3",
-    "anthropic~=2.9.0",
-    "google-genai~=3.4.0",
+    "anthropic~=2.10.0",
+    "google-genai~=3.5.0",
     "markdown~=3.11.0",
     "holidays~=0.91",
     "pytickersymbols~=1.17.0",
@@ -52,6 +52,11 @@ Homepage = "https://github.com/pdemirdjian/volume-price-analysis"
 Repository = "https://github.com/pdemirdjian/volume-price-analysis"
 Issues = "https://github.com/pdemirdjian/volume-price-analysis/issues"
 Changelog = "https://github.com/pdemirdjian/volume-price-analysis/blob/main/CHANGELOG.md"
+
+[tool.uv]
+# Dependency cooldown: ignore releases uploaded in the last 3 days, so Renovate's weekly lock file
+# maintenance (which re-resolves everything through uv) gets the same soak as per-package PRs.
+exclude-newer = "3 days"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/volume_price_analysis"]

@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 # read the budget off the request, never from here.
 MAX_OUTPUT_TOKENS = 16384
 AI_REQUEST_TIMEOUT_SECONDS = 120
+# The briefing call gets a longer retry budget than the shared 2s/4s policy:
+# provider overload (429/503) usually clears within a minute or two, and the
+# 06:30 run has plenty of slack before the heartbeat limit. 15s, 30s, 60s.
+AI_RETRY_ATTEMPTS = 4
+AI_RETRY_BASE_DELAY_SECONDS = 15
 
 
 @dataclass(frozen=True)
@@ -161,8 +166,11 @@ Format the briefing in markdown with clear sections:
 
 Keep it concise but thorough. Use bullet points. No fluff."""
 
+# gemini-2.5-pro is deprecated (Google redirects it to gemini-3.8-flash on
+# 2026-12-01) and has been failing most mornings since 2026-11-04, which sends
+# the no-AI fallback briefing. Move to its successor now.
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-pro",
+    "gemini": "gemini-3.8-flash",
     "anthropic": "claude-sonnet-4-6",
 }
 
@@ -813,6 +821,12 @@ PROVIDERS: dict[str, BriefingProvider] = {
     "anthropic": generate_anthropic,
     "gemini": generate_gemini,
 }
+
+
+def describe_ai_error(exc: BaseException) -> str:
+    """Short, secret-free label for a provider failure, e.g. ``APIError 503``."""
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    return f"{type(exc).__name__} {code}" if isinstance(code, int) else type(exc).__name__
 
 
 def is_transient_ai_error(exc: Exception) -> bool:
