@@ -136,7 +136,7 @@ def _by_strike(legs: pd.DataFrame) -> pd.DataFrame:
     if "contractSymbol" in cleaned.columns:
         # OCC symbol = root + YYMMDD + C/P + 8-digit strike; the root is all but the last 15.
         adjusted = cleaned["contractSymbol"].astype(str).str[:-15].str.contains(r"\d")
-        cleaned = cleaned.loc[adjusted.sort_values(kind="stable").index]
+        cleaned = cleaned.iloc[adjusted.to_numpy().argsort(kind="stable")]
     return cleaned.drop_duplicates("strike").set_index("strike")
 
 

@@ -232,7 +232,8 @@ def test_duplicate_strike_prefers_the_standard_contract_over_an_adjusted_one():
     chain = _chain()
     symbols = ["AAPL261204C00095000", "AAPL261204C00100000", "AAPL261204C00105000"]
     adjusted = chain.calls.iloc[[1]].assign(bid=9.0, ask=9.5, contractSymbol="AAPL1261204C00100000")
-    calls = pd.concat([adjusted, chain.calls.assign(contractSymbol=symbols)], ignore_index=True)
+    # Shared index label (default concat) must not defeat the preference.
+    calls = pd.concat([adjusted, chain.calls.assign(contractSymbol=symbols)])
     snap = option_market_snapshot(
         OptionChain(expiry=EXPIRY, calls=calls, puts=chain.puts),
         price=100.0,
