@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.17.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.17.0...v2.17.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=2.10.0 ([#639](https://github.com/pdemirdjian/volume-price-analysis/issues/639)) ([efeafcd](https://github.com/pdemirdjian/volume-price-analysis/commit/efeafcd1b8e03b26b8844d14be8f637190edc234))
+* **deps:** update dependency anthropic to ~=2.9.0 ([#631](https://github.com/pdemirdjian/volume-price-analysis/issues/631)) ([d028e07](https://github.com/pdemirdjian/volume-price-analysis/commit/d028e07ae723d3fe5228b9710000b5d68f0688c6))
+* **deps:** update dependency google-genai to ~=3.4.0 ([#633](https://github.com/pdemirdjian/volume-price-analysis/issues/633)) ([a983f77](https://github.com/pdemirdjian/volume-price-analysis/commit/a983f77066dfda54b0df392a2b1c8ae9fec5a5fe))
+* **deps:** update dependency google-genai to ~=3.5.0 ([#640](https://github.com/pdemirdjian/volume-price-analysis/issues/640)) ([ffdc00a](https://github.com/pdemirdjian/volume-price-analysis/commit/ffdc00a8c8e56eaf2a9e7fddde8c1ec9ebaef5c4))
+* **deps:** update dependency holidays to v0.109 ([#641](https://github.com/pdemirdjian/volume-price-analysis/issues/641)) ([74db3b2](https://github.com/pdemirdjian/volume-price-analysis/commit/74db3b2a970dff44aca23932b9f62db2ef8e1fab))
+* **deps:** update dependency nh3 to v0.3.8 ([#635](https://github.com/pdemirdjian/volume-price-analysis/issues/635)) ([843efc6](https://github.com/pdemirdjian/volume-price-analysis/commit/843efc6cc0c95306e7730ece242f4157a90a660c))
+* move the briefing off deprecated gemini-2.5-pro and give the AI call a longer retry budget ([#636](https://github.com/pdemirdjian/volume-price-analysis/issues/636)) ([c8f5f91](https://github.com/pdemirdjian/volume-price-analysis/commit/c8f5f91375abb3847e1e3fa6a053d515777329b1))
+
 ## [2.17.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.16.0...v2.17.0) (2026-11-19)
 
 
