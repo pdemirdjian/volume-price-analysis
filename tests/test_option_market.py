@@ -334,3 +334,12 @@ def test_nullable_strike_column_with_na_is_handled():
     snap = option_market_snapshot(chain, price=100.4, hv20=0.25, today=TODAY)
     assert snap["available"] is True
     assert snap["atm_strike"] == 100.0
+
+
+def test_adjusted_duplicate_does_not_change_the_equidistant_atm_tie_break():
+    legs = _legs([(95.0, 6.0, 6.2, 0.31, 200.0), (105.0, 1.0, 1.1, 0.29, 300.0)])
+    adjusted = legs.iloc[[1]].assign(contractSymbol="AAPL1261204C00105000")
+    calls = pd.concat([adjusted, legs.assign(contractSymbol="AAPL261204C00095000")])
+    chain = OptionChain(expiry=EXPIRY, calls=calls, puts=legs.copy())
+    snap = option_market_snapshot(chain, price=100.0, hv20=0.25, today=TODAY)
+    assert snap["atm_strike"] == 95.0
