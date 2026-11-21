@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.18.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.17.1...v2.18.0) (2026-11-21)
+
+
+### Features
+
+* **PDE-247:** real implied volatility and option liquidity for deep-analysed picks ([#634](https://github.com/pdemirdjian/volume-price-analysis/issues/634)) ([73562e3](https://github.com/pdemirdjian/volume-price-analysis/commit/73562e33dc0d383b460bad1e939671c7ceb35539))
+
 ## [2.17.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.17.0...v2.17.1) (2026-11-21)
 
 
