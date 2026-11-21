@@ -6,11 +6,12 @@ pick the expiry nearest the holding period, then read the at-the-money (ATM)
 call and put for real implied volatility, the IV / HV20 ratio, the straddle's
 expected move to expiry, and liquidity flags.
 
-A chain whose ATM quotes look stale or unusable (zero or one-sided bids before
-the open, crossed quotes, yfinance's ~0 placeholder IV) yields
+A chain whose ATM quotes are unusable (zero or one-sided bids before the open,
+crossed quotes, yfinance's ~0 placeholder IV) or whose expiry falls outside
+``MIN_DTE``..``MAX_DTE`` yields
 ``{"available": False, "reason": ...}`` rather than numbers, so bad data never
-reaches the model. Illiquidity is a flag on an otherwise available block; it
-never demotes or drops a pick.
+reaches the model. Illiquidity (including an ATM leg that has not traded
+recently) is a flag on an otherwise available block; it never demotes or drops a pick.
 """
 
 from __future__ import annotations
@@ -34,10 +35,10 @@ IV_HV_RICH = 1.2
 IV_HV_CHEAP = 0.8
 # yfinance reports ~1e-5 IV for strikes it has no live quote for; treat as missing.
 MIN_USABLE_IV = 0.01
-# Oldest ATM ``lastTradeDate`` (calendar days before ``today``) still treated as live.
+# Oldest ATM ``lastTradeDate`` (calendar days before ``today``) not flagged as idle.
 # Five days spans a weekend plus a market holiday (Friday trade, Monday holiday,
 # Tuesday pre-market briefing = 4 days); an ATM leg idle longer than that has not
-# traded for a full week of sessions, so its bid/ask is likely a stale quote.
+# traded for a full week of sessions. Its two-sided quote is still reported, flagged.
 MAX_QUOTE_AGE_DAYS = 5
 # Farthest the nearest common strike may sit from spot, as a fraction of spot. Beyond
 # this the "ATM" straddle is dominated by intrinsic value and overstates the move.
@@ -47,6 +48,11 @@ MAX_ATM_DISTANCE = 0.10
 # between the latest close and the quote snapshot plus penny rounding; a larger
 # shortfall means the quotes are stale or belong to a different underlying price.
 INTRINSIC_TOLERANCE_PCT = 1.0
+# Expiry window (calendar days to expiry). Below MIN_DTE the straddle is mostly gamma
+# (e.g. OPEX week on a monthly-only chain); beyond MAX_DTE it no longer describes
+# a ~14-day hold.
+MIN_DTE = 7
+MAX_DTE = 45
 
 _LEG_COLUMNS = ("strike", "bid", "ask", "impliedVolatility", "openInterest")
 
@@ -68,10 +74,10 @@ class OptionChain:
 def select_expiry(expiries: Iterable[date], *, today: date, target_dte: int) -> date | None:
     """Return the listed expiry closest to ``target_dte`` days out, or None.
 
-    Same-day and past expiries are skipped. A tie prefers the later expiry
-    (more time value, less gamma).
+    Only expiries ``MIN_DTE``..``MAX_DTE`` days out qualify. A tie prefers the
+    later expiry (more time value, less gamma).
     """
-    future = [e for e in expiries if (e - today).days > 0]
+    future = [e for e in expiries if MIN_DTE <= (e - today).days <= MAX_DTE]
     if not future:
         return None
     return min(future, key=lambda e: (abs((e - today).days - target_dte), -e.toordinal()))
@@ -103,11 +109,8 @@ def _quote_age_days(leg: pd.Series, today: date) -> int | None:
     return int((today - traded.date()).days)
 
 
-def _usable_leg(leg: pd.Series, today: date) -> tuple[float, float, float, int | None] | str:
+def _usable_leg(leg: pd.Series) -> tuple[float, float, float, int | None] | str:
     """Return ``(mid, iv, spread % of mid, open interest or None)``, or why it is unusable."""
-    age = _quote_age_days(leg, today)
-    if age is not None and age > MAX_QUOTE_AGE_DAYS:
-        return f"ATM option last traded {age} days ago (stale quotes)"
     bid, ask, iv = _finite(leg["bid"]), _finite(leg["ask"]), _finite(leg["impliedVolatility"])
     if bid is None or ask is None or bid <= 0 or ask <= 0:
         return "ATM quotes have no live bid/ask (stale or pre-market)"
@@ -121,11 +124,19 @@ def _usable_leg(leg: pd.Series, today: date) -> tuple[float, float, float, int |
 
 
 def _by_strike(legs: pd.DataFrame) -> pd.DataFrame:
-    """Index legs by numeric strike, dropping junk, non-finite and non-positive strikes."""
+    """Index legs by numeric strike, dropping junk, non-finite and non-positive strikes.
+
+    A duplicated strike keeps the standard contract over an adjusted one (e.g.
+    ``AAPL1...`` after a split), whose root carries a digit.
+    """
     # float64 turns pd.NA (nullable dtypes) into NaN; NaN and inf fail both comparisons.
     strikes = pd.to_numeric(legs["strike"], errors="coerce").astype("float64")
     valid = (strikes > 0) & (strikes < math.inf)
     cleaned = legs.loc[valid].assign(strike=strikes[valid])
+    if "contractSymbol" in cleaned.columns:
+        # OCC symbol = root + YYMMDD + C/P + 8-digit strike; the root is all but the last 15.
+        adjusted = cleaned["contractSymbol"].astype(str).str[:-15].str.contains(r"\d")
+        cleaned = cleaned.loc[adjusted.sort_values(kind="stable").index]
     return cleaned.drop_duplicates("strike").set_index("strike")
 
 
@@ -149,8 +160,8 @@ def option_market_snapshot(
     if spot is None or spot <= 0:
         return _unavailable("no usable underlying price")
     days = (chain.expiry - today).days
-    if days <= 0:
-        return _unavailable("expiry is not in the future")
+    if not MIN_DTE <= days <= MAX_DTE:
+        return _unavailable(f"expiry {days} DTE is outside the {MIN_DTE}-{MAX_DTE} DTE window")
     if any(c not in frame.columns for frame in (chain.calls, chain.puts) for c in _LEG_COLUMNS):
         return _unavailable("option chain is missing quote columns")
 
@@ -165,7 +176,7 @@ def option_market_snapshot(
 
     legs = []
     for leg in (call, put):
-        usable = _usable_leg(leg, today)
+        usable = _usable_leg(leg)
         if isinstance(usable, str):
             return _unavailable(usable)
         legs.append(usable)
@@ -201,6 +212,9 @@ def option_market_snapshot(
         flags.append(f"low ATM open interest (<{MIN_LEG_OPEN_INTEREST} per leg)")
     if spread_pct > MAX_SPREAD_PCT:
         flags.append(f"wide ATM bid-ask spread ({spread_pct:.1f}% of mid)")
+    ages = [a for a in (_quote_age_days(leg, today) for leg in (call, put)) if a is not None]
+    if ages and max(ages) > MAX_QUOTE_AGE_DAYS:
+        flags.append(f"ATM not traded in {max(ages)} days")
 
     return {
         "available": True,

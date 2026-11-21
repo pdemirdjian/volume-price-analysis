@@ -7,8 +7,10 @@ import pandas as pd
 import pytest
 
 from volume_price_analysis.option_market import (
+    MAX_DTE,
     MAX_QUOTE_AGE_DAYS,
     MAX_SPREAD_PCT,
+    MIN_DTE,
     MIN_LEG_OPEN_INTEREST,
     OptionChain,
     option_market_snapshot,
@@ -46,6 +48,34 @@ def test_select_expiry_skips_same_day_and_past_expiries():
 def test_select_expiry_tie_prefers_the_later_expiry():
     expiries = [date(2026, 11, 30), date(2026, 12, 10)]
     assert select_expiry(expiries, today=TODAY, target_dte=15) == date(2026, 12, 10)
+
+
+def test_select_expiry_skips_opex_week_front_month_on_monthly_only_chain():
+    # Monthly-only chain three days before OPEX: the 3-DTE front month is skipped.
+    expiries = [date(2026, 11, 23), date(2026, 12, 18), date(2027, 1, 15)]
+    assert select_expiry(expiries, today=TODAY, target_dte=14) == date(2026, 12, 18)
+
+
+def test_select_expiry_window_bounds_are_inclusive_and_none_outside():
+    near, far = (
+        date.fromordinal(TODAY.toordinal() + MIN_DTE),
+        date.fromordinal(TODAY.toordinal() + MAX_DTE),
+    )
+    assert select_expiry([near], today=TODAY, target_dte=14) == near
+    assert select_expiry([far], today=TODAY, target_dte=14) == far
+    outside = [date.fromordinal(near.toordinal() - 1), date.fromordinal(far.toordinal() + 1)]
+    assert select_expiry(outside, today=TODAY, target_dte=14) is None
+
+
+@pytest.mark.parametrize("days", [MIN_DTE - 1, MAX_DTE + 1])
+def test_chain_outside_dte_window_is_unavailable(days):
+    chain = _chain()
+    chain = OptionChain(
+        expiry=date.fromordinal(TODAY.toordinal() + days), calls=chain.calls, puts=chain.puts
+    )
+    snap = option_market_snapshot(chain, price=100.0, hv20=0.25, today=TODAY)
+    assert snap["available"] is False
+    assert "DTE window" in snap["reason"]
 
 
 def test_select_expiry_returns_none_when_nothing_is_listed():
@@ -181,13 +211,35 @@ def _with_last_trade(chain: OptionChain, traded) -> OptionChain:
     )
 
 
-def test_plausible_but_old_quotes_are_unavailable():
+def test_old_last_trade_keeps_the_data_and_flags_it():
     old = pd.Timestamp(TODAY, tz="UTC") - pd.Timedelta(days=MAX_QUOTE_AGE_DAYS + 1)
     snap = option_market_snapshot(
         _with_last_trade(_chain(), old), price=100.0, hv20=0.25, today=TODAY
     )
-    assert snap["available"] is False
-    assert "stale" in snap["reason"]
+    assert snap["available"] is True
+    assert snap["atm_iv"] == pytest.approx(0.32)
+    assert snap["liquid"] is False
+    assert f"ATM not traded in {MAX_QUOTE_AGE_DAYS + 1} days" in snap["liquidity_flags"]
+
+
+def test_old_last_trade_without_two_sided_quotes_is_still_unavailable():
+    old = pd.Timestamp(TODAY, tz="UTC") - pd.Timedelta(days=MAX_QUOTE_AGE_DAYS + 1)
+    chain = _with_last_trade(_chain(call_atm=(100.0, 0.0, 3.1, 0.30, 500.0)), old)
+    assert option_market_snapshot(chain, price=100.0, hv20=0.25, today=TODAY)["available"] is False
+
+
+def test_duplicate_strike_prefers_the_standard_contract_over_an_adjusted_one():
+    chain = _chain()
+    symbols = ["AAPL261204C00095000", "AAPL261204C00100000", "AAPL261204C00105000"]
+    adjusted = chain.calls.iloc[[1]].assign(bid=9.0, ask=9.5, contractSymbol="AAPL1261204C00100000")
+    calls = pd.concat([adjusted, chain.calls.assign(contractSymbol=symbols)], ignore_index=True)
+    snap = option_market_snapshot(
+        OptionChain(expiry=EXPIRY, calls=calls, puts=chain.puts),
+        price=100.0,
+        hv20=0.25,
+        today=TODAY,
+    )
+    assert snap["expected_move_dollars"] == pytest.approx(3.0 + 2.5)
 
 
 @pytest.mark.parametrize(

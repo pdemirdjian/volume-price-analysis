@@ -100,7 +100,8 @@ percentile means volatility is low for that symbol, not that the expected move
 is small in absolute terms.
 
 OPTIONS MARKET: A deep analysis may carry an "option_market" block measured
-from the live option chain for the expiry nearest the holding period. It is
+from the live option chain for the expiry nearest the holding period (only
+expiries 7-45 days out are sampled; otherwise the block is unavailable). It is
 the ONLY source of real implied volatility. When "available" is true:
 "atm_iv" is the ATM implied volatility (annualised fraction); "iv_hv20_ratio"
 compares it with 20-day realised volatility ("iv_vs_hv": rich / fair / cheap);
@@ -114,7 +115,9 @@ and liquidity but leave the options unclassified — do not call them rich or
 cheap, and do not fall back to the HV percentile for that verdict.
 If "liquid" is false, repeat its "liquidity_flags" wherever the pick appears
 and under Risk Warnings; keep the pick ranked exactly as given — illiquidity
-is a caution, never a reason to drop or demote it. When "available" is false
+is a caution, never a reason to drop or demote it. A flag "ATM not traded in N
+days" means the quotes may lag the stock: report the numbers with that caveat.
+When "available" is false
 (or the block is absent), say real option data was unavailable and frame the
 strategy from the HV proxy only; never invent IV, open interest, or spreads.
 

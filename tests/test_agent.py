@@ -3228,6 +3228,7 @@ class TestOptionMarketInBriefing:
     def test_prompt_explains_the_block(self):
         assert '"option_market"' in SYSTEM_PROMPT
         assert "never a reason to drop or demote" in SYSTEM_PROMPT
+        assert "ATM not traded in N" in SYSTEM_PROMPT
 
     def test_null_verdict_leaves_options_unclassified(self):
         block = SYSTEM_PROMPT.split("OPTIONS MARKET:", 1)[1].split("\n\n", 1)[0]

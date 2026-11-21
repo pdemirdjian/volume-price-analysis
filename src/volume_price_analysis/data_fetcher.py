@@ -80,8 +80,8 @@ class DataSource(Protocol):
     Unlike ``fetch``, it reports "unknown" rather than raising.
 
     :meth:`fetch_option_chain` returns the :class:`OptionChain` for the listed
-    expiry closest to ``target_dte`` days after ``today``, or ``None`` when the
-    symbol lists no options or the fetch fails. Like ``earnings_date`` it
+    expiry closest to ``target_dte`` days after ``today`` (within ``MIN_DTE``..
+    ``MAX_DTE``), or ``None`` when no expiry qualifies or the fetch fails. Like ``earnings_date`` it
     reports "unavailable" rather than raising, and it is never cached.
     """
 
@@ -309,6 +309,8 @@ class YFinanceDataSource:
         self, symbol: str, *, target_dte: int, today: datetime.date
     ) -> OptionChain | None:
         """Fetch the chain for the listed expiry closest to ``target_dte`` days out.
+
+        Only expiries within ``MIN_DTE``..``MAX_DTE`` qualify (see ``select_expiry``).
 
         Two yfinance calls: ``Ticker.options`` (expiry list) and
         ``Ticker.option_chain(expiry)``. Any failure or an empty chain is
