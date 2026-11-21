@@ -63,6 +63,8 @@ class Pick:
     earnings_warning: str | None = None
     stop: float | None = None
     target: float | None = None
+    # The deep analysis's option-chain block (PDE-247); None when not deep-analysed.
+    option_market: Mapping[str, Any] | None = None
 
 
 def _qualifies_high(candidate: dict, *, listed: bool) -> bool:
@@ -184,6 +186,7 @@ def build_picks(
                 and _fights_regime(candidate, verdict)
             )
             earnings_warning = deep.get("earnings_warning") or candidate.get("earnings_warning")
+            option_market = deep.get("option_market")
             picks.append(
                 Pick(
                     symbol=symbol,
@@ -200,6 +203,7 @@ def build_picks(
                     earnings_warning=earnings_warning,
                     stop=stop,
                     target=target,
+                    option_market=option_market if isinstance(option_market, dict) else None,
                 )
             )
     return picks
@@ -233,6 +237,9 @@ def _flags(pick: Pick) -> str:
         flags.append("counter-regime")
     if pick.earnings_warning:
         flags.append(pick.earnings_warning)
+    market = pick.option_market or {}
+    if market.get("available") and market.get("liquid") is False:
+        flags.append("illiquid options")
     return "; ".join(flags) or "—"
 
 
@@ -254,3 +261,50 @@ def render_picks_table(picks: Iterable[Pick]) -> str:
     if len(rows) == 2:
         rows.append("| — | — | — | — | — | no candidates passed the scan filters | — | — |")
     return "\n".join(rows)
+
+
+def _pct(value: Any, *, scale: float = 1.0, digits: int = 1) -> str:
+    try:
+        number = float(value) * scale
+    except TypeError, ValueError:
+        return "—"
+    return f"{number:.{digits}f}%" if isfinite(number) else "—"
+
+
+def _or_dash(value: Any) -> str:
+    return "—" if value is None else str(value)
+
+
+def _options_line(pick: Pick, market: Mapping[str, Any]) -> str:
+    if not market.get("available"):
+        return f"- {pick.symbol}: option data unavailable ({market.get('reason') or 'unknown'})"
+    ratio = market.get("iv_hv20_ratio")
+    iv_hv = "—" if ratio is None else f"{float(ratio):.2f} ({market.get('iv_vs_hv')})"
+    move = f"±{_pct(market.get('expected_move_pct'), digits=2)}"
+    if pick.stop is not None and pick.price:
+        move += f" vs stop {_pct(abs(pick.price - pick.stop) / pick.price, scale=100, digits=2)}"
+    parts = [
+        f"{market.get('expiry')} ({market.get('days_to_expiry')} DTE)",
+        f"ATM IV {_pct(market.get('atm_iv'), scale=100)}",
+        f"IV/HV20 {iv_hv}",
+        f"implied move {move}",
+        f"ATM OI {_or_dash(market.get('atm_open_interest'))}",
+        f"spread {_pct(market.get('atm_spread_pct'))}",
+    ]
+    flags = market.get("liquidity_flags") or []
+    if flags:
+        parts.append("⚠️ " + "; ".join(flags))
+    return f"- {pick.symbol}: " + " · ".join(parts)
+
+
+def render_options_footnote(picks: Iterable[Pick]) -> str:
+    """Render the option-market footnote for deep-analysed picks (PDE-247).
+
+    One line per pick carrying an ``option_market`` block: real ATM IV, IV/HV20,
+    the straddle's implied move against the pick's stop distance, and
+    liquidity. Returns "" when no pick has a block, so the table stands alone.
+    """
+    lines = [_options_line(p, p.option_market) for p in picks if p.option_market is not None]
+    if not lines:
+        return ""
+    return "Options (ATM, expiry nearest the holding period):\n\n" + "\n".join(lines)

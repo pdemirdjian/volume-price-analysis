@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, NotRequired, TypedDict
+from typing import Any, NotRequired, Required, TypedDict
 
 # Nested indicator-specific structures remain open where their full contracts
 # are outside this pass; analysis-owned fields are declared explicitly.
@@ -397,6 +397,7 @@ class OptionsAnalysisTimeDecay(TypedDict):
 class OptionsAnalysis(TypedDict):
     conviction: NotRequired[str]
     earnings_warning: NotRequired[str]
+    option_market: NotRequired[OptionMarket]
     symbol: str
     analysis_type: str
     period: str
@@ -426,3 +427,26 @@ class CompositeScore(TypedDict):
     adx_period: int
     adx_summary: dict[str, Any]
     indicator_summary: dict[str, Any]
+
+
+class OptionMarket(TypedDict, total=False):
+    """Option-chain snapshot for the expiry nearest the holding period (PDE-247).
+
+    ``available`` is always present. When False only ``reason`` accompanies it;
+    when True every other field is set (``iv_hv20_ratio``/``iv_vs_hv`` may be None).
+    """
+
+    available: Required[bool]
+    reason: str
+    expiry: str
+    days_to_expiry: int
+    atm_strike: float
+    atm_iv: float
+    iv_hv20_ratio: float | None
+    iv_vs_hv: str | None
+    expected_move_dollars: float
+    expected_move_pct: float
+    atm_open_interest: int | None
+    atm_spread_pct: float
+    liquid: bool
+    liquidity_flags: list[str]

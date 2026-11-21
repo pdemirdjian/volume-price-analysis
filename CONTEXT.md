@@ -90,9 +90,24 @@ counter-regime rows in the pick table, so the header and the table agree.
 
 A candidate rendered as a row of the briefing's pick table: the frozen
 `agent/picks.Pick` dataclass (`symbol`, `direction`, `conviction`, `score`,
-`price`, `regime_conflict`, `earnings_warning`, `stop`, `target`). `build_picks` collects every
+`price`, `regime_conflict`, `earnings_warning`, `stop`, `target`, `option_market`). `build_picks` collects every
 scan candidate once in briefing priority order; `render_picks_table` renders them
-under the fixed `PICK_TABLE_HEADER` column order, which audits parse.
+under the fixed `PICK_TABLE_HEADER` column order, which audits parse. An illiquid
+option market adds an `illiquid options` flag; `render_options_footnote` lists each
+deep-analysed pick's option market under the table.
+
+## option market
+
+The real option-chain snapshot attached to each deep analysis as `option_market`
+(PDE-247): `option_market.option_market_snapshot` over the chain that
+`DataSource.fetch_option_chain` returns for the expiry nearest the holding period.
+It carries ATM implied volatility (`atm_iv`), `iv_hv20_ratio` / `iv_vs_hv`
+(rich / fair / cheap against 20-day realised volatility), the ATM straddle's
+expected move to expiry, and liquidity (`atm_open_interest`, `atm_spread_pct`,
+`liquid`, `liquidity_flags`). A missing, failed, or stale chain (zero bids
+pre-market, crossed quotes, placeholder IV) is `{"available": false, "reason": ...}`.
+It informs the strategy only: illiquidity is flagged, never used to demote or drop
+a pick, and the high-conviction gate stays on the HV percentile.
 
 ## ledger
 

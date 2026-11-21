@@ -3116,3 +3116,143 @@ class TestLedger:
         assert len(fake_smtp.sent) == 1
         assert "Ledger grading failed" in caplog.text
         assert "Ledger write failed" in caplog.text
+
+
+def _option_chain(expiry=date(2026, 9, 18), *, open_interest=500.0, bid=2.9):
+    from volume_price_analysis.option_market import OptionChain
+
+    legs = pd.DataFrame(
+        {
+            "strike": [95.0, 100.0, 105.0],
+            "bid": [6.0, bid, 1.0],
+            "ask": [6.2, 3.1, 1.1],
+            "impliedVolatility": [0.31, 0.30, 0.29],
+            "openInterest": [200.0, open_interest, 300.0],
+        }
+    )
+    return OptionChain(expiry=expiry, calls=legs, puts=legs.copy())
+
+
+class TestOptionMarketInBriefing:
+    """PDE-247: each deep analysis gains an option_market block; failures degrade."""
+
+    NOW = datetime(2026, 9, 4, 12, 30, tzinfo=UTC)
+
+    async def _run(self, source, provider=None, **config):
+        analysis = _analysis("AAPL", 4.2, latest_price=100.0)
+        provider = provider or _FakeProvider()
+        await run_morning_briefing(
+            _config(ai_provider="anthropic", **config),
+            dry_run=True,
+            data_source=source,
+            now=self.NOW,
+            scan=_FakeScan(
+                _scan_result(
+                    top_bullish=[
+                        {"symbol": "AAPL", "composite_score": 4.2, "latest_price": 100.0, "atr": 2}
+                    ]
+                )
+            ),
+            analyze=_FakeAnalyze({"AAPL": analysis}),
+            provider=provider,
+        )
+        return analysis, provider
+
+    @pytest.mark.asyncio
+    async def test_chain_is_fetched_for_the_holding_period_and_reaches_prompt_and_table(
+        self, capsys
+    ):
+        closes = [100.0 + (i % 3) for i in range(30)]
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2026-07-01", periods=30),
+                "Open": closes,
+                "High": closes,
+                "Low": closes,
+                "Close": closes,
+                "Volume": [1_000_000] * 30,
+            }
+        )
+        source = InMemoryDataSource(
+            frames={"AAPL": frame}, option_chains={"AAPL": _option_chain(open_interest=10.0)}
+        )
+
+        analysis, provider = await self._run(source)
+
+        assert source.option_chain_calls == [
+            ("AAPL", AgentConfig().scan_holding_period, date(2026, 9, 4))
+        ]
+        market = analysis["option_market"]
+        assert market["available"] is True
+        assert market["atm_iv"] == pytest.approx(0.30)
+        assert market["iv_hv20_ratio"] is not None
+        assert market["liquid"] is False
+        assert _prompt_deep(provider.user_content, "AAPL")["option_market"] == market
+        out = capsys.readouterr().out
+        assert "illiquid options" in out
+        assert "- AAPL: 2026-09-18 (14 DTE) · ATM IV 30.0%" in out
+
+    @pytest.mark.asyncio
+    async def test_no_chain_is_flagged_unavailable(self):
+        analysis, provider = await self._run(agent_source(["AAPL"]))
+        assert analysis["option_market"] == {
+            "available": False,
+            "reason": "no option chain available",
+        }
+        assert _prompt_deep(provider.user_content, "AAPL")["option_market"]["available"] is False
+
+    @pytest.mark.asyncio
+    async def test_stale_pre_market_quotes_are_flagged_unavailable(self):
+        source = InMemoryDataSource(
+            frames={"AAPL": _STUB_FRAME}, option_chains={"AAPL": _option_chain(bid=0.0)}
+        )
+        analysis, _ = await self._run(source)
+        assert analysis["option_market"]["available"] is False
+        assert "atm_iv" not in analysis["option_market"]
+
+    @pytest.mark.asyncio
+    async def test_raising_chain_fetch_never_breaks_the_briefing(self, capsys):
+        class BrokenChains(InMemoryDataSource):
+            def fetch_option_chain(self, symbol, **kwargs):
+                raise RuntimeError("Yahoo options endpoint down")
+
+        analysis, provider = await self._run(BrokenChains(frames={"AAPL": _STUB_FRAME}))
+
+        assert analysis["option_market"] == {
+            "available": False,
+            "reason": "option chain fetch failed",
+        }
+        assert provider.requests, "the briefing still reached the model"
+        assert "| AAPL |" in capsys.readouterr().out
+
+    def test_prompt_explains_the_block(self):
+        assert '"option_market"' in SYSTEM_PROMPT
+        assert "never a reason to drop or demote" in SYSTEM_PROMPT
+        assert "ATM not traded in N" in SYSTEM_PROMPT
+
+    def test_null_verdict_leaves_options_unclassified(self):
+        block = SYSTEM_PROMPT.split("OPTIONS MARKET:", 1)[1].split("\n\n", 1)[0]
+        assert '"iv_vs_hv" /\n"iv_hv20_ratio" is null' in block
+        assert "leave the options unclassified" in block
+
+    def test_hv_inference_framing_applies_only_without_option_data(self):
+        honesty = SYSTEM_PROMPT.split("VOLATILITY HONESTY:", 1)[1].split("\n\n", 1)[0]
+        assert 'no available "option_market"' in honesty
+        assert "measured IV/HV verdict" in honesty
+
+    def test_non_14_dte_block_reaches_the_prompt_with_its_own_expiry_framing(self):
+        market = {"available": True, "expiry": "2026-09-25", "days_to_expiry": 21}
+        provider = _FakeProvider()
+        generate_briefing(
+            scan_results={"summary": {"total_candidates": 1}},
+            deep_analyses=[_analysis("AAPL", 4.2, option_market=market)],
+            provider=provider,
+            model="m",
+            api_key="k",
+        )
+        projected = _prompt_deep(provider.user_content, "AAPL")["option_market"]
+        assert projected["days_to_expiry"] == 21
+        assert 'framed on that block\'s sampled "expiry"' in SYSTEM_PROMPT
+        assert 'framed\n     on its "expiry" / "days_to_expiry"; otherwise with 14-day DTE' in (
+            SYSTEM_PROMPT
+        )

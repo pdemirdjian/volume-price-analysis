@@ -7,6 +7,7 @@ from volume_price_analysis.agent.picks import (
     PICK_TABLE_HEADER,
     Pick,
     build_picks,
+    render_options_footnote,
     render_picks_table,
 )
 from volume_price_analysis.agent.regime import annotate_regime_conflicts
@@ -257,3 +258,80 @@ def test_deep_price_cannot_supply_stop_entry(entry):
     assert render_picks_table([pick]).splitlines()[-1].endswith("| — | — |")
     if not entry:
         assert pick.price == 999.0
+
+
+_LIQUID_MARKET = {
+    "available": True,
+    "expiry": "2026-12-04",
+    "days_to_expiry": 14,
+    "atm_strike": 100.0,
+    "atm_iv": 0.32,
+    "iv_hv20_ratio": 1.28,
+    "iv_vs_hv": "rich",
+    "expected_move_dollars": 5.5,
+    "expected_move_pct": 5.5,
+    "atm_open_interest": 900,
+    "atm_spread_pct": 8.0,
+    "liquid": True,
+    "liquidity_flags": [],
+}
+
+
+class TestOptionMarket:
+    """PDE-247: the option-chain block is surfaced, flagged, never used to demote."""
+
+    def _pick(self, market):
+        candidate = {
+            "symbol": "AAPL",
+            "composite_score": 5.0,
+            "adx": 35.0,
+            "hv_percentile": 10.0,
+            "latest_price": 100.0,
+            "atr": 2.0,
+        }
+        (pick,) = build_picks(
+            _scan(high=[candidate], bull=[candidate]), [{"symbol": "AAPL", "option_market": market}]
+        )
+        return pick
+
+    def test_illiquid_chain_is_flagged_but_keeps_conviction(self):
+        flags = ["low ATM open interest (<100 per leg)"]
+        illiquid = {**_LIQUID_MARKET, "liquid": False, "liquidity_flags": flags}
+        pick = self._pick(illiquid)
+        assert pick.conviction == "HIGH"
+        assert "illiquid options" in render_picks_table([pick]).splitlines()[-1]
+        assert "low ATM open interest" in render_options_footnote([pick])
+
+    def test_liquid_chain_adds_no_flag(self):
+        pick = self._pick(_LIQUID_MARKET)
+        assert pick.conviction == "HIGH"
+        assert "illiquid" not in render_picks_table([pick])
+
+    def test_footnote_shows_iv_ratio_and_move_against_the_stop(self):
+        footnote = render_options_footnote([self._pick(_LIQUID_MARKET)])
+        line = footnote.splitlines()[-1]
+        assert line == (
+            "- AAPL: 2026-12-04 (14 DTE) · ATM IV 32.0% · IV/HV20 1.28 (rich) · "
+            "implied move ±5.50% vs stop 4.00% · ATM OI 900 · spread 8.0%"
+        )
+
+    def test_unavailable_block_is_stated_not_numbered(self):
+        pick = self._pick({"available": False, "reason": "ATM quotes are crossed"})
+        assert render_options_footnote([pick]).splitlines()[-1] == (
+            "- AAPL: option data unavailable (ATM quotes are crossed)"
+        )
+        assert "illiquid" not in render_picks_table([pick])
+
+    def test_missing_ratio_renders_a_dash(self):
+        market = {**_LIQUID_MARKET, "iv_hv20_ratio": None, "iv_vs_hv": None}
+        assert "IV/HV20 — ·" in render_options_footnote([self._pick(market)])
+
+    def test_unknown_open_interest_renders_a_dash(self):
+        market = {**_LIQUID_MARKET, "atm_open_interest": None}
+        assert "ATM OI — ·" in render_options_footnote([self._pick(market)])
+
+    def test_no_blocks_renders_nothing(self):
+        assert render_options_footnote([Pick("AAPL", "bullish", "LOW", 1.0)]) == ""
+
+    def test_malformed_block_is_ignored(self):
+        assert self._pick("garbage").option_market is None

@@ -53,6 +53,7 @@ from .interpretation import (
     SQUEEZE_WINDOW,
     threshold_verdict,
 )
+from .option_market import OptionChain
 from .payloads import (
     BollingerSnapshot,
     CompositeScore,
@@ -524,6 +525,11 @@ class _ScanDataSource:
 
     def earnings_date(self, symbol: str) -> datetime | None:
         return self.source.earnings_date(symbol)
+
+    def fetch_option_chain(
+        self, symbol: str, *, target_dte: int, today: date
+    ) -> OptionChain | None:
+        return self.source.fetch_option_chain(symbol, target_dte=target_dte, today=today)
 
 
 def _is_rate_limit(exc: Exception) -> bool:

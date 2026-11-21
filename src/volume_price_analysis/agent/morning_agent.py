@@ -23,7 +23,9 @@ from zoneinfo import ZoneInfo
 
 from ..analysis import passes_high_conviction_gate, run_options_analysis, run_scan
 from ..data_fetcher import DataSource, get_default_data_source
-from ..payloads import OptionsAnalysis, ScanResult
+from ..indicators import calculate_historical_volatility
+from ..option_market import option_market_snapshot
+from ..payloads import OptionMarket, OptionsAnalysis, ScanResult
 from ..retry import retry_call
 from .ai_client import (
     AI_RETRY_ATTEMPTS,
@@ -170,7 +172,17 @@ async def run_morning_briefing(
 
     def analyze_symbol(symbol: str) -> OptionsAnalysis:
         data = source.fetch(symbol, period=config.scan_period)
-        return analyze(symbol, data, holding_period=config.scan_holding_period)
+        analysis = analyze(symbol, data, holding_period=config.scan_holding_period)
+        # PDE-247: real IV and chain liquidity, never fatal to the analysis.
+        analysis["option_market"] = _option_market(
+            source,
+            symbol,
+            data,
+            analysis.get("latest_price"),
+            target_dte=config.scan_holding_period,
+            today=briefing_date,
+        )
+        return analysis
 
     async def analyze_symbol_async(symbol: str) -> OptionsAnalysis | None:
         async with semaphore:
@@ -448,6 +460,34 @@ def _fetch_market_regime(source: DataSource, today: date | None = None) -> dict:
     except Exception:
         logger.exception("Market regime check failed")
         return compute_market_regime(None)
+
+
+def _option_market(
+    source: DataSource,
+    symbol: str,
+    data: Any,
+    price: float | None,
+    *,
+    target_dte: int,
+    today: date,
+) -> OptionMarket:
+    """Fetch the chain nearest ``target_dte`` and summarise it (PDE-247).
+
+    Any failure -- a source without options, a raising fetch, a malformed
+    chain -- is reported as an unavailable block, so a pick is never dropped
+    or demoted over option data.
+    """
+    try:
+        chain = source.fetch_option_chain(symbol, target_dte=target_dte, today=today)
+        if chain is None:
+            return {"available": False, "reason": "no option chain available"}
+        if price is None:
+            price = float(data["Close"].iloc[-1])
+        hv20 = float(calculate_historical_volatility(data, window=20).iloc[-1])
+        return option_market_snapshot(chain, price=price, hv20=hv20, today=today)
+    except Exception:
+        logger.warning("  Option chain unavailable for %s", symbol, exc_info=True)
+        return {"available": False, "reason": "option chain fetch failed"}
 
 
 def _get_top_symbols(scan_results: Mapping[str, Any], max_count: int) -> list[str]:

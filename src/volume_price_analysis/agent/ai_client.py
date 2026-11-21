@@ -81,18 +81,45 @@ the gap. Do not add tickers from memory or general market knowledge.
 IMPORTANT: All analysis is optimized for a **14-day holding period**. Indicator
 periods, expected moves, and strategy suggestions are calibrated for this
 timeframe. Make this clear in your strategy suggestions (e.g., "14-day calls"
-not just "calls"). Readers doing shorter-duration plays (e.g., 0-5 DTE) should
-note that signals and levels may not apply to their timeframe.
+not just "calls"). Exception: a strategy informed by an available
+"option_market" block is framed on that block's sampled "expiry" /
+"days_to_expiry" (e.g., "Dec 4 (21 DTE) calls"), since that is the chain the
+IV and liquidity describe. Readers doing shorter-duration plays (e.g., 0-5 DTE)
+should note that signals and levels may not apply to their timeframe.
 
 VOLATILITY HONESTY: The volatility percentile in the data (fields named
 "iv_percentile", "hv_percentile", or "iv_percentile_proxy", basis
 "historical_volatility") is a **Historical Volatility (HV) proxy** computed from
 realized price moves — it is NOT options-market implied volatility (IV). Always
 label it as an HV percentile (e.g., "HV percentile 78% (proxy)") and never
-present it as implied volatility. Frame cheap/expensive options conclusions as
-inferences from HV, not measured IV. Note the percentile ranks the symbol
-against its OWN recent history: a low HV percentile means volatility is low
-for that symbol, not that the expected move is small in absolute terms.
+present it as implied volatility. When a pick has no available "option_market"
+block, frame cheap/expensive options conclusions as inferences from HV, not
+measured IV; when it does, use the block's measured IV/HV verdict instead. Note
+the percentile ranks the symbol against its OWN recent history: a low HV
+percentile means volatility is low for that symbol, not that the expected move
+is small in absolute terms.
+
+OPTIONS MARKET: A deep analysis may carry an "option_market" block measured
+from the live option chain for the expiry nearest the holding period (only
+expiries 7-45 days out are sampled; otherwise the block is unavailable). It is
+the ONLY source of real implied volatility. When "available" is true:
+"atm_iv" is the ATM implied volatility (annualised fraction); "iv_hv20_ratio"
+compares it with 20-day realised volatility ("iv_vs_hv": rich / fair / cheap);
+"expected_move_pct" / "expected_move_dollars" is the ATM straddle mid to
+"expiry" — label it the "options-implied move to <expiry>", distinct from the
+HV ±1σ targets, and compare it with the pick's stop distance. Use the IV/HV
+verdict to choose the structure: rich options favour spreads or selling
+premium, cheap options favour buying premium outright. If "iv_vs_hv" /
+"iv_hv20_ratio" is null (realised vol unavailable), report the measured ATM IV
+and liquidity but leave the options unclassified — do not call them rich or
+cheap, and do not fall back to the HV percentile for that verdict.
+If "liquid" is false, repeat its "liquidity_flags" wherever the pick appears
+and under Risk Warnings; keep the pick ranked exactly as given — illiquidity
+is a caution, never a reason to drop or demote it. A flag "ATM not traded in N
+days" means the quotes may lag the stock: report the numbers with that caveat.
+When "available" is false
+(or the block is absent), say real option data was unavailable and frame the
+strategy from the HV proxy only; never invent IV, open interest, or spreads.
 
 MARKET REGIME: The scan data may include a "market_regime" verdict (SPY's
 prior-session close vs its 20-day SMA), and individual picks may carry a
@@ -133,7 +160,9 @@ Format the briefing in markdown with clear sections:
    - Symbol, price, composite score, direction (bullish/bearish), and
      "Conviction: HIGH|MEDIUM|LOW"
    - Key levels (support/resistance from volume profile)
-   - Suggested strategy (calls, puts, spreads, etc.) with 14-day DTE framing
+   - Suggested strategy (calls, puts, spreads, etc.): with an available
+     "option_market" block, chosen from its IV/HV verdict and liquidity and framed
+     on its "expiry" / "days_to_expiry"; otherwise with 14-day DTE framing
    - Risk factors to watch
 3. **Market Context** - Overall scan statistics, sector themes
 4. **Risk Warnings** - Any divergences, extreme readings, or caution flags
@@ -567,6 +596,11 @@ def _project_deep_analysis(analysis: OptionsAnalysis) -> dict:
     insights = analysis.get("options_insights")
     if insights:
         projected["insights"] = insights
+
+    # Option-chain snapshot (PDE-247): small and already model-ready.
+    option_market = analysis.get("option_market")
+    if isinstance(option_market, dict):
+        projected["option_market"] = option_market
 
     # Fixed conviction label (PDE-69): the model echoes this verbatim.
     if analysis.get("conviction"):

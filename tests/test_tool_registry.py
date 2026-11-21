@@ -22,7 +22,8 @@ from mcp.types import (
     PaginatedRequestParams,
 )
 
-from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, InMemoryDataSource
+from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, DataSource, InMemoryDataSource
+from volume_price_analysis.option_market import OptionChain
 from volume_price_analysis.server import dispatch, handle_list_tools
 from volume_price_analysis.tools import (
     TOOLS,
@@ -72,6 +73,11 @@ class NonCopyingDataSource:
         return self.frames[symbol]
 
     def earnings_date(self, symbol: str) -> datetime.datetime | None:
+        return None
+
+    def fetch_option_chain(
+        self, symbol: str, *, target_dte: int, today: datetime.date
+    ) -> OptionChain | None:
         return None
 
 
@@ -853,3 +859,7 @@ async def test_anchored_vwap_invalid_args_rejected_before_fetch(args, message):
     assert result.is_error is True
     assert message in json.loads(result.content[0].text)["error"]
     assert source.fetch_calls == []
+
+
+def test_non_copying_source_satisfies_the_data_source_protocol():
+    assert isinstance(NonCopyingDataSource({}), DataSource)

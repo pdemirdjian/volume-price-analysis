@@ -1,6 +1,6 @@
 """Tests for stock data fetching functionality."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -15,6 +15,7 @@ from volume_price_analysis.data_fetcher import (
     get_default_data_source,
     validate_symbol_format,
 )
+from volume_price_analysis.option_market import OptionChain
 
 
 def _fetch(symbol: str, **kwargs) -> pd.DataFrame:
@@ -464,3 +465,82 @@ class TestIntegration:
         assert all(col in result.columns for col in expected_cols)
         assert result["Close"].iloc[-1] > 0
         assert result["Volume"].iloc[-1] > 0
+
+
+class TestFetchOptionChain:
+    """PDE-247: the option-chain seam reports unavailable, never raises."""
+
+    TODAY = date(2026, 11, 20)
+
+    @staticmethod
+    def _legs():
+        return pd.DataFrame(
+            {
+                "strike": [100.0],
+                "bid": [1.0],
+                "ask": [1.1],
+                "impliedVolatility": [0.3],
+                "openInterest": [500],
+            }
+        )
+
+    def test_in_memory_returns_configured_chain_and_records_the_call(self):
+        chain = OptionChain(expiry=date(2026, 12, 4), calls=self._legs(), puts=self._legs())
+        source = InMemoryDataSource(option_chains={"AAPL": chain})
+
+        assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is chain
+        assert source.fetch_option_chain("MSFT", target_dte=14, today=self.TODAY) is None
+        assert source.option_chain_calls == [
+            ("AAPL", 14, self.TODAY),
+            ("MSFT", 14, self.TODAY),
+        ]
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_yfinance_fetches_the_expiry_nearest_the_target(self, mock_ticker):
+        ticker = mock_ticker.return_value
+        ticker.options = ("2026-11-27", "2026-12-04", "2027-01-15")
+        ticker.option_chain.return_value = Mock(calls=self._legs(), puts=self._legs())
+
+        chain = YFinanceDataSource().fetch_option_chain("AAPL", target_dte=14, today=self.TODAY)
+
+        ticker.option_chain.assert_called_once_with("2026-12-04")
+        assert chain is not None
+        assert chain.expiry == date(2026, 12, 4)
+        assert list(chain.calls["strike"]) == [100.0]
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_yfinance_without_listed_options_returns_none(self, mock_ticker, caplog):
+        mock_ticker.return_value.options = ()
+        source = YFinanceDataSource()
+        with caplog.at_level("WARNING", logger="volume_price_analysis.data_fetcher"):
+            assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is None
+        mock_ticker.return_value.option_chain.assert_not_called()
+        assert not caplog.records
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_yfinance_failure_returns_none_and_warns(self, mock_ticker, caplog):
+        mock_ticker.return_value.options = ("2026-12-04",)
+        mock_ticker.return_value.option_chain.side_effect = RuntimeError("Yahoo down")
+        source = YFinanceDataSource()
+        with caplog.at_level("WARNING", logger="volume_price_analysis.data_fetcher"):
+            assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is None
+        (record,) = caplog.records
+        assert record.levelname == "WARNING"
+        assert "AAPL" in record.getMessage() and "Yahoo down" in record.getMessage()
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_yfinance_empty_chain_returns_none(self, mock_ticker):
+        mock_ticker.return_value.options = ("2026-12-04",)
+        mock_ticker.return_value.option_chain.return_value = Mock(
+            calls=pd.DataFrame(), puts=self._legs()
+        )
+        source = YFinanceDataSource()
+        assert source.fetch_option_chain("AAPL", target_dte=14, today=self.TODAY) is None
+
+    @patch("volume_price_analysis.data_fetcher.yf.Ticker")
+    def test_invalid_symbol_never_reaches_yahoo(self, mock_ticker):
+        assert (
+            YFinanceDataSource().fetch_option_chain("../etc", target_dte=14, today=self.TODAY)
+            is None
+        )
+        mock_ticker.assert_not_called()
