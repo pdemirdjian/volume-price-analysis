@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.19.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.18.0...v2.19.0) (2026-11-22)
+
+
+### Features
+
+* **PDE-248:** sector context for candidates and the briefing ([#646](https://github.com/pdemirdjian/volume-price-analysis/issues/646)) ([a5c0a49](https://github.com/pdemirdjian/volume-price-analysis/commit/a5c0a490cb5ac32d11e62ad83917a410402fb91b))
+
+
+### Bug Fixes
+
+* **deps:** update dependency google-genai to ~=3.6.1 ([#644](https://github.com/pdemirdjian/volume-price-analysis/issues/644)) ([29e5da1](https://github.com/pdemirdjian/volume-price-analysis/commit/29e5da1852a719f5e164605b105e90113d19ebea))
+
 ## [2.18.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.17.1...v2.18.0) (2026-11-21)
 
 
