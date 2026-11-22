@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.20.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.19.1...v2.20.0) (2026-11-22)
+
+
+### Features
+
+* **PDE-209:** drop in-progress daily bar in MCP tools and data cache ([#649](https://github.com/pdemirdjian/volume-price-analysis/issues/649)) ([f35a10e](https://github.com/pdemirdjian/volume-price-analysis/commit/f35a10e2d7eb532f1c33833cac494efdf6da81a7))
+
 ## [2.19.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.19.0...v2.19.1) (2026-11-22)
 
 
