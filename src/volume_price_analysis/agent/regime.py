@@ -14,7 +14,7 @@ no in-progress bar enters the check.
 """
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any, cast
 
@@ -214,3 +214,31 @@ def format_regime_header(
         picks = "pick" if conflict_count == 1 else "picks"
         header += f" {conflict_count} high-conviction {picks} flagged as counter-regime."
     return header
+
+
+# Sectors named on each side of the "Leading / lagging sectors" line (PDE-248).
+SECTOR_LINE_COUNT = 3
+
+
+def _sector_entry(row: Mapping[str, Any]) -> str:
+    rs_5d = row.get("rs_5d")
+    five = f" (5d {rs_5d:+.1f})" if rs_5d is not None else ""
+    return f"{row['sector']} ({row['etf']}) {row['rs_20d']:+.1f}{five}"
+
+
+def format_sector_line(strength: Sequence[Mapping[str, Any]] | None) -> str | None:
+    """Render the leading and lagging sectors as one markdown line, or None.
+
+    ``strength`` is the scan's ``summary.sector_strength`` (strongest first). Up to
+    ``SECTOR_LINE_COUNT`` sectors per side, never overlapping; None with fewer
+    than two ranked sectors (e.g. a universe without the sector ETFs).
+    """
+    if not strength or len(strength) < 2:
+        return None
+    count = min(SECTOR_LINE_COUNT, len(strength) // 2)
+    leading = ", ".join(_sector_entry(r) for r in strength[:count])
+    lagging = ", ".join(_sector_entry(r) for r in reversed(strength[-count:]))
+    return (
+        f"**Leading / lagging sectors** (20-day return vs SPY, percentage points): "
+        f"leading {leading}; lagging {lagging}."
+    )

@@ -65,6 +65,7 @@ from .payloads import (
 )
 from .redaction import redact_error_message
 from .retry import retry_call
+from .sectors import sector_from_industries, sector_relative_strength
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +93,16 @@ class InsufficientDataError(Exception):
     """
 
 
-def _build_sp500_symbols() -> list[str]:
-    """Build S&P 500 symbol list dynamically from pytickersymbols (bundled data, no network)."""
+def _build_sp500_members() -> dict[str, str | None]:
+    """Map each S&P 500 symbol to its sector, from pytickersymbols (bundled data, no network).
+
+    The sector comes from the payload's ``industries`` list
+    (``sectors.sector_from_industries``); None when it names no sector. The
+    fallback symbols carry no sector.
+    """
     try:
         pts = PyTickerSymbols()
-        symbols: list[str] = []
+        members: dict[str, str | None] = {}
         for stock in pts.get_stocks_by_index("S&P 500"):
             # Prefer the USD-denominated Yahoo symbol (US exchange)
             yahoo_sym = None
@@ -111,14 +117,19 @@ def _build_sp500_symbols() -> list[str]:
                         yahoo_sym = sym_info["yahoo"]
                         break
             if yahoo_sym:
-                symbols.append(yahoo_sym)
-        return sorted(set(symbols))
+                members.setdefault(yahoo_sym, sector_from_industries(stock.get("industries")))
+        return members
     except Exception:
         logger.warning(
             "Failed to load S&P 500 symbols from pytickersymbols, using fallback symbols",
             exc_info=True,
         )
-        return ["AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA"]
+        return dict.fromkeys(["AAPL", "AMZN", "GOOGL", "META", "MSFT", "NVDA", "TSLA"])
+
+
+def _build_sp500_symbols() -> list[str]:
+    """Build the S&P 500 symbol list (see ``_build_sp500_members``)."""
+    return sorted(_build_sp500_members())
 
 
 _ETF_LIST: list[str] = [
@@ -186,6 +197,17 @@ def _cached_universes() -> dict[str, list[str]]:
     }
 
 
+@functools.lru_cache(maxsize=1)
+def _cached_sectors() -> dict[str, str | None]:
+    """Build the sp500 symbol -> sector map once, on first use."""
+    return _build_sp500_members()
+
+
+def get_symbol_sector(symbol: str) -> str | None:
+    """The sp500 member's sector (PDE-248); None for ETFs and other non-members."""
+    return _cached_sectors().get(symbol)
+
+
 def clear_universe_cache() -> None:
     """Rebuild universes on next access from installed pytickersymbols data.
 
@@ -194,6 +216,7 @@ def clear_universe_cache() -> None:
     constituents or reload package files updated on disk.
     """
     _cached_universes.cache_clear()
+    _cached_sectors.cache_clear()
 
 
 def get_universes() -> dict[str, list[str]]:
@@ -720,7 +743,7 @@ async def run_scan(
     #   - error: a genuine fetch/calculation failure
     #   - skipped: insufficient history to analyze (not a failure)
     #   - scanned: successfully analyzed (may or may not become a candidate)
-    candidates = []
+    candidates: list[ScanCandidate] = []
     errors = []
     observations: list[BreadthObservation] = []
     scanned = 0
@@ -739,7 +762,8 @@ async def run_scan(
             if breadth is not None:
                 observations.append(breadth)
             if candidate is not None:
-                candidates.append(candidate)
+                # Copy: a stubbed worker may hand back one shared dict.
+                candidates.append({**candidate, "sector": get_symbol_sector(sym)})
 
     logger.info(
         "Scan complete: %d candidates from %d scanned (%d skipped, %d errors)",
@@ -791,6 +815,9 @@ async def run_scan(
             "rate_limit_errors": rate_limit_errors,
             # Over the scanned sp500 members only, whatever universe was scanned (PDE-210).
             "breadth": summarize_breadth(observations, set(universes.get(BREADTH_UNIVERSE, ()))),
+            # Sector ETFs' 20-session return vs SPY's, strongest first; empty when the
+            # scanned universe lacks SPY or the sector ETFs (PDE-248).
+            "sector_strength": sector_relative_strength(observations),
         },
         "high_conviction_setups": high_conviction[:5] if high_conviction else [],
         "top_bullish": bullish[:max_results] if bullish else [],

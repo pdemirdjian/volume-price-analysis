@@ -90,7 +90,8 @@ counter-regime rows in the pick table, so the header and the table agree.
 
 A candidate rendered as a row of the briefing's pick table: the frozen
 `agent/picks.Pick` dataclass (`symbol`, `direction`, `conviction`, `score`,
-`price`, `regime_conflict`, `earnings_warning`, `stop`, `target`, `option_market`). `build_picks` collects every
+`price`, `regime_conflict`, `earnings_warning`, `stop`, `target`, `option_market`,
+`sector`, `sector_conflict`). `build_picks` collects every
 scan candidate once in briefing priority order; `render_picks_table` renders them
 under the fixed `PICK_TABLE_HEADER` column order, which audits parse. An illiquid
 option market adds an `illiquid options` flag; `render_options_footnote` lists each
@@ -217,6 +218,25 @@ reads e.g. `BULLISH (narrow)`. It never changes the verdict or `regime_conflict`
 The backtest has no breadth.
 
 _Avoided:_ **participation** and **market internals** as names for the summary.
+
+## sector strength
+
+Where the market is moving (PDE-248), from bars the scan already fetched. Every
+candidate carries `sector`: the GICS sector read from the pytickersymbols
+payload's `industries` list (`sectors.sector_from_industries`, the last entry
+naming a sector wins), or None for ETFs and unmapped symbols. Each scan worker's
+`BreadthObservation` also carries the symbol's trailing 5- and 20-session returns;
+`sectors.sector_relative_strength` turns the SPY and SPDR sector-ETF observations
+(`sectors.SECTOR_ETFS`) into `summary.sector_strength`: one row per sector ETF
+(`sector`, `etf`, `return_5d`, `return_20d`, `rs_5d`, `rs_20d`, `rank`), its return
+minus SPY's, ranked on `rs_20d` (rank 1 strongest). Empty when the universe lacks
+SPY or the sector ETFs; an ETF with under 21 closes or a stale last session is
+skipped. The briefing renders a "Leading / lagging sectors" line under the regime
+header (`agent/regime.format_sector_line`), and a pick whose direction fights its
+sector's rank (bullish in the weakest, bearish in the strongest;
+`sectors.sector_conflict`) carries a `counter-sector` flag and a `sector_conflict`
+note in the prompt. Advisory only, like `regime_conflict` minus the conviction
+effect: no score, conviction, or filter changes.
 
 ## high-conviction gate
 

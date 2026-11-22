@@ -17,7 +17,7 @@ from ..payloads import OptionsAnalysis
 from .ai_client import format_briefing_date
 from .ledger import SCORECARD_WINDOW_DAYS, scorecard_table
 from .picks import Pick, build_picks, render_options_footnote, render_picks_table
-from .regime import annotate_regime_conflicts, format_regime_header
+from .regime import annotate_regime_conflicts, format_regime_header, format_sector_line
 
 
 @dataclass(frozen=True)
@@ -124,10 +124,16 @@ def _picks(inputs: BriefingInputs) -> list[Pick]:
 def _regime_header(inputs: BriefingInputs, picks: list[Pick]) -> str:
     """The regime verdict line; the conflict count is the table's flagged rows.
 
-    The scan's ``summary.breadth`` adds the breadth qualifier (PDE-210).
+    The scan's ``summary.breadth`` adds the breadth qualifier (PDE-210); its
+    ``summary.sector_strength`` adds the leading / lagging sectors line beneath
+    (PDE-248), omitted when the scan ranked no sectors.
     """
-    breadth = inputs.scan_results.get("summary", {}).get("breadth")
-    return format_regime_header(inputs.regime, sum(p.regime_conflict for p in picks), breadth)
+    summary = inputs.scan_results.get("summary", {})
+    header = format_regime_header(
+        inputs.regime, sum(p.regime_conflict for p in picks), summary.get("breadth")
+    )
+    sectors = format_sector_line(summary.get("sector_strength"))
+    return f"{header}\n\n{sectors}" if sectors else header
 
 
 def _scorecard(inputs: BriefingInputs) -> str:

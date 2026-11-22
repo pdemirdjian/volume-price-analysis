@@ -54,6 +54,18 @@ def _ledger_rows() -> list[dict]:
     ]
 
 
+def _sector_row(sector, etf, rs_20d, rs_5d, rank) -> dict:
+    return {
+        "sector": sector,
+        "etf": etf,
+        "return_5d": None if rs_5d is None else rs_5d + 0.5,
+        "return_20d": rs_20d + 1.5,
+        "rs_5d": rs_5d,
+        "rs_20d": rs_20d,
+        "rank": rank,
+    }
+
+
 def golden_inputs(**overrides) -> BriefingInputs:
     """The inputs that render tests/golden/briefing_body.md."""
     scan = {
@@ -72,6 +84,13 @@ def golden_inputs(**overrides) -> BriefingInputs:
                 "new_lows": 31,
                 "net_new_highs": -22,
             },
+            "sector_strength": [
+                _sector_row("Consumer Discretionary", "XLY", 3.4, 1.2, 1),
+                _sector_row("Information Technology", "XLK", 2.1, -0.4, 2),
+                _sector_row("Financials", "XLF", -0.3, 0.2, 3),
+                _sector_row("Utilities", "XLU", -1.8, None, 4),
+                _sector_row("Energy", "XLE", -4.6, -2.0, 5),
+            ],
         },
         "high_conviction_setups": [
             {
@@ -80,11 +99,22 @@ def golden_inputs(**overrides) -> BriefingInputs:
                 "latest_price": 190.1,
                 "atr": 3.0,
                 "regime_conflict": "",
+                "sector": "Information Technology",
             }
         ],
         "top_bullish": [
-            {"symbol": "AAPL", "composite_score": 5.2, "latest_price": 190.1},
-            {"symbol": "MSFT", "composite_score": 2.4, "signal_quality": "medium"},
+            {
+                "symbol": "AAPL",
+                "composite_score": 5.2,
+                "latest_price": 190.1,
+                "sector": "Information Technology",
+            },
+            {
+                "symbol": "MSFT",
+                "composite_score": 2.4,
+                "signal_quality": "medium",
+                "sector": "Information Technology",
+            },
         ],
         "top_bearish": [
             {
@@ -93,6 +123,7 @@ def golden_inputs(**overrides) -> BriefingInputs:
                 "latest_price": 240.55,
                 "atr": 5.0,
                 "regime_conflict": "bearish setup against a bullish tape",
+                "sector": "Consumer Discretionary",
             }
         ],
     }
@@ -160,6 +191,28 @@ class TestRender:
         assert "Options (ATM" not in body
         assert "sampled expiry" not in body
         assert "strategies are calibrated for approx. 14 DTE" in body
+
+    def test_sector_line_sits_under_the_regime_header(self):
+        body = render(golden_inputs())
+        line = next(ln for ln in body.splitlines() if ln.startswith("**Leading / lagging"))
+        assert body.index("**Market Regime:") < body.index(line) < body.index("## Pick Summary")
+        assert "leading Consumer Discretionary (XLY) +3.4 (5d +1.2), Information" in line
+        assert "lagging Energy (XLE) -4.6 (5d -2.0), Utilities (XLU) -1.8." in line
+        assert "Financials" not in line  # 5 rows: two per side, never overlapping
+        assert line in render_raw(golden_inputs())
+
+    def test_sector_line_absent_without_sector_strength(self):
+        scan = dict(golden_inputs().scan_results)
+        scan["summary"] = {k: v for k, v in scan["summary"].items() if k != "sector_strength"}
+        assert "Leading / lagging" not in render(golden_inputs(scan_results=scan))
+
+    def test_counter_sector_pick_is_flagged_without_changing_conviction(self):
+        body = render(golden_inputs())
+        tsla = next(ln for ln in body.splitlines() if ln.startswith("| TSLA"))
+        assert "| MEDIUM |" in tsla
+        assert "counter-regime; counter-sector" in tsla
+        aapl = next(ln for ln in body.splitlines() if ln.startswith("| AAPL"))
+        assert "counter-sector" not in aapl
 
     def test_inputs_are_frozen(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -273,7 +326,8 @@ class TestRenderUnknownRegime:
         assert body.splitlines()[2] == (
             "**Market Regime: UNKNOWN** — regime check unavailable (regime check failed)."
         )
-        assert "| TSLA | bearish | MEDIUM | -4.10 | 240.55 | counter-regime |" in body
+        tsla = "| TSLA | bearish | MEDIUM | -4.10 | 240.55 | counter-regime; counter-sector |"
+        assert tsla in body
 
 
 class TestRenderRaw:

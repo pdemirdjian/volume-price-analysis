@@ -55,6 +55,8 @@ _CANDIDATE = _object(
     atr=_NUMBER,
     signal_quality=_STRING,
     key_levels=_OBJECT,
+    # PDE-248: GICS sector for sp500 members, null otherwise. Optional output field.
+    sector={"type": ["string", "null"]},
 )
 
 _CANDIDATES: dict[str, Any] = {"type": "array", "items": _CANDIDATE}
@@ -100,6 +102,20 @@ SCAN_RESULT_SCHEMA = _object(
             new_lows=_INTEGER,
             net_new_highs=_INTEGER,
         ),
+        # PDE-248: sector ETFs ranked by 20-session return minus SPY's; optional.
+        sector_strength={
+            "type": "array",
+            "items": _object(
+                ["sector", "etf", "rs_20d", "rank"],
+                sector=_STRING,
+                etf=_STRING,
+                return_5d=_NUMBER,
+                return_20d=_NUMBER,
+                rs_5d=_NUMBER,
+                rs_20d=_NUMBER,
+                rank=_INTEGER,
+            ),
+        },
     ),
     high_conviction_setups=_CANDIDATES,
     top_bullish=_CANDIDATES,

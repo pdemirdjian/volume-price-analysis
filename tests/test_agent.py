@@ -3256,3 +3256,36 @@ class TestOptionMarketInBriefing:
         assert 'framed\n     on its "expiry" / "days_to_expiry"; otherwise with 14-day DTE' in (
             SYSTEM_PROMPT
         )
+
+
+class TestSectorContextInPrompt:
+    """PDE-248: the sector RS table and sector conflicts reach the model."""
+
+    def test_sector_strength_and_conflict_reach_the_prompt(self):
+        from volume_price_analysis.agent.picks import build_picks
+
+        strength = [
+            {"sector": "Information Technology", "etf": "XLK", "rs_20d": 3.0, "rank": 1},
+            {"sector": "Energy", "etf": "XLE", "rs_20d": -2.0, "rank": 2},
+        ]
+        scan = {
+            "summary": {"total_candidates": 1, "sector_strength": strength},
+            "top_bullish": [{"symbol": "XOM", "composite_score": 3.0, "sector": "Energy"}],
+        }
+        prompt = build_briefing_prompt(scan, [], picks=build_picks(scan, []))
+        projected = json.loads(prompt.split("```json\n")[1].split("```")[0])
+        assert projected["summary"]["sector_strength"] == strength
+        candidate = projected["top_bullish"][0]
+        assert candidate["sector"] == "Energy"
+        assert candidate["sector_conflict"] == "bullish setup in the weakest sector (Energy, XLE)"
+
+    def test_aligned_pick_carries_no_sector_conflict(self):
+        from volume_price_analysis.agent.picks import build_picks
+
+        scan = {"top_bullish": [{"symbol": "NVDA", "composite_score": 3.0}]}
+        prompt = build_briefing_prompt(scan, [], picks=build_picks(scan, []))
+        assert "sector_conflict" not in prompt
+
+    def test_system_prompt_grounds_sector_themes_in_data(self):
+        assert "sector_strength" in SYSTEM_PROMPT
+        assert "sector_conflict" in SYSTEM_PROMPT

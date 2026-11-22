@@ -12,6 +12,7 @@ from volume_price_analysis.agent.regime import (
     breadth_qualifier,
     compute_market_regime,
     format_regime_header,
+    format_sector_line,
 )
 
 
@@ -384,3 +385,31 @@ class TestBreadthLeavesVerdictAlone:
         for key in ("market_regime", "high_conviction_setups", "top_bullish", "top_bearish"):
             assert plain[key] == qualified[key]
         assert build_picks(scan, [], regime=regime) == build_picks(with_breadth, [], regime=regime)
+
+
+class TestFormatSectorLine:
+    """PDE-248: the leading / lagging sectors line under the regime header."""
+
+    @staticmethod
+    def _rows(n: int) -> list[dict]:
+        return [
+            {"sector": f"S{i}", "etf": f"E{i}", "rs_20d": 5.0 - i, "rs_5d": 0.5, "rank": i + 1}
+            for i in range(n)
+        ]
+
+    def test_three_per_side_strongest_and_weakest_first(self):
+        line = format_sector_line(self._rows(11))
+        assert line is not None
+        assert "leading S0 (E0) +5.0 (5d +0.5), S1 (E1) +4.0 (5d +0.5), S2 (E2) +3.0" in line
+        assert "lagging S10 (E10) -5.0 (5d +0.5), S9 (E9) -4.0 (5d +0.5), S8 (E8) -3.0" in line
+        assert "S3 " not in line
+
+    def test_small_tables_never_overlap(self):
+        line = format_sector_line(self._rows(3))
+        assert line is not None
+        assert "leading S0 (E0)" in line and "lagging S2 (E2)" in line
+        assert "S1 " not in line
+
+    @pytest.mark.parametrize("strength", [None, [], [{"sector": "S", "etf": "E", "rs_20d": 1.0}]])
+    def test_absent_without_two_ranked_sectors(self, strength):
+        assert format_sector_line(strength) is None
