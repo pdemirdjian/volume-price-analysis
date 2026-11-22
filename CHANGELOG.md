@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.19.0...v2.19.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **sectors:** override known pytickersymbols sector mislabels ([#647](https://github.com/pdemirdjian/volume-price-analysis/issues/647)) ([7812d9a](https://github.com/pdemirdjian/volume-price-analysis/commit/7812d9a73c3f3eb9d927c85f1635dae8dce19dad))
+
 ## [2.19.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.18.0...v2.19.0) (2026-11-22)
 
 
