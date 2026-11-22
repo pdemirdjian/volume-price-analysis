@@ -6,6 +6,13 @@
 
 * **PDE-209:** session-aware daily bars for MCP tools and data cache — MCP tools now drop today's in-progress daily bar by default until the NYSE session settles (16:15 ET regular, 13:15 ET on NYSE half-days), report `as_of_session` and `last_bar_complete` in their output, and accept `include_partial_bar: true` to opt back in to intraday values. Intraday calls made during market hours will now reflect the last settled session unless `include_partial_bar: true` is passed.
 
+## [2.20.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.19.1...v2.20.0) (2026-11-22)
+
+
+### Features
+
+* **PDE-209:** drop in-progress daily bar in MCP tools and data cache ([#649](https://github.com/pdemirdjian/volume-price-analysis/issues/649)) ([f35a10e](https://github.com/pdemirdjian/volume-price-analysis/commit/f35a10e2d7eb532f1c33833cac494efdf6da81a7))
+
 ## [2.19.1](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.19.0...v2.19.1) (2026-11-22)
 
 
