@@ -492,9 +492,10 @@ class TestStructuredOutput:
     async def test_output_matches_schema_and_text_is_unchanged(self, case, tool, args):
         spec = TOOLS_BY_NAME[tool]
         source = _source()
-        raw = await spec.run(ToolContext(args=dict(args), data_source=source))
+        now = datetime.datetime(2026, 11, 18, 12, 0, tzinfo=MARKET_TZ)
+        raw = await spec.run(ToolContext(args=dict(args), data_source=source, now=now))
 
-        result = await dispatch(tool, dict(args), data_source=source)
+        result = await dispatch(tool, dict(args), data_source=source, now=now)
 
         assert not result.is_error, result.content[0].text
         assert result.content[0].text == _legacy_text(raw)
@@ -730,11 +731,12 @@ class TestBoundaryValidation:
     async def test_optional_nulls_behave_like_omission_for_every_tool(self, spec):
         source = InMemoryDataSource({SYMBOL: make_frame()})
         args = dict(MINIMAL_ARGS[spec.name])
-        baseline = await dispatch(spec.name, args.copy(), data_source=source)
+        now = datetime.datetime(2026, 11, 18, 12, 0, tzinfo=MARKET_TZ)
+        baseline = await dispatch(spec.name, args.copy(), data_source=source, now=now)
         for name in spec.input_schema["properties"]:
             if name not in spec.input_schema.get("required", []) and name not in args:
                 args[name] = None
-        result = await dispatch(spec.name, args, data_source=source)
+        result = await dispatch(spec.name, args, data_source=source, now=now)
         assert not result.is_error, result.content[0].text
         assert json.loads(result.content[0].text) == json.loads(baseline.content[0].text)
         if spec.name == "calculate_volume_profile":
