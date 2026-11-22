@@ -162,13 +162,16 @@ class ToolContext:
         """
         if self.fetched_frame is None:
             symbol = self.require_symbol()
+            # Resolve session state before fetching so a fetch straddling 16:15/13:15 ET
+            # cannot return an intraday bar and then classify it as settled.
+            state = self.session
             frame = self.data_source.fetch(
                 symbol,
                 period=self.period,
                 start=self.args.get("start_date"),
                 end=self.args.get("end_date"),
             )
-            cutoff = None if self.include_partial_bar else self.session.partial_bar_cutoff
+            cutoff = None if self.include_partial_bar else state.partial_bar_cutoff
             if cutoff is not None:
                 dates = pd.to_datetime(frame["Date"]).dt.date
                 frame = frame[dates < cutoff].reset_index(drop=True)
@@ -199,6 +202,8 @@ class ToolContext:
                 "as_of_session": as_of_session.isoformat(),
                 "last_bar_complete": complete,
             }
+        # For scans (no single fetched_frame), as_of_session and last_bar_complete
+        # describe the session cutoff applied from the calendar, not each symbol's data.
         return {
             "as_of_session": state.last_complete_session.isoformat(),
             "last_bar_complete": state.session_complete or not self.include_partial_bar,
@@ -513,7 +518,9 @@ async def _run_scan_candidates(ctx: ToolContext) -> ScanResult:
     arguments = ctx.args
     holding_period = arguments.get("holding_period", 14)
     max_results = arguments.get("max_results", 15)
-    cutoff = None if ctx.include_partial_bar else ctx.session.partial_bar_cutoff
+    # Resolve session state before scanning so fetches straddling close settle stay consistent.
+    state = ctx.session
+    cutoff = None if ctx.include_partial_bar else state.partial_bar_cutoff
 
     return await run_scan(
         symbols=arguments.get("symbols", []),

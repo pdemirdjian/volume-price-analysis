@@ -11,10 +11,16 @@ import pytest
 from volume_price_analysis.data_fetcher import YFinanceDataSource
 from volume_price_analysis.sessions import MARKET_TZ
 
+_FIXED_WALL = datetime(2026, 11, 18, 12, 0, tzinfo=MARKET_TZ)
+
+
+def _fixed_wall_clock() -> datetime:
+    return _FIXED_WALL
+
 
 def test_history_is_reused_and_expires(sample_stock_data):
     now = [0.0]
-    source = YFinanceDataSource(cache_ttl=900, clock=lambda: now[0])
+    source = YFinanceDataSource(cache_ttl=900, clock=lambda: now[0], wall_clock=_fixed_wall_clock)
     with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
         provider.return_value.history.return_value = sample_stock_data.set_index("Date")
         first = source.fetch("AAPL", period="3mo")
@@ -28,7 +34,7 @@ def test_history_is_reused_and_expires(sample_stock_data):
 
 
 def test_clear_cache_forces_refetch(sample_stock_data):
-    source = YFinanceDataSource()
+    source = YFinanceDataSource(wall_clock=_fixed_wall_clock)
     with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
         provider.return_value.history.return_value = sample_stock_data.set_index("Date")
         source.fetch("AAPL")
@@ -38,7 +44,7 @@ def test_clear_cache_forces_refetch(sample_stock_data):
 
 
 def test_each_fetch_parameter_has_a_distinct_key(sample_stock_data):
-    source = YFinanceDataSource()
+    source = YFinanceDataSource(wall_clock=_fixed_wall_clock)
     requests = [
         ("AAPL", {}),
         ("MSFT", {}),
@@ -56,7 +62,7 @@ def test_each_fetch_parameter_has_a_distinct_key(sample_stock_data):
 
 
 def test_failures_and_empty_results_are_retried(sample_stock_data):
-    source = YFinanceDataSource()
+    source = YFinanceDataSource(wall_clock=_fixed_wall_clock)
     with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
         provider.return_value.history.side_effect = [
             ConnectionError("offline"),
@@ -72,7 +78,7 @@ def test_failures_and_empty_results_are_retried(sample_stock_data):
 
 
 def test_concurrent_fetches_share_history_and_return_independent_frames(sample_stock_data):
-    source = YFinanceDataSource()
+    source = YFinanceDataSource(wall_clock=_fixed_wall_clock)
     barrier = Barrier(4)
 
     def fetch():
@@ -92,7 +98,7 @@ def test_concurrent_fetches_share_history_and_return_independent_frames(sample_s
 
 def test_ttl_environment_configuration_can_disable_cache(monkeypatch, sample_stock_data):
     monkeypatch.setenv("DATA_CACHE_TTL_SECONDS", "0")
-    source = YFinanceDataSource()
+    source = YFinanceDataSource(wall_clock=_fixed_wall_clock)
     with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
         provider.return_value.history.return_value = sample_stock_data.set_index("Date")
         source.fetch("AAPL")
@@ -106,7 +112,7 @@ def test_invalid_ttl_environment_falls_back_to_900_seconds(
 ):
     monkeypatch.setenv("DATA_CACHE_TTL_SECONDS", raw)
     now = [0.0]
-    source = YFinanceDataSource(clock=lambda: now[0])
+    source = YFinanceDataSource(clock=lambda: now[0], wall_clock=_fixed_wall_clock)
     assert "DATA_CACHE_TTL_SECONDS" in caplog.text
     assert "900" in caplog.text
     with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
@@ -121,7 +127,7 @@ def test_invalid_ttl_environment_falls_back_to_900_seconds(
 
 
 def test_timeout_does_not_change_cache_key(sample_stock_data):
-    source = YFinanceDataSource()
+    source = YFinanceDataSource(wall_clock=_fixed_wall_clock)
     with patch("volume_price_analysis.data_fetcher.yf.Ticker") as provider:
         provider.return_value.history.return_value = sample_stock_data.set_index("Date")
         source.fetch("AAPL", timeout=12)

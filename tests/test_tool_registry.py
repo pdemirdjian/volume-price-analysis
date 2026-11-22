@@ -25,7 +25,7 @@ from mcp.types import (
 from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, DataSource, InMemoryDataSource
 from volume_price_analysis.option_market import OptionChain
 from volume_price_analysis.server import dispatch, handle_list_tools
-from volume_price_analysis.sessions import MARKET_TZ
+from volume_price_analysis.sessions import MARKET_TZ, session_state
 from volume_price_analysis.tools import (
     TOOLS,
     TOOLS_BY_NAME,
@@ -1063,3 +1063,52 @@ class TestSessionAwareBars:
         assert res.is_error is True
         assert "include_partial_bar must be a boolean" in json.loads(res.content[0].text)["error"]
         assert source.fetch_calls == []
+
+    @pytest.mark.asyncio
+    async def test_session_is_captured_before_fetch_not_after(self, monkeypatch):
+        """A fetch started at 16:14:59 ET that finishes after 16:15 still drops the partial bar."""
+        frame = _frame_ending_on("2026-11-18")
+        clock = [datetime.datetime(2026, 11, 18, 16, 14, 59, tzinfo=MARKET_TZ)]
+        monkeypatch.setattr(
+            "volume_price_analysis.tools.session_state",
+            lambda now=None: session_state(clock[0] if now is None else now),
+        )
+
+        class AdvancingClockSource(InMemoryDataSource):
+            def fetch(self, symbol: str, **kwargs) -> pd.DataFrame:
+                clock[0] = datetime.datetime(2026, 11, 18, 16, 15, 1, tzinfo=MARKET_TZ)
+                return super().fetch(symbol, **kwargs)
+
+        source = AdvancingClockSource({SYMBOL: frame})
+
+        res = await dispatch("get_stock_data", {"symbol": SYMBOL}, data_source=source)
+        assert not res.is_error, res.content[0].text
+        payload = json.loads(res.content[0].text)
+        assert payload["data_points"] == len(frame) - 1
+        assert payload["as_of_session"] == "2026-11-17"
+        assert payload["last_bar_complete"] is True
+
+        # Same boundary check for scan_candidates (both default drop and opt-in metadata).
+        clock[0] = datetime.datetime(2026, 11, 18, 16, 14, 59, tzinfo=MARKET_TZ)
+        scan_res = await dispatch(
+            "scan_candidates",
+            {"symbols": [SYMBOL], "min_score": 0, "min_adx": 0},
+            data_source=source,
+        )
+        assert not scan_res.is_error, scan_res.content[0].text
+        scan_payload = json.loads(scan_res.content[0].text)
+        assert scan_payload["as_of_session"] == "2026-11-17"
+        assert scan_payload["last_bar_complete"] is True
+        cand = (scan_payload["top_bullish"] or scan_payload["top_bearish"])[0]
+        assert cand["latest_price"] == pytest.approx(round(float(frame["Close"].iloc[-2]), 2))
+
+        clock[0] = datetime.datetime(2026, 11, 18, 16, 14, 59, tzinfo=MARKET_TZ)
+        opt_in_scan = await dispatch(
+            "scan_candidates",
+            {"symbols": [SYMBOL], "min_score": 0, "min_adx": 0, "include_partial_bar": True},
+            data_source=source,
+        )
+        assert not opt_in_scan.is_error, opt_in_scan.content[0].text
+        opt_in_payload = json.loads(opt_in_scan.content[0].text)
+        assert opt_in_payload["as_of_session"] == "2026-11-17"
+        assert opt_in_payload["last_bar_complete"] is False
