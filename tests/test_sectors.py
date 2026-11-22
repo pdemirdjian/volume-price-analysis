@@ -1,13 +1,16 @@
 """Tests for sector context (PDE-248): sector tags, sector relative strength, conflicts."""
 
+import json
 from datetime import date
 
+import jsonschema
 import pandas as pd
 import pytest
 
 from volume_price_analysis.analysis import _build_sp500_members, get_symbol_sector, run_scan
 from volume_price_analysis.breadth import BreadthObservation, observe_breadth
 from volume_price_analysis.data_fetcher import InMemoryDataSource
+from volume_price_analysis.output_schemas import SCAN_RESULT_SCHEMA
 from volume_price_analysis.sectors import (
     SECTOR_ETFS,
     sector_conflict,
@@ -80,6 +83,13 @@ class TestSectorFromIndustries:
         assert sector_from_industries(visa) == "Financials"
         assert sector_from_industries(ebay) == "Consumer Discretionary"
         assert sector_from_industries(allegion) == "Industrials"
+
+    def test_sentence_case_tag_is_only_an_alias(self):
+        # Alphabet's payload: "Information technology" is free text, not the GICS name.
+        alphabet = ["Communication Services", "Information technology", "Internet Services",
+                    "Software & IT Services", "Technology"]  # fmt: skip
+        assert sector_from_industries(alphabet) == "Communication Services"
+        assert sector_from_industries(["Information technology"]) == "Information Technology"
 
     def test_bundled_visa_is_financials(self):
         assert get_symbol_sector("V") == "Financials"
@@ -241,6 +251,19 @@ class TestRunScanSectors:
         assert by_symbol["XLK"]["sector"] is None
         strength = result["summary"]["sector_strength"]
         assert [r["etf"] for r in strength] == ["XLK", "XLE"]
+
+    @pytest.mark.asyncio
+    async def test_populated_sector_strength_matches_the_output_schema(self):
+        rising = _frame([100.0 + i for i in range(80)])
+        flat = _frame([100.0 + (i % 2) * 0.1 for i in range(80)])
+        falling = _frame([180.0 - i for i in range(80)])
+        source = InMemoryDataSource({"XLK": rising, "XLE": falling, "XLU": flat, "SPY": flat})
+        result = await run_scan(symbols=["XLK", "XLE", "XLU", "SPY"], data_source=source)
+        assert len(result["summary"]["sector_strength"]) == 3
+        jsonschema.Draft202012Validator.check_schema(SCAN_RESULT_SCHEMA)
+        jsonschema.Draft202012Validator(SCAN_RESULT_SCHEMA).validate(
+            json.loads(json.dumps(result, default=str))
+        )
 
     @pytest.mark.asyncio
     async def test_universe_without_sector_etfs_ranks_nothing(self):

@@ -223,8 +223,11 @@ _Avoided:_ **participation** and **market internals** as names for the summary.
 
 Where the market is moving (PDE-248), from bars the scan already fetched. Every
 candidate carries `sector`: the GICS sector read from the pytickersymbols
-payload's `industries` list (`sectors.sector_from_industries`: the last exact
-GICS name wins; an alias such as "Technology" counts only when none appears), or None for ETFs and unmapped symbols. Each scan worker's
+payload's `industries` list (`sectors.sector_from_industries`: the last
+case-exact, Title Case GICS name wins; aliases such as "Technology" or the
+sentence-case "Information technology" count only when none appears; known
+residual mislabels from the payload's tags: Garmin, Moody's, MSCI read
+Industrials and Steris (STE) reads Utilities), or None for ETFs and unmapped symbols. Each scan worker's
 `BreadthObservation` also carries the symbol's trailing 5- and 20-session returns;
 `sectors.sector_relative_strength` turns the SPY and SPDR sector-ETF observations
 (`sectors.SECTOR_ETFS`) into `summary.sector_strength`: one row per sector ETF

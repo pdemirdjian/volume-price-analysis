@@ -34,11 +34,12 @@ SECTOR_ETFS: dict[str, str] = {
     "Utilities": "XLU",
 }
 
-# Exact GICS sector names (casefolded) -> sector. These always win over aliases.
-_CANONICAL_SECTORS: dict[str, str] = {sector.casefold(): sector for sector in SECTOR_ETFS}
-# Non-GICS spellings in the pytickersymbols payload; used only when no canonical
-# name matched (e.g. "Technology" is a free-text tag on Visa beside "Financials").
+# Non-GICS spellings (casefolded) -> sector; used only when no case-exact GICS name
+# (a ``SECTOR_ETFS`` key) appears. The payload writes GICS names in Title Case and
+# free-text tags in sentence case, so "Information technology" beside Alphabet's
+# "Communication Services", or "Technology" beside Visa's "Financials", is an alias.
 _SECTOR_ALIASES: dict[str, str] = {
+    **{sector.casefold(): sector for sector in SECTOR_ETFS},
     "healthcare": "Health Care",
     "technology": "Information Technology",
 }
@@ -50,17 +51,20 @@ def sector_from_industries(industries: Iterable[Any] | None) -> str | None:
     """The broad sector named in a pytickersymbols ``industries`` list, or None.
 
     The payload mixes the GICS sector with free-text industries and sometimes
-    names two sectors (e.g. ``['Energy', 'Utilities']`` for a utility). Exact
-    GICS names win over aliases; among them the last entry wins, which matches
-    GICS for the payload's multi-sector utilities and REITs. An alias (e.g.
-    ``"Technology"``) is used only when no GICS name appears.
+    names two sectors (e.g. ``['Energy', 'Utilities']`` for a utility).
+    Case-exact GICS names win over aliases; among them the last entry wins,
+    which matches GICS for the payload's multi-sector utilities and REITs. An
+    alias (``"Technology"``, ``"Real estate"``) is used only when no GICS name
+    appears. Known residual mislabels from the payload's own tags: Garmin,
+    Moody's, and MSCI read Industrials; Steris (STE) reads Utilities.
     """
     canonical = alias = None
     for entry in industries or ():
         if isinstance(entry, str):
-            key = entry.strip().casefold()
-            canonical = _CANONICAL_SECTORS.get(key, canonical)
-            alias = _SECTOR_ALIASES.get(key, alias)
+            name = entry.strip()
+            if name in SECTOR_ETFS:
+                canonical = name
+            alias = _SECTOR_ALIASES.get(name.casefold(), alias)
     return canonical or alias
 
 
