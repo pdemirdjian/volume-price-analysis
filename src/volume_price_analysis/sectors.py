@@ -44,6 +44,14 @@ _SECTOR_ALIASES: dict[str, str] = {
     "technology": "Information Technology",
 }
 
+# Symbol -> GICS sector where the pytickersymbols payload's own tags are wrong; wins over them.
+SECTOR_OVERRIDES: dict[str, str] = {
+    "GRMN": "Consumer Discretionary",
+    "MCO": "Financials",
+    "MSCI": "Financials",
+    "STE": "Health Care",
+}
+
 RS_BENCHMARK = "SPY"
 
 

@@ -65,7 +65,7 @@ from .payloads import (
 )
 from .redaction import redact_error_message
 from .retry import retry_call
-from .sectors import sector_from_industries, sector_relative_strength
+from .sectors import SECTOR_OVERRIDES, sector_from_industries, sector_relative_strength
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,8 @@ def _build_sp500_members() -> dict[str, str | None]:
     """Map each S&P 500 symbol to its sector, from pytickersymbols (bundled data, no network).
 
     The sector comes from the payload's ``industries`` list
-    (``sectors.sector_from_industries``); None when it names no sector. The
+    (``sectors.sector_from_industries``) unless ``sectors.SECTOR_OVERRIDES``
+    names the symbol; None when it names no sector. The
     fallback symbols carry no sector.
     """
     try:
@@ -117,7 +118,11 @@ def _build_sp500_members() -> dict[str, str | None]:
                         yahoo_sym = sym_info["yahoo"]
                         break
             if yahoo_sym:
-                members.setdefault(yahoo_sym, sector_from_industries(stock.get("industries")))
+                members.setdefault(
+                    yahoo_sym,
+                    SECTOR_OVERRIDES.get(yahoo_sym)
+                    or sector_from_industries(stock.get("industries")),
+                )
         return members
     except Exception:
         logger.warning(

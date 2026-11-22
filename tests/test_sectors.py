@@ -13,6 +13,7 @@ from volume_price_analysis.data_fetcher import InMemoryDataSource
 from volume_price_analysis.output_schemas import SCAN_RESULT_SCHEMA
 from volume_price_analysis.sectors import (
     SECTOR_ETFS,
+    SECTOR_OVERRIDES,
     sector_conflict,
     sector_from_industries,
     sector_relative_strength,
@@ -111,6 +112,16 @@ class TestSp500Members:
         members = _build_sp500_members()
         assert members["NVDA"] == "Information Technology"
         assert set(members.values()) - {None} <= set(SECTOR_ETFS)
+
+    def test_overrides_fix_payload_mislabels(self):
+        members = _build_sp500_members()
+        assert SECTOR_OVERRIDES == {
+            "GRMN": "Consumer Discretionary",
+            "MCO": "Financials",
+            "MSCI": "Financials",
+            "STE": "Health Care",
+        }
+        assert {sym: members[sym] for sym in SECTOR_OVERRIDES} == SECTOR_OVERRIDES
 
     def test_etfs_and_unknown_symbols_have_no_sector(self):
         assert get_symbol_sector("XLK") is None
