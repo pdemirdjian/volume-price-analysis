@@ -14,6 +14,7 @@ from datetime import date
 from typing import Any, cast
 
 from ..payloads import OptionsAnalysis, ScanResult
+from ..sectors import RS_BENCHMARK
 from .picks import Pick
 
 logger = logging.getLogger(__name__)
@@ -367,8 +368,10 @@ def _collect_input_symbols(
     """Collect every ticker symbol present anywhere in the scan/analysis input.
 
     Includes scan candidates (high-conviction / bullish / bearish) and symbols
-    the scan attempted but errored on, plus every deep-analysis symbol. A symbol
-    the scan reported on is *grounded*: naming it is not a hallucination.
+    the scan attempted but errored on, plus every deep-analysis symbol and, when
+    the scan ranked sectors, each ``summary.sector_strength`` ETF and the SPY
+    benchmark (PDE-248). A symbol the scan reported on is *grounded*: naming it
+    is not a hallucination.
     """
     symbols: set[str] = set()
     for key in ("high_conviction_setups", "top_bullish", "top_bearish", "errors"):
@@ -378,6 +381,12 @@ def _collect_input_symbols(
     for analysis in deep_analyses or []:
         if isinstance(analysis, dict) and analysis.get("symbol"):
             symbols.add(_normalize_symbol(str(analysis["symbol"])))
+    summary = cast(Mapping[str, Any], scan_results).get("summary")
+    strength = summary.get("sector_strength") if isinstance(summary, dict) else None
+    for row in strength or []:
+        if isinstance(row, dict) and row.get("etf"):
+            symbols.add(_normalize_symbol(str(row["etf"])))
+            symbols.add(RS_BENCHMARK)
     symbols.discard("")
     return symbols
 

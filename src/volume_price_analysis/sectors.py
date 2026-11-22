@@ -34,10 +34,11 @@ SECTOR_ETFS: dict[str, str] = {
     "Utilities": "XLU",
 }
 
-# pytickersymbols spells some GICS sectors several ways; casefolded alias -> sector.
-# Its other ``industries`` values are free-text industries and map to nothing.
+# Exact GICS sector names (casefolded) -> sector. These always win over aliases.
+_CANONICAL_SECTORS: dict[str, str] = {sector.casefold(): sector for sector in SECTOR_ETFS}
+# Non-GICS spellings in the pytickersymbols payload; used only when no canonical
+# name matched (e.g. "Technology" is a free-text tag on Visa beside "Financials").
 _SECTOR_ALIASES: dict[str, str] = {
-    **{sector.casefold(): sector for sector in SECTOR_ETFS},
     "healthcare": "Health Care",
     "technology": "Information Technology",
 }
@@ -49,15 +50,18 @@ def sector_from_industries(industries: Iterable[Any] | None) -> str | None:
     """The broad sector named in a pytickersymbols ``industries`` list, or None.
 
     The payload mixes the GICS sector with free-text industries and sometimes
-    names two sectors (e.g. ``['Energy', 'Utilities']`` for a utility); the last
-    entry that names a sector wins, which matches GICS for the payload's
-    multi-sector utilities and REITs.
+    names two sectors (e.g. ``['Energy', 'Utilities']`` for a utility). Exact
+    GICS names win over aliases; among them the last entry wins, which matches
+    GICS for the payload's multi-sector utilities and REITs. An alias (e.g.
+    ``"Technology"``) is used only when no GICS name appears.
     """
-    sector = None
+    canonical = alias = None
     for entry in industries or ():
         if isinstance(entry, str):
-            sector = _SECTOR_ALIASES.get(entry.strip().casefold(), sector)
-    return sector
+            key = entry.strip().casefold()
+            canonical = _CANONICAL_SECTORS.get(key, canonical)
+            alias = _SECTOR_ALIASES.get(key, alias)
+    return canonical or alias
 
 
 def sector_relative_strength(observations: Iterable[BreadthObservation]) -> list[SectorStrength]:
@@ -75,7 +79,7 @@ def sector_relative_strength(observations: Iterable[BreadthObservation]) -> list
     if spy is None or spy.return_20d is None:
         return []
 
-    rows: list[SectorStrength] = []
+    ranked: list[tuple[float, SectorStrength]] = []
     for sector, etf in SECTOR_ETFS.items():
         etf_obs = by_symbol.get(etf)
         if etf_obs is None or etf_obs.return_20d is None or etf_obs.session != spy.session:
@@ -84,18 +88,24 @@ def sector_relative_strength(observations: Iterable[BreadthObservation]) -> list
         rs_5d = (
             None if ret_5d is None or spy.return_5d is None else round(ret_5d - spy.return_5d, 2)
         )
-        rows.append(
-            {
-                "sector": sector,
-                "etf": etf,
-                "return_5d": None if ret_5d is None else round(ret_5d, 2),
-                "return_20d": round(ret_20d, 2),
-                "rs_5d": rs_5d,
-                "rs_20d": round(ret_20d - spy.return_20d, 2),
-                "rank": 0,
-            }
+        rs_20d = ret_20d - spy.return_20d
+        ranked.append(
+            (
+                rs_20d,
+                {
+                    "sector": sector,
+                    "etf": etf,
+                    "return_5d": None if ret_5d is None else round(ret_5d, 2),
+                    "return_20d": round(ret_20d, 2),
+                    "rs_5d": rs_5d,
+                    "rs_20d": round(rs_20d, 2),
+                    "rank": 0,
+                },
+            )
         )
-    rows.sort(key=lambda r: (-r["rs_20d"], r["etf"]))
+    # Rank on the unrounded RS so distinct values that round equal keep their order.
+    ranked.sort(key=lambda item: (-item[0], item[1]["etf"]))
+    rows = [row for _, row in ranked]
     for rank, row in enumerate(rows, start=1):
         row["rank"] = rank
     return rows

@@ -335,3 +335,48 @@ class TestOptionMarket:
 
     def test_malformed_block_is_ignored(self):
         assert self._pick("garbage").option_market is None
+
+
+class TestSectorConflict:
+    """PDE-248: a sector conflict flags the pick but never changes conviction."""
+
+    _STRENGTH = [
+        {"sector": "Information Technology", "etf": "XLK", "rs_20d": 3.0, "rank": 1},
+        {"sector": "Energy", "etf": "XLE", "rs_20d": -2.0, "rank": 2},
+    ]
+
+    def _scan(self, candidate):
+        scan = _scan(high=[candidate], bull=[candidate])
+        return {**scan, "summary": {"sector_strength": self._STRENGTH}}
+
+    def test_high_conviction_pick_with_sector_conflict_stays_high(self):
+        candidate = {
+            "symbol": "XOM",
+            "composite_score": 5.0,
+            "adx": 35.0,
+            "hv_percentile": 10.0,
+            "latest_price": 100.0,
+            "atr": 2.0,
+            "sector": "Energy",
+        }
+        (pick,) = build_picks(self._scan(candidate))
+        assert pick.conviction == "HIGH"
+        assert pick.sector_conflict == "bullish setup in the weakest sector (Energy, XLE)"
+        assert "counter-sector" in render_picks_table([pick]).splitlines()[-1]
+
+    def test_deep_score_sign_decides_the_direction(self):
+        # Scan says bullish in the weakest sector (a conflict), but the deep
+        # analysis flips the pick bearish: no conflict for a bearish weak-sector pick.
+        candidate = {"symbol": "XOM", "composite_score": 2.0, "sector": "Energy"}
+        deep = [{"symbol": "XOM", "composite_signal": {"score": -3.0}}]
+        (pick,) = build_picks(self._scan(candidate), deep)
+        assert pick.direction == "bearish"
+        assert pick.sector_conflict is None
+        # And the reverse: a scan-bearish pick in the strongest sector turned
+        # bullish by the deep score is no conflict either, while the scan sign alone is.
+        tech = {"symbol": "NVDA", "composite_score": -2.0, "sector": "Information Technology"}
+        (scan_only,) = build_picks(self._scan(tech))
+        assert scan_only.sector_conflict is not None
+        flipped = [{"symbol": "NVDA", "composite_signal": {"score": 3.0}}]
+        (deep_pick,) = build_picks(self._scan(tech), flipped)
+        assert deep_pick.sector_conflict is None

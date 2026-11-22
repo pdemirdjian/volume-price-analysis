@@ -69,6 +69,21 @@ class TestSectorFromIndustries:
         # The payload tags utilities ['Energy', 'Utilities']; GICS says Utilities.
         assert sector_from_industries(["Energy", "Utilities"]) == "Utilities"
 
+    def test_gics_name_beats_a_later_alias(self):
+        # Installed pytickersymbols payloads: an alias must not override a GICS name.
+        visa = ["Financials", "Internet Services", "Payment cards services",
+                "Software & IT Services", "Technology"]  # fmt: skip
+        ebay = ["Consumer Discretionary", "E-commerce", "Internet Services",
+                "Software & IT Services", "Technology"]  # fmt: skip
+        allegion = ["Communications & Networking", "Industrials", "Security , Access control",
+                    "Technology", "Technology Equipment"]  # fmt: skip
+        assert sector_from_industries(visa) == "Financials"
+        assert sector_from_industries(ebay) == "Consumer Discretionary"
+        assert sector_from_industries(allegion) == "Industrials"
+
+    def test_bundled_visa_is_financials(self):
+        assert get_symbol_sector("V") == "Financials"
+
     def test_free_text_industries_map_to_none(self):
         assert sector_from_industries(["Conglomerate", "Retail"]) is None
         assert sector_from_industries([]) is None
@@ -124,6 +139,14 @@ class TestSectorRelativeStrength:
             "rank": 1,
         }
         assert rows[-1]["rs_20d"] == -5.0
+
+    def test_ranks_on_unrounded_rs(self):
+        # 0.0041 and 0.0049 both round to 0.0; the larger must still rank first.
+        rows = sector_relative_strength(
+            [_obs("SPY", 0.0), _obs("XLB", 0.0041), _obs("XLU", 0.0049)]
+        )
+        assert [r["etf"] for r in rows] == ["XLU", "XLB"]
+        assert [r["rs_20d"] for r in rows] == [0.0, 0.0]
 
     def test_ties_break_on_etf(self):
         rows = sector_relative_strength([_obs("SPY", 0.0), _obs("XLU", 1.0), _obs("XLB", 1.0)])
@@ -212,9 +235,10 @@ class TestRunScanSectors:
             min_score=0,
             min_adx=0,
         )
-        sectors = {c["symbol"]: c.get("sector") for c in result["top_bullish"]}
-        assert sectors.get("NVDA") == "Information Technology"
-        assert sectors.get("XLK", None) is None
+        by_symbol = {c["symbol"]: c for c in result["top_bullish"]}
+        assert by_symbol["NVDA"]["sector"] == "Information Technology"
+        assert "sector" in by_symbol["XLK"]
+        assert by_symbol["XLK"]["sector"] is None
         strength = result["summary"]["sector_strength"]
         assert [r["etf"] for r in strength] == ["XLK", "XLE"]
 

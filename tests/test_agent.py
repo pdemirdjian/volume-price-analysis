@@ -3289,3 +3289,17 @@ class TestSectorContextInPrompt:
     def test_system_prompt_grounds_sector_themes_in_data(self):
         assert "sector_strength" in SYSTEM_PROMPT
         assert "sector_conflict" in SYSTEM_PROMPT
+
+    def test_sector_etfs_and_benchmark_are_grounded(self):
+        scan = {
+            "summary": {
+                "sector_strength": [
+                    {"sector": "Information Technology", "etf": "XLK", "rs_20d": 3.0},
+                    {"sector": "Energy", "etf": "XLE", "rs_20d": -2.0},
+                ]
+            },
+            "top_bullish": [{"symbol": "XOM", "composite_score": 3.0}],
+        }
+        briefing = "XLK leads SPY while XLE lags; XOM fights its sector. ZZZZ is invented."
+        assert find_ungrounded_tickers(briefing, scan, []) == ["ZZZZ"]
+        assert "SPY" in find_ungrounded_tickers("SPY", {"top_bullish": []}, [])
