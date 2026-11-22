@@ -23,6 +23,8 @@ def _obs(
     high: bool = False,
     low: bool = False,
     session: date | None = date(2026, 3, 27),
+    r5: float | None = None,
+    r20: float | None = None,
 ) -> BreadthObservation:
     return BreadthObservation(
         symbol=symbol,
@@ -33,6 +35,8 @@ def _obs(
         volume=volume,
         new_high=high,
         new_low=low,
+        return_5d=r5,
+        return_20d=r20,
     )
 
 
@@ -154,6 +158,8 @@ class TestObserveBreadth:
             volume=7.0,
             high=True,
             session=frame["Date"].iloc[-1].date(),
+            r5=pytest.approx((60 / 55 - 1) * 100),
+            r20=50.0,  # 60 vs 40
         )
 
     def test_flat_series_is_neither_new_high_nor_low(self):

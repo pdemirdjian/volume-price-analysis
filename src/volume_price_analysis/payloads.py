@@ -17,6 +17,8 @@ class ScanCandidate(TypedDict):
     conviction: NotRequired[str]
     regime_conflict: NotRequired[str]
     earnings_warning: NotRequired[str]
+    sector_conflict: NotRequired[str]
+    sector: NotRequired[str | None]
     symbol: str
     composite_score: float
     recommendation: str
@@ -71,6 +73,16 @@ class BreadthSummary(TypedDict):
     net_new_highs: int
 
 
+class SectorStrength(TypedDict):
+    sector: str
+    etf: str
+    return_5d: float | None
+    return_20d: float
+    rs_5d: float | None
+    rs_20d: float
+    rank: int
+
+
 class ScanResultSummary(TypedDict):
     total_candidates: int
     bullish_setups: int
@@ -80,6 +92,7 @@ class ScanResultSummary(TypedDict):
     errors: int
     rate_limit_errors: int
     breadth: BreadthSummary
+    sector_strength: list[SectorStrength]
 
 
 class ScanResult(TypedDict):

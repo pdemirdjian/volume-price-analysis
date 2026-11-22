@@ -2,13 +2,15 @@
 
 **Market Regime: BULLISH (narrow)** — SPY closed at 500.00, 1.2% above its 20-day SMA (494.07) as of 2026-09-03. Breadth: 38% of 498 S&P 500 symbols above their 20-day SMA (45% above their 50-day), up/down volume 0.69, net new 20-day highs -22. 1 high-conviction pick flagged as counter-regime.
 
+**Leading / lagging sectors** (20-day return vs SPY, percentage points): leading Consumer Discretionary (XLY) +3.4 (5d +1.2), Information Technology (XLK) +2.1 (5d -0.4); lagging Energy (XLE) -4.6 (5d -2.0), Utilities (XLU) -1.8.
+
 ## Pick Summary
 
 | Symbol | Direction | Conviction | Score | Price | Flags | Stop | Target |
 |---|---|---|---|---|---|---|---|
 | AAPL | bullish | MEDIUM | +5.20 | 190.10 | EARNINGS in 5 day(s) | 184.10 | 202.10 |
 | MSFT | bullish | LOW | +2.40 | — | — | — | — |
-| TSLA | bearish | MEDIUM | -4.10 | 240.55 | counter-regime | 250.55 | 220.55 |
+| TSLA | bearish | MEDIUM | -4.10 | 240.55 | counter-regime; counter-sector | 250.55 | 220.55 |
 
 ## Scorecard
 

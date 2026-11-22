@@ -14,6 +14,7 @@ from datetime import date
 from typing import Any, cast
 
 from ..payloads import OptionsAnalysis, ScanResult
+from ..sectors import RS_BENCHMARK
 from .picks import Pick
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,16 @@ scanned, but note the conflict explicitly wherever such a pick is presented
 and repeat it under Risk Warnings. Treat the regime as context for the
 reader, not a proven edge filter — never drop or reorder picks because of it.
 
+SECTORS: Candidates carry a "sector" (null for ETFs and unmapped symbols), and
+"summary"."sector_strength" ranks the SPDR sector ETFs by 20-day return minus
+SPY's ("rs_20d", rank 1 strongest; "rs_5d" is the 5-day figure). Base every
+sector theme in Market Context on that table and the candidates' sectors (e.g.
+leading/lagging sectors, picks clustered in one sector) — never on outside
+knowledge. If "sector_strength" is empty or absent, say sector data was
+unavailable. A "sector_conflict" note means the pick fights its sector's
+relative strength; mention it where the pick appears, as context only — never
+drop, reorder, or relabel a pick because of it.
+
 CONSISTENCY: Cite exactly ONE value per metric per symbol. If a symbol appears
 in both the scan results and the deep analysis, use the deep-analysis values
 for indicator readings and levels, except the pick entry/stop/target below. Never
@@ -164,7 +175,7 @@ Format the briefing in markdown with clear sections:
      "option_market" block, chosen from its IV/HV verdict and liquidity and framed
      on its "expiry" / "days_to_expiry"; otherwise with 14-day DTE framing
    - Risk factors to watch
-3. **Market Context** - Overall scan statistics, sector themes
+3. **Market Context** - Overall scan statistics, sector themes (from sector_strength)
 4. **Risk Warnings** - Any divergences, extreme readings, or caution flags
 
 Keep it concise but thorough. Use bullet points. No fluff."""
@@ -357,8 +368,10 @@ def _collect_input_symbols(
     """Collect every ticker symbol present anywhere in the scan/analysis input.
 
     Includes scan candidates (high-conviction / bullish / bearish) and symbols
-    the scan attempted but errored on, plus every deep-analysis symbol. A symbol
-    the scan reported on is *grounded*: naming it is not a hallucination.
+    the scan attempted but errored on, plus every deep-analysis symbol and, when
+    the scan ranked sectors, each ``summary.sector_strength`` ETF and the SPY
+    benchmark (PDE-248). A symbol the scan reported on is *grounded*: naming it
+    is not a hallucination.
     """
     symbols: set[str] = set()
     for key in ("high_conviction_setups", "top_bullish", "top_bearish", "errors"):
@@ -368,6 +381,12 @@ def _collect_input_symbols(
     for analysis in deep_analyses or []:
         if isinstance(analysis, dict) and analysis.get("symbol"):
             symbols.add(_normalize_symbol(str(analysis["symbol"])))
+    summary = cast(Mapping[str, Any], scan_results).get("summary")
+    strength = summary.get("sector_strength") if isinstance(summary, dict) else None
+    for row in strength or []:
+        if isinstance(row, dict) and row.get("etf"):
+            symbols.add(_normalize_symbol(str(row["etf"])))
+            symbols.add(RS_BENCHMARK)
     symbols.discard("")
     return symbols
 
@@ -667,14 +686,20 @@ def strip_date_placeholders(briefing: str) -> str:
 
 
 def _apply_pick_fields(projected_scan: dict, picks: Iterable[Pick]) -> dict:
-    """Attach each Pick's conviction and structural exit levels to its candidate.
+    """Attach each Pick's conviction, exit levels, and any sector conflict to its candidate.
 
     The Pick list is the one place conviction is derived (PDE-150), so the
     prompt reads the label off it rather than off the candidate dicts. Returns
     a copy; candidate dicts are shared with the caller's scan results.
     """
     by_symbol = {
-        p.symbol: {"conviction": p.conviction, "entry": p.price, "stop": p.stop, "target": p.target}
+        p.symbol: {
+            "conviction": p.conviction,
+            "entry": p.price,
+            "stop": p.stop,
+            "target": p.target,
+            **({"sector_conflict": p.sector_conflict} if p.sector_conflict else {}),
+        }
         for p in picks
     }
     if not by_symbol:

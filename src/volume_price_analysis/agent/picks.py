@@ -17,6 +17,10 @@ Conviction rule (shares its thresholds with ``analysis.run_scan``):
   composite's ``signal_quality`` is ``"high"`` (ADX > 30).
 - ``LOW``: everything else that passed the scan filters.
 
+A ``sector_conflict`` note (PDE-248: a bullish pick in the weakest sector by
+20-session relative strength, or a bearish one in the strongest) is advisory
+only: it adds a table flag and never changes conviction.
+
 An ``earnings_warning`` or ``regime_conflict`` note bars HIGH: the candidate
 drops to its next-best leg. :func:`build_picks` takes the regime verdict and
 applies that annotation itself (PDE-150), so conviction is derived exactly
@@ -32,6 +36,7 @@ from math import isfinite
 from typing import Any, Literal
 
 from ..analysis import HIGH_CONVICTION_MIN_ABS_SCORE, passes_high_conviction_gate
+from ..sectors import sector_conflict
 from .regime import REGIME_DIRECTIONS, annotate_regime_conflicts
 
 Conviction = Literal["HIGH", "MEDIUM", "LOW"]
@@ -65,6 +70,9 @@ class Pick:
     target: float | None = None
     # The deep analysis's option-chain block (PDE-247); None when not deep-analysed.
     option_market: Mapping[str, Any] | None = None
+    # PDE-248: the candidate's sector, and a note when the pick fights its sector's RS rank.
+    sector: str | None = None
+    sector_conflict: str | None = None
 
 
 def _qualifies_high(candidate: dict, *, listed: bool) -> bool:
@@ -157,6 +165,8 @@ def build_picks(
         a["symbol"]: a for a in deep_analyses if isinstance(a, dict) and a.get("symbol")
     }
     high = _high_conviction_symbols(scan_results)
+    summary = scan_results.get("summary")
+    strength = (summary.get("sector_strength") if isinstance(summary, dict) else None) or []
     picks: list[Pick] = []
     seen: set[str] = set()
     for key in _CANDIDATE_LISTS:
@@ -187,6 +197,9 @@ def build_picks(
             )
             earnings_warning = deep.get("earnings_warning") or candidate.get("earnings_warning")
             option_market = deep.get("option_market")
+            sector = candidate.get("sector")
+            # Judged on the pick's own direction (the deep score may override the scan's).
+            sector_note = sector_conflict({**candidate, "composite_score": score}, strength)
             picks.append(
                 Pick(
                     symbol=symbol,
@@ -204,6 +217,8 @@ def build_picks(
                     stop=stop,
                     target=target,
                     option_market=option_market if isinstance(option_market, dict) else None,
+                    sector=sector if isinstance(sector, str) else None,
+                    sector_conflict=sector_note,
                 )
             )
     return picks
@@ -237,6 +252,8 @@ def _flags(pick: Pick) -> str:
         flags.append("counter-regime")
     if pick.earnings_warning:
         flags.append(pick.earnings_warning)
+    if pick.sector_conflict:
+        flags.append("counter-sector")
     market = pick.option_market or {}
     if market.get("available") and market.get("liquid") is False:
         flags.append("illiquid options")

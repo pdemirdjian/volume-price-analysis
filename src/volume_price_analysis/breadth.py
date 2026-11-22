@@ -24,6 +24,9 @@ BREADTH_LONG_SMA = 50
 # Sessions in the "new N-day high/low" window, the last session included: a new high
 # is a last-session High strictly above every High of the prior N - 1 sessions.
 BREADTH_HIGH_LOW_WINDOW = 20
+# Trailing-return windows, in sessions, carried for sector relative strength (PDE-248).
+RETURN_SHORT_SESSIONS = 5
+RETURN_LONG_SESSIONS = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +36,9 @@ class BreadthObservation:
     ``above_sma20``/``above_sma50`` are None when there are fewer closes than
     the SMA needs. ``up_close`` is True for a close above the prior close,
     False for below, and None when unchanged. ``session`` is the last bar's
-    date (None when the frame has no ``Date`` column).
+    date (None when the frame has no ``Date`` column). ``return_5d``/``return_20d``
+    are the trailing 5- and 20-session close-to-close returns in percent (None with
+    too few closes); sector relative strength reads them (PDE-248).
     """
 
     symbol: str
@@ -44,6 +49,8 @@ class BreadthObservation:
     volume: float
     new_high: bool
     new_low: bool
+    return_5d: float | None = None
+    return_20d: float | None = None
 
 
 def _above_sma(closes: pd.Series, period: int) -> bool | None:
@@ -88,7 +95,19 @@ def observe_breadth(symbol: str, data: pd.DataFrame) -> BreadthObservation | Non
         volume=float(volume),
         new_high=new_high,
         new_low=new_low,
+        return_5d=_trailing_return(closes, RETURN_SHORT_SESSIONS),
+        return_20d=_trailing_return(closes, RETURN_LONG_SESSIONS),
     )
+
+
+def _trailing_return(closes: pd.Series, sessions: int) -> float | None:
+    """Percent change of the last close over the close ``sessions`` bars earlier."""
+    if len(closes) <= sessions:
+        return None
+    base = float(closes.iloc[-1 - sessions])
+    if not base > 0:
+        return None
+    return (float(closes.iloc[-1]) / base - 1.0) * 100.0
 
 
 def _pct(flags: list[bool | None]) -> float | None:
