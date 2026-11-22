@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import sys
+from datetime import datetime
 
 from mcp.server import NotificationOptions, Server, ServerRequestContext
 from mcp.server.models import InitializationOptions
@@ -71,6 +72,7 @@ async def dispatch(
     arguments: dict,
     *,
     data_source: DataSource | None = None,
+    now: datetime | None = None,
 ) -> CallToolResult:
     """Run one registry tool and format its result.
 
@@ -79,6 +81,8 @@ async def dispatch(
         arguments: Raw MCP arguments, passed through to the tool's context.
         data_source: Market-data seam. Defaults to the production
             ``DataSource`` when not injected; tests inject an in-memory one.
+        now: Optional aware datetime for session-bar completeness; None reads
+            the current clock.
     """
     logger.info("Tool called: %s", name)
     logger.debug("Tool arguments: %s", arguments)
@@ -93,6 +97,7 @@ async def dispatch(
             args=arguments,
             data_source=data_source if data_source is not None else get_default_data_source(),
             default_period=spec.default_period,
+            now=now,
         )
         result = await spec.run(ctx)
 

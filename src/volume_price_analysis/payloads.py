@@ -97,6 +97,8 @@ class ScanResultSummary(TypedDict):
 
 class ScanResult(TypedDict):
     market_regime: NotRequired[dict[str, Any]]
+    as_of_session: NotRequired[str]
+    last_bar_complete: NotRequired[bool]
     scan_parameters: ScanResultScanParameters
     summary: ScanResultSummary
     high_conviction_setups: list[ScanCandidate]
@@ -218,6 +220,8 @@ class ComprehensiveAnalysisVolumeProfile(TypedDict):
 
 
 class ComprehensiveAnalysis(TypedDict):
+    as_of_session: NotRequired[str]
+    last_bar_complete: NotRequired[bool]
     symbol: str
     analysis_type: str
     period: str
@@ -411,6 +415,8 @@ class OptionsAnalysis(TypedDict):
     conviction: NotRequired[str]
     earnings_warning: NotRequired[str]
     option_market: NotRequired[OptionMarket]
+    as_of_session: NotRequired[str]
+    last_bar_complete: NotRequired[bool]
     symbol: str
     analysis_type: str
     period: str
