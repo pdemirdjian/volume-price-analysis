@@ -12,10 +12,12 @@ Adding a tool means appending one :class:`ToolSpec` to :data:`TOOLS`; the
 list-tools response and the dispatcher both derive from it.
 """
 
+import functools
 import logging
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -47,6 +49,7 @@ from .output_schemas import (
     SCAN_RESULT_SCHEMA,
 )
 from .payloads import ComprehensiveAnalysis, OptionsAnalysis, ScanResult
+from .sessions import SessionState, session_state
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,10 @@ def validate_arguments(arguments: dict[str, Any], schema: dict[str, Any]) -> Non
                     if not isinstance(item, str) or not item.strip():
                         raise ValueError(f"{name}[{index}] must be a non-empty string")
             continue
+        elif kind == "boolean":
+            if not isinstance(value, bool):
+                raise ValueError(f"{name} must be a boolean")
+            continue
         else:
             continue
         low, high = prop.get("minimum"), prop.get("maximum")
@@ -118,7 +125,9 @@ class ToolContext:
     args: dict[str, Any]
     data_source: DataSource
     default_period: str = "1mo"
+    now: datetime | None = None
     fetched_frame: pd.DataFrame | None = field(default=None, init=False, repr=False)
+    _session_state: SessionState | None = field(default=None, init=False, repr=False)
 
     def require_symbol(self) -> str:
         """Return the upper-cased ``symbol`` argument, or raise if absent/blank."""
@@ -133,18 +142,73 @@ class ToolContext:
         period: str = self.args.get("period", self.default_period)
         return period
 
+    @property
+    def include_partial_bar(self) -> bool:
+        """Whether the caller opted in to scoring today's in-progress daily bar."""
+        return bool(self.args.get("include_partial_bar", False))
+
+    @property
+    def session(self) -> SessionState:
+        """Resolved NYSE session state for this invocation (evaluated once)."""
+        if self._session_state is None:
+            self._session_state = session_state(self.now)
+        return self._session_state
+
     def fetch(self) -> pd.DataFrame:
-        """Return the OHLCV frame for the standard symbol/period/start/end args."""
+        """Return the OHLCV frame for the standard symbol/period/start/end args.
+
+        Drops today's in-progress daily bar unless ``include_partial_bar`` is
+        True or today's NYSE session has already settled.
+        """
         if self.fetched_frame is None:
             symbol = self.require_symbol()
-            self.fetched_frame = self.data_source.fetch(
+            # Resolve session state before fetching so a fetch straddling 16:15/13:15 ET
+            # cannot return an intraday bar and then classify it as settled.
+            state = self.session
+            frame = self.data_source.fetch(
                 symbol,
                 period=self.period,
                 start=self.args.get("start_date"),
                 end=self.args.get("end_date"),
             )
+            cutoff = None if self.include_partial_bar else state.partial_bar_cutoff
+            if cutoff is not None:
+                dates = pd.to_datetime(frame["Date"]).dt.date
+                frame = frame[dates < cutoff].reset_index(drop=True)
+                if frame.empty:
+                    raise ValueError(
+                        f"No completed daily bars available for {symbol} "
+                        f"before {cutoff.isoformat()}; "
+                        "pass include_partial_bar: true to include the in-progress bar"
+                    )
+            self.fetched_frame = frame
             logger.debug("Data fetched for %s: %d rows", symbol, len(self.fetched_frame))
         return self.fetched_frame.copy()
+
+    def session_metadata(self) -> dict[str, Any]:
+        """Session completeness fields attached to every bar-scoring tool result."""
+        state = self.session
+        if self.fetched_frame is not None and not self.fetched_frame.empty:
+            dates = pd.to_datetime(self.fetched_frame["Date"]).dt.date
+            last_date = dates.iloc[-1]
+            complete = state.is_bar_complete(last_date)
+            if complete:
+                as_of_session = last_date
+            else:
+                completed = dates[dates < state.today]
+                as_of_session = (
+                    completed.iloc[-1] if not completed.empty else state.last_complete_session
+                )
+            return {
+                "as_of_session": as_of_session.isoformat(),
+                "last_bar_complete": complete,
+            }
+        # For scans (no single fetched_frame), as_of_session and last_bar_complete
+        # describe the session cutoff applied from the calendar, not each symbol's data.
+        return {
+            "as_of_session": state.last_complete_session.isoformat(),
+            "last_bar_complete": state.session_complete or not self.include_partial_bar,
+        }
 
 
 @dataclass(frozen=True)
@@ -175,6 +239,14 @@ _END_DATE_PROPERTY = {
     "type": "string",
     "description": "End date in YYYY-MM-DD format (optional)",
 }
+_INCLUDE_PARTIAL_BAR_PROPERTY = {
+    "type": "boolean",
+    "description": (
+        "Include today's in-progress daily bar before the NYSE session settles "
+        "(16:15 ET regular, 13:15 ET half-day). Default: false"
+    ),
+    "default": False,
+}
 
 
 def _single_symbol_schema(
@@ -194,15 +266,32 @@ def _single_symbol_schema(
                 "description": period_description,
                 "default": period_default,
             },
+            "include_partial_bar": dict(_INCLUDE_PARTIAL_BAR_PROPERTY),
             **extra_properties,
         },
         "required": ["symbol"],
     }
 
 
+def _with_session_metadata(
+    fn: Callable[[ToolContext], Awaitable[Any]],
+) -> Callable[[ToolContext], Awaitable[Any]]:
+    """Attach ``as_of_session`` and ``last_bar_complete`` to a bar-scoring tool's result."""
+
+    @functools.wraps(fn)
+    async def wrapped(ctx: ToolContext) -> Any:
+        result = await fn(ctx)
+        if isinstance(result, dict):
+            return {**result, **ctx.session_metadata()}
+        return result
+
+    return wrapped
+
+
 # --- Tool bodies -------------------------------------------------------------
 
 
+@_with_session_metadata
 async def _run_get_stock_data(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     start_date = ctx.args.get("start_date")
@@ -222,6 +311,7 @@ async def _run_get_stock_data(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_calculate_obv(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     data = ctx.fetch()
@@ -240,6 +330,7 @@ async def _run_calculate_obv(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_calculate_vwap(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     data = ctx.fetch()
@@ -262,6 +353,7 @@ async def _run_calculate_vwap(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_calculate_anchored_vwap(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     if ctx.args.get("anchor", "swing_low") == "date":
@@ -281,6 +373,7 @@ async def _run_calculate_anchored_vwap(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_calculate_volume_profile(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     num_bins = ctx.args.get("num_bins", 20)
@@ -308,6 +401,7 @@ async def _run_calculate_volume_profile(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_calculate_mfi(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     mfi_period = ctx.args.get("mfi_period", 14)
@@ -328,6 +422,7 @@ async def _run_calculate_mfi(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_calculate_ad_line(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     data = ctx.fetch()
@@ -353,6 +448,7 @@ async def _run_calculate_ad_line(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_calculate_cmf(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     cmf_period = ctx.args.get("cmf_period", 20)
@@ -386,6 +482,7 @@ async def _run_calculate_cmf(ctx: ToolContext) -> dict:
     }
 
 
+@_with_session_metadata
 async def _run_analyze_volume_trends(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     window = ctx.args.get("window", 20)
@@ -396,10 +493,12 @@ async def _run_analyze_volume_trends(ctx: ToolContext) -> dict:
     return {"symbol": symbol, "analysis": "Volume Trend Analysis", **trends}
 
 
+@_with_session_metadata
 async def _run_comprehensive_analysis(ctx: ToolContext) -> ComprehensiveAnalysis:
     return run_comprehensive_analysis(symbol=ctx.require_symbol(), data=ctx.fetch())
 
 
+@_with_session_metadata
 async def _run_options_analysis(ctx: ToolContext) -> OptionsAnalysis:
     symbol = ctx.require_symbol()
     holding_period = ctx.args.get("holding_period", 14)
@@ -414,11 +513,15 @@ async def _run_options_analysis(ctx: ToolContext) -> OptionsAnalysis:
     )
 
 
+@_with_session_metadata
 async def _run_scan_candidates(ctx: ToolContext) -> ScanResult:
     """scan_candidates fetches per symbol inside run_scan -- never via ctx.fetch()."""
     arguments = ctx.args
     holding_period = arguments.get("holding_period", 14)
     max_results = arguments.get("max_results", 15)
+    # Resolve session state before scanning so fetches straddling close settle stay consistent.
+    state = ctx.session
+    cutoff = None if ctx.include_partial_bar else state.partial_bar_cutoff
 
     return await run_scan(
         symbols=arguments.get("symbols", []),
@@ -432,9 +535,11 @@ async def _run_scan_candidates(ctx: ToolContext) -> ScanResult:
         direction=arguments.get("direction", "any"),
         max_results=max_results,
         data_source=ctx.data_source,
+        as_of=cutoff,
     )
 
 
+@_with_session_metadata
 async def _run_calculate_rsi_divergence(ctx: ToolContext) -> dict:
     symbol = ctx.require_symbol()
     rsi_period = ctx.args.get("rsi_period", 14)
@@ -474,6 +579,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                     ),
                     "default": "1mo",
                 },
+                "include_partial_bar": dict(_INCLUDE_PARTIAL_BAR_PROPERTY),
             },
             "required": ["symbol"],
         },
@@ -729,6 +835,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                     "minimum": 1,
                     "maximum": 100,
                 },
+                "include_partial_bar": dict(_INCLUDE_PARTIAL_BAR_PROPERTY),
             },
             "required": [],
         },

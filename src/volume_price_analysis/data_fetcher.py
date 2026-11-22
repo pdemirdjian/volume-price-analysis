@@ -18,6 +18,7 @@ import pandas as pd
 import yfinance as yf
 
 from .option_market import OptionChain, select_expiry
+from .sessions import session_state
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ class YFinanceDataSource:
         *,
         cache_ttl: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime.datetime] | None = None,
     ) -> None:
         """Cache history for DATA_CACHE_TTL_SECONDS (default 900; zero disables it)."""
         if cache_ttl is None:
@@ -135,7 +137,11 @@ class YFinanceDataSource:
             raise ValueError("cache_ttl must be a finite non-negative number")
         self._cache_ttl = cache_ttl
         self._clock = clock
-        self._cache: dict[tuple[str, str, str | None, str | None], tuple[float, pd.DataFrame]] = {}
+        self._wall_clock = wall_clock
+        self._cache: dict[
+            tuple[str, str, str | None, str | None, datetime.date, bool],
+            tuple[float, pd.DataFrame],
+        ] = {}
         self._cache_lock = threading.Lock()
         # Bounded lock stripes coalesce identical requests without serializing all symbols.
         self._fetch_locks = [threading.Lock() for _ in range(64)]
@@ -161,7 +167,10 @@ class YFinanceDataSource:
         timeout: int = DEFAULT_TIMEOUT,
     ) -> pd.DataFrame:
         """Return independent OHLCV history, reusing successful fetches within the TTL."""
-        key = (symbol, period, start, end)
+        state = session_state(self._wall_clock() if self._wall_clock is not None else None)
+        # Fold session completeness (and Eastern date) into the key so a pre-close
+        # intraday entry is never served after the NYSE session settles.
+        key = (symbol, period, start, end, state.today, state.session_complete)
         with self._fetch_locks[hash(key) % len(self._fetch_locks)]:
             with self._cache_lock:
                 cached = self._cache.get(key)

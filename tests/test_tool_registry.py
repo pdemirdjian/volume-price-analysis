@@ -25,6 +25,7 @@ from mcp.types import (
 from volume_price_analysis.data_fetcher import DEFAULT_TIMEOUT, DataSource, InMemoryDataSource
 from volume_price_analysis.option_market import OptionChain
 from volume_price_analysis.server import dispatch, handle_list_tools
+from volume_price_analysis.sessions import MARKET_TZ, session_state
 from volume_price_analysis.tools import (
     TOOLS,
     TOOLS_BY_NAME,
@@ -266,6 +267,8 @@ class TestDispatchEveryTool:
         assert "error" not in payload
         missing = REQUIRED_KEYS[spec.name] - set(payload)
         assert not missing, f"{spec.name} dropped top-level keys: {sorted(missing)}"
+        assert isinstance(payload["as_of_session"], str)
+        assert isinstance(payload["last_bar_complete"], bool)
         if spec.name != "scan_candidates":
             assert payload["symbol"] == SYMBOL
 
@@ -489,9 +492,10 @@ class TestStructuredOutput:
     async def test_output_matches_schema_and_text_is_unchanged(self, case, tool, args):
         spec = TOOLS_BY_NAME[tool]
         source = _source()
-        raw = await spec.run(ToolContext(args=dict(args), data_source=source))
+        now = datetime.datetime(2026, 11, 18, 12, 0, tzinfo=MARKET_TZ)
+        raw = await spec.run(ToolContext(args=dict(args), data_source=source, now=now))
 
-        result = await dispatch(tool, dict(args), data_source=source)
+        result = await dispatch(tool, dict(args), data_source=source, now=now)
 
         assert not result.is_error, result.content[0].text
         assert result.content[0].text == _legacy_text(raw)
@@ -727,11 +731,12 @@ class TestBoundaryValidation:
     async def test_optional_nulls_behave_like_omission_for_every_tool(self, spec):
         source = InMemoryDataSource({SYMBOL: make_frame()})
         args = dict(MINIMAL_ARGS[spec.name])
-        baseline = await dispatch(spec.name, args.copy(), data_source=source)
+        now = datetime.datetime(2026, 11, 18, 12, 0, tzinfo=MARKET_TZ)
+        baseline = await dispatch(spec.name, args.copy(), data_source=source, now=now)
         for name in spec.input_schema["properties"]:
             if name not in spec.input_schema.get("required", []) and name not in args:
                 args[name] = None
-        result = await dispatch(spec.name, args, data_source=source)
+        result = await dispatch(spec.name, args, data_source=source, now=now)
         assert not result.is_error, result.content[0].text
         assert json.loads(result.content[0].text) == json.loads(baseline.content[0].text)
         if spec.name == "calculate_volume_profile":
@@ -863,3 +868,252 @@ async def test_anchored_vwap_invalid_args_rejected_before_fetch(args, message):
 
 def test_non_copying_source_satisfies_the_data_source_protocol():
     assert isinstance(NonCopyingDataSource({}), DataSource)
+
+
+def _frame_ending_on(end_date: str, n: int = 120, *, tz: str | None = None) -> pd.DataFrame:
+    """OHLCV frame of ``n`` business sessions ending on ``end_date``, with a spike on the last bar.
+
+    The final bar jumps sharply in price and volume so every indicator and scan
+    score produces a measurably different result when it is kept vs dropped.
+    """
+    dates = pd.bdate_range(end=end_date, periods=n, tz=tz)
+    closes = [100.0 + i * 0.5 for i in range(n)]
+    opens = [c - 0.5 for c in closes]
+    highs = [c + 2.0 for c in closes]
+    lows = [c - 2.0 for c in closes]
+    volumes = [1_000_000 + i * 20_000 for i in range(n)]
+    # Make the final bar unmistakably distinct from the preceding uptrend
+    # (a sharp drop also moves RSI off 100.0 so RSI-based tools visibly change).
+    opens[-1] = closes[-2] - 5.0
+    closes[-1] = closes[-2] - 40.0
+    highs[-1] = opens[-1] + 1.0
+    lows[-1] = closes[-1] - 5.0
+    volumes[-1] = 25_000_000
+    return pd.DataFrame(
+        {
+            "Date": dates,
+            "Open": opens,
+            "High": highs,
+            "Low": lows,
+            "Close": closes,
+            "Volume": volumes,
+        }
+    )
+
+
+def _session_args(tool_name: str) -> dict:
+    """Arguments for session-aware sweep; scan uses permissive thresholds so AAPL qualifies."""
+    if tool_name == "scan_candidates":
+        return {"symbols": [SYMBOL], "min_score": 0, "min_adx": 0}
+    return dict(MINIMAL_ARGS[tool_name])
+
+
+class TestSessionAwareBars:
+    """Every bar-scoring MCP tool drops today's partial bar by default (PDE-209)."""
+
+    INTRADAY = datetime.datetime(2026, 11, 18, 11, 0, tzinfo=MARKET_TZ)
+    POST_CLOSE = datetime.datetime(2026, 11, 18, 16, 15, tzinfo=MARKET_TZ)
+
+    def test_every_tool_schema_exposes_include_partial_bar(self):
+        for spec in TOOLS:
+            prop = spec.input_schema["properties"].get("include_partial_bar")
+            assert prop is not None, f"{spec.name} missing include_partial_bar in schema"
+            assert prop["type"] == "boolean"
+            assert prop["default"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spec", TOOLS, ids=lambda s: s.name)
+    async def test_intraday_drops_partial_bar_by_default_and_keeps_on_opt_in(self, spec):
+        full_frame = _frame_ending_on("2026-11-18")
+        settled_only = full_frame.iloc[:-1].reset_index(drop=True)
+        args = _session_args(spec.name)
+
+        # Default intraday call: drops 2026-11-18 and matches a frame without today's bar.
+        default_res = await dispatch(
+            spec.name,
+            dict(args),
+            data_source=InMemoryDataSource({SYMBOL: full_frame}),
+            now=self.INTRADAY,
+        )
+        assert not default_res.is_error, default_res.content[0].text
+        default_payload = json.loads(default_res.content[0].text)
+
+        baseline_res = await dispatch(
+            spec.name,
+            dict(args),
+            data_source=InMemoryDataSource({SYMBOL: settled_only}),
+            now=self.INTRADAY,
+        )
+        assert not baseline_res.is_error, baseline_res.content[0].text
+        baseline_payload = json.loads(baseline_res.content[0].text)
+
+        assert default_payload == baseline_payload
+        assert default_payload["as_of_session"] == "2026-11-17"
+        assert default_payload["last_bar_complete"] is True
+
+        # Opt-in intraday call: keeps 2026-11-18, changing the scored output.
+        opt_in_res = await dispatch(
+            spec.name,
+            {**args, "include_partial_bar": True},
+            data_source=InMemoryDataSource({SYMBOL: full_frame}),
+            now=self.INTRADAY,
+        )
+        assert not opt_in_res.is_error, opt_in_res.content[0].text
+        opt_in_payload = json.loads(opt_in_res.content[0].text)
+
+        assert opt_in_payload["as_of_session"] == "2026-11-17"
+        assert opt_in_payload["last_bar_complete"] is False
+        # Strip metadata to confirm the actual scored payload changed with the partial bar.
+        meta = {"as_of_session", "last_bar_complete"}
+        default_body = {k: v for k, v in default_payload.items() if k not in meta}
+        opt_in_body = {k: v for k, v in opt_in_payload.items() if k not in meta}
+        assert opt_in_body != default_body
+
+        # Post-close (16:15 ET): default keeps 2026-11-18 and reports it complete.
+        post_res = await dispatch(
+            spec.name,
+            dict(args),
+            data_source=InMemoryDataSource({SYMBOL: full_frame}),
+            now=self.POST_CLOSE,
+        )
+        assert not post_res.is_error, post_res.content[0].text
+        post_payload = json.loads(post_res.content[0].text)
+        assert post_payload["as_of_session"] == "2026-11-18"
+        assert post_payload["last_bar_complete"] is True
+        post_body = {k: v for k, v in post_payload.items() if k not in meta}
+        assert post_body == opt_in_body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", ["get_stock_data", "scan_candidates"])
+    async def test_half_day_boundary_skips_thanksgiving_until_1315_et(self, tool_name):
+        # Frame skips Thanksgiving (2026-11-26) and ends on half-day 2026-11-27.
+        base = _frame_ending_on("2026-11-25")
+        half_day_bar = base.iloc[[-1]].copy()
+        half_day_bar["Date"] = pd.Timestamp("2026-11-27")
+        half_day_bar["Close"] = base["Close"].iloc[-1] + 50.0
+        half_day_bar["High"] = half_day_bar["Close"] + 2.0
+        half_day_bar["Volume"] = 30_000_000
+        frame = pd.concat([base, half_day_bar], ignore_index=True)
+        args = _session_args(tool_name)
+
+        before = datetime.datetime(2026, 11, 27, 13, 14, tzinfo=MARKET_TZ)
+        after = datetime.datetime(2026, 11, 27, 13, 15, tzinfo=MARKET_TZ)
+
+        res_before = await dispatch(
+            tool_name, dict(args), data_source=InMemoryDataSource({SYMBOL: frame}), now=before
+        )
+        payload_before = json.loads(res_before.content[0].text)
+        assert payload_before["as_of_session"] == "2026-11-25"
+        assert payload_before["last_bar_complete"] is True
+
+        res_after = await dispatch(
+            tool_name, dict(args), data_source=InMemoryDataSource({SYMBOL: frame}), now=after
+        )
+        payload_after = json.loads(res_after.content[0].text)
+        assert payload_after["as_of_session"] == "2026-11-27"
+        assert payload_after["last_bar_complete"] is True
+        if tool_name == "get_stock_data":
+            assert payload_before["data_points"] == len(base)
+            assert payload_after["data_points"] == len(frame)
+        else:
+            cand_before = (payload_before["top_bullish"] or payload_before["top_bearish"])[0]
+            cand_after = (payload_after["top_bullish"] or payload_after["top_bearish"])[0]
+            assert cand_before["latest_price"] == pytest.approx(
+                round(float(base["Close"].iloc[-1]), 2)
+            )
+            assert cand_after["latest_price"] == pytest.approx(
+                round(float(half_day_bar["Close"].iloc[-1]), 2)
+            )
+
+    @pytest.mark.asyncio
+    async def test_tz_aware_dates_cut_on_eastern_date(self):
+        frame = _frame_ending_on("2026-11-18", tz="America/New_York")
+        res = await dispatch(
+            "get_stock_data",
+            {"symbol": SYMBOL},
+            data_source=InMemoryDataSource({SYMBOL: frame}),
+            now=self.INTRADAY,
+        )
+        assert not res.is_error, res.content[0].text
+        payload = json.loads(res.content[0].text)
+        assert payload["data_points"] == len(frame) - 1
+        assert payload["as_of_session"] == "2026-11-17"
+        assert payload["last_bar_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_only_todays_partial_bar_returns_validation_error(self):
+        one_bar = _frame_ending_on("2026-11-18", n=5).iloc[[-1]].reset_index(drop=True)
+        res = await dispatch(
+            "get_stock_data",
+            {"symbol": SYMBOL},
+            data_source=InMemoryDataSource({SYMBOL: one_bar}),
+            now=self.INTRADAY,
+        )
+        assert res.is_error is True
+        assert json.loads(res.content[0].text)["error"] == (
+            f"No completed daily bars available for {SYMBOL} before 2026-11-18; "
+            "pass include_partial_bar: true to include the in-progress bar"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_value", ["true", "false", 1, 0, []])
+    async def test_invalid_include_partial_bar_rejected_before_fetch(self, bad_value):
+        source = InMemoryDataSource()
+        res = await dispatch(
+            "get_stock_data",
+            {"symbol": SYMBOL, "include_partial_bar": bad_value},
+            data_source=source,
+            now=self.INTRADAY,
+        )
+        assert res.is_error is True
+        assert "include_partial_bar must be a boolean" in json.loads(res.content[0].text)["error"]
+        assert source.fetch_calls == []
+
+    @pytest.mark.asyncio
+    async def test_session_is_captured_before_fetch_not_after(self, monkeypatch):
+        """A fetch started at 16:14:59 ET that finishes after 16:15 still drops the partial bar."""
+        frame = _frame_ending_on("2026-11-18")
+        clock = [datetime.datetime(2026, 11, 18, 16, 14, 59, tzinfo=MARKET_TZ)]
+        monkeypatch.setattr(
+            "volume_price_analysis.tools.session_state",
+            lambda now=None: session_state(clock[0] if now is None else now),
+        )
+
+        class AdvancingClockSource(InMemoryDataSource):
+            def fetch(self, symbol: str, **kwargs) -> pd.DataFrame:
+                clock[0] = datetime.datetime(2026, 11, 18, 16, 15, 1, tzinfo=MARKET_TZ)
+                return super().fetch(symbol, **kwargs)
+
+        source = AdvancingClockSource({SYMBOL: frame})
+
+        res = await dispatch("get_stock_data", {"symbol": SYMBOL}, data_source=source)
+        assert not res.is_error, res.content[0].text
+        payload = json.loads(res.content[0].text)
+        assert payload["data_points"] == len(frame) - 1
+        assert payload["as_of_session"] == "2026-11-17"
+        assert payload["last_bar_complete"] is True
+
+        # Same boundary check for scan_candidates (both default drop and opt-in metadata).
+        clock[0] = datetime.datetime(2026, 11, 18, 16, 14, 59, tzinfo=MARKET_TZ)
+        scan_res = await dispatch(
+            "scan_candidates",
+            {"symbols": [SYMBOL], "min_score": 0, "min_adx": 0},
+            data_source=source,
+        )
+        assert not scan_res.is_error, scan_res.content[0].text
+        scan_payload = json.loads(scan_res.content[0].text)
+        assert scan_payload["as_of_session"] == "2026-11-17"
+        assert scan_payload["last_bar_complete"] is True
+        cand = (scan_payload["top_bullish"] or scan_payload["top_bearish"])[0]
+        assert cand["latest_price"] == pytest.approx(round(float(frame["Close"].iloc[-2]), 2))
+
+        clock[0] = datetime.datetime(2026, 11, 18, 16, 14, 59, tzinfo=MARKET_TZ)
+        opt_in_scan = await dispatch(
+            "scan_candidates",
+            {"symbols": [SYMBOL], "min_score": 0, "min_adx": 0, "include_partial_bar": True},
+            data_source=source,
+        )
+        assert not opt_in_scan.is_error, opt_in_scan.content[0].text
+        opt_in_payload = json.loads(opt_in_scan.content[0].text)
+        assert opt_in_payload["as_of_session"] == "2026-11-17"
+        assert opt_in_payload["last_bar_complete"] is False

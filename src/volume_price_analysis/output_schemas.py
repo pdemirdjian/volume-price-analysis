@@ -13,6 +13,7 @@ from typing import Any
 _NUMBER: dict[str, Any] = {"type": ["number", "null"]}
 _STRING: dict[str, Any] = {"type": "string"}
 _INTEGER: dict[str, Any] = {"type": "integer"}
+_BOOLEAN: dict[str, Any] = {"type": "boolean"}
 _OBJECT: dict[str, Any] = {"type": "object", "additionalProperties": True}
 
 
@@ -122,9 +123,10 @@ SCAN_RESULT_SCHEMA = _object(
     top_bearish=_CANDIDATES,
     errors={"type": "array", "items": _object(["symbol", "error"], symbol=_STRING, error=_STRING)},
     market_regime=_OBJECT,
+    # PDE-209: session metadata attached by the MCP tool layer.
+    as_of_session=_STRING,
+    last_bar_complete=_BOOLEAN,
 )
-
-_BOOLEAN: dict[str, Any] = {"type": "boolean"}
 
 # Nested sections the briefing agent projects by name (agent/ai_client.py,
 # ``_project_deep_analysis``). Every key below is emitted on every successful result.
@@ -234,6 +236,8 @@ OPTIONS_ANALYSIS_SCHEMA = _object(
     volume_indicators=_OPTIONS_VOLUME,
     volume_profile=_VOLUME_PROFILE_LEVELS,
     options_insights={"type": "array", "items": _STRING},
+    as_of_session=_STRING,
+    last_bar_complete=_BOOLEAN,
 )
 
 COMPREHENSIVE_ANALYSIS_SCHEMA = _object(
@@ -255,4 +259,6 @@ COMPREHENSIVE_ANALYSIS_SCHEMA = _object(
     volatility_indicators=_OBJECT,
     volume_profile=_VOLUME_PROFILE_LEVELS,
     summary={"type": "array", "items": _STRING},
+    as_of_session=_STRING,
+    last_bar_complete=_BOOLEAN,
 )
