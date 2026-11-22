@@ -178,7 +178,8 @@ class ToolContext:
                 if frame.empty:
                     raise ValueError(
                         f"No completed daily bars available for {symbol} "
-                        f"before {cutoff.isoformat()}"
+                        f"before {cutoff.isoformat()}; "
+                        "pass include_partial_bar: true to include the in-progress bar"
                     )
             self.fetched_frame = frame
             logger.debug("Data fetched for %s: %d rows", symbol, len(self.fetched_frame))

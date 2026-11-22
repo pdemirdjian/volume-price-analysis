@@ -1048,7 +1048,10 @@ class TestSessionAwareBars:
             now=self.INTRADAY,
         )
         assert res.is_error is True
-        assert "No completed daily bars available" in json.loads(res.content[0].text)["error"]
+        assert json.loads(res.content[0].text)["error"] == (
+            f"No completed daily bars available for {SYMBOL} before 2026-11-18; "
+            "pass include_partial_bar: true to include the in-progress bar"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("bad_value", ["true", "false", 1, 0, []])
