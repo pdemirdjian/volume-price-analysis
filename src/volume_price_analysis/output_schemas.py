@@ -231,6 +231,7 @@ OPTIONS_ANALYSIS_SCHEMA = _object(
         "volume_indicators",
         "volume_profile",
         "options_insights",
+        "vpa_bars",
     ],
     symbol=_STRING,
     latest_price=_NUMBER,

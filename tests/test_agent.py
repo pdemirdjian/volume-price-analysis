@@ -1960,7 +1960,7 @@ class TestFindUngroundedTickers:
         briefing = (
             "AAPL: ADX 31, RSI 62, VWAP above, POC/VAH/VAL aligned, "
             "HV percentile high, OBV rising, MFI 70, CMF positive, ATR wide, BB squeeze, "
-            "14-day DTE, ROC up."
+            "14-day DTE, ROC up. VPA shows no supply on the pullback."
         )
         assert find_ungrounded_tickers(briefing, scan, []) == []
 

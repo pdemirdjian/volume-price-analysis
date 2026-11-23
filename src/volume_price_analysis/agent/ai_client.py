@@ -208,6 +208,7 @@ _NON_TICKER_TOKENS: frozenset[str] = frozenset(
         # Indicator / options acronyms emitted throughout the analysis output.
         "ADX",
         "RSI",
+        "VPA",
         "VWAP",
         "VWMA",
         "OBV",

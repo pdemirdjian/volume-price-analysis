@@ -420,6 +420,8 @@ class VpaBarsResult(TypedDict):
     symbol: str
     bars: list[VpaBar]
     counts: dict[str, int]
+    as_of_session: NotRequired[str]
+    last_bar_complete: NotRequired[bool]
 
 
 class OptionsAnalysis(TypedDict):

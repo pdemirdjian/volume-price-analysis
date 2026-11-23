@@ -200,6 +200,7 @@ REQUIRED_KEYS: dict[str, set[str]] = {
         "options_insights",
         "composite_signal",
         "time_decay",
+        "vpa_bars",
     },
     "scan_candidates": {
         "scan_parameters",

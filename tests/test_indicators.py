@@ -4378,9 +4378,11 @@ class TestAnchoredVWAP:
         (102, 100, 101, 50, "no_demand"),
         (100, 98, 99, 50, "no_supply"),
         (104, 94, 99, 1000, "stopping_volume"),
+        (100, 98, 99, 1000, "stopping_volume"),  # Also matches effort_no_result.
         (115, 99, 114, 1000, "buying_climax"),
         (101, 85, 86, 1000, "selling_climax"),
         (115, 98, 100, 250, "upthrust"),
+        (115, 85, 86, 1000, "upthrust"),  # Also matches selling_climax.
         (102, 100, 101, 250, "effort_no_result"),
         (105, 95, 100, 200, None),
         (100, 100, 100, 1000, None),
@@ -4397,6 +4399,28 @@ def test_classify_vpa_bars(high, low, close, volume, expected):
 
     assert labels.iloc[:-1].isna().all()
     assert labels.iloc[-1] == expected
+
+
+def test_classify_vpa_bars_uses_custom_lookback():
+    data = pd.DataFrame(
+        [(105, 95, 100, 200), (100, 98, 99, 50)],
+        columns=["High", "Low", "Close", "Volume"],
+    )
+
+    assert classify_vpa_bars(data, lookback=2).tolist() == [None, "no_supply"]
+    assert classify_vpa_bars(data).isna().all()
+
+
+def test_classify_vpa_bars_rejects_short_lookback():
+    with pytest.raises(ValueError, match="lookback must be at least 2"):
+        classify_vpa_bars(pd.DataFrame(), lookback=1)
+
+
+def test_classify_vpa_bars_returns_empty_series():
+    labels = classify_vpa_bars(pd.DataFrame())
+
+    assert isinstance(labels, pd.Series)
+    assert labels.empty
 
 
 @pytest.mark.parametrize(
