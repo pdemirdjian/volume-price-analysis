@@ -32,6 +32,7 @@ from volume_price_analysis.indicators import (
     calculate_vpt,
     calculate_vwap,
     calculate_vwma,
+    classify_vpa_bars,
     composite_adx_period,
     detect_bollinger_squeeze,
     detect_rsi_divergence,
@@ -4369,3 +4370,43 @@ class TestAnchoredVWAP:
         assert result["latest_avwap"] == 10.0
         assert result["distance_percent"] == 0.0
         assert result["distance_atr"] is None
+
+
+@pytest.mark.parametrize(
+    ("high", "low", "close", "volume", "expected"),
+    [
+        (102, 100, 101, 50, "no_demand"),
+        (100, 98, 99, 50, "no_supply"),
+        (104, 94, 99, 1000, "stopping_volume"),
+        (115, 99, 114, 1000, "buying_climax"),
+        (101, 85, 86, 1000, "selling_climax"),
+        (115, 98, 100, 250, "upthrust"),
+        (102, 100, 101, 250, "effort_no_result"),
+        (105, 95, 100, 200, None),
+        (100, 100, 100, 1000, None),
+        (105, 95, np.nan, 1000, None),
+        (115, 98, 100, np.nan, None),
+    ],
+)
+def test_classify_vpa_bars(high, low, close, volume, expected):
+    data = pd.DataFrame(
+        [(105, 95, 100, 200)] * 19 + [(high, low, close, volume)],
+        columns=["High", "Low", "Close", "Volume"],
+    )
+    labels = classify_vpa_bars(data)
+
+    assert labels.iloc[:-1].isna().all()
+    assert labels.iloc[-1] == expected
+
+
+@pytest.mark.parametrize(
+    ("high", "low", "close", "expected"),
+    [(102, 100, 101, "effort_no_result"), (115, 99, 114, None), (115, 98, 100, "upthrust")],
+)
+def test_high_volume_below_ultra_percentile(high, low, close, expected):
+    data = pd.DataFrame(
+        [(105, 95, 100, 200)] * 16 + [(105, 95, 100, 500)] * 3 + [(high, low, close, 250)],
+        columns=["High", "Low", "Close", "Volume"],
+    )
+
+    assert classify_vpa_bars(data).iloc[-1] == expected

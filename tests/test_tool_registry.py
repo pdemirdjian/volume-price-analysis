@@ -85,6 +85,7 @@ class NonCopyingDataSource:
 # Minimal valid arguments per tool. scan_candidates is the one tool that does
 # not take a symbol and does not use the context's lazy fetch.
 MINIMAL_ARGS: dict[str, dict] = {
+    "classify_vpa_bars": {"symbol": SYMBOL},
     "get_stock_data": {"symbol": SYMBOL},
     "calculate_obv": {"symbol": SYMBOL},
     "calculate_vwap": {"symbol": SYMBOL},
@@ -105,6 +106,7 @@ MINIMAL_ARGS: dict[str, dict] = {
 # contract MCP clients depend on -- a registry record that quietly stops
 # emitting one of them is a breaking change, not a refactor.
 REQUIRED_KEYS: dict[str, set[str]] = {
+    "classify_vpa_bars": {"symbol", "bars", "counts"},
     "calculate_anchored_vwap": {
         "symbol",
         "latest_avwap",
@@ -225,8 +227,8 @@ REQUIRED_KEYS: dict[str, set[str]] = {
 class TestRegistryShape:
     """The registry is the single source of truth for the tool list."""
 
-    def test_registry_lists_thirteen_tools(self):
-        assert len(TOOLS) == 13
+    def test_registry_lists_fourteen_tools(self):
+        assert len(TOOLS) == 14
         assert all(isinstance(spec, ToolSpec) for spec in TOOLS)
 
     def test_registry_names_are_unique(self):
@@ -284,7 +286,12 @@ class TestDispatchEveryTool:
         assert ctx.fetched_frame is None
 
 
-SCHEMA_TOOLS = {"scan_candidates", "options_analysis", "comprehensive_analysis"}
+SCHEMA_TOOLS = {
+    "scan_candidates",
+    "options_analysis",
+    "comprehensive_analysis",
+    "classify_vpa_bars",
+}
 SCHEMA_SPECS = [spec for spec in TOOLS if spec.output_schema is not None]
 
 # Under MINIMAL_ARGS the sample frame scores below the default min_score, so every
@@ -460,7 +467,7 @@ def _all_dicts(obj: object):
 class TestStructuredOutput:
     """High-value tools declare an output schema and return structured content (PDE-197)."""
 
-    def test_schema_tools_are_the_high_value_three(self):
+    def test_schema_tools_match_expected_set(self):
         assert {spec.name for spec in SCHEMA_SPECS} == SCHEMA_TOOLS
 
     @pytest.mark.asyncio
@@ -634,6 +641,8 @@ class TestSchemaBounds:
             ("calculate_mfi", "mfi_period"),
             ("calculate_cmf", "cmf_period"),
             ("analyze_volume_trends", "window"),
+            ("classify_vpa_bars", "lookback"),
+            ("classify_vpa_bars", "limit"),
             ("options_analysis", "holding_period"),
             ("options_analysis", "days_to_expiration"),
             ("scan_candidates", "holding_period"),
@@ -1117,3 +1126,24 @@ class TestSessionAwareBars:
         opt_in_payload = json.loads(opt_in_scan.content[0].text)
         assert opt_in_payload["as_of_session"] == "2026-11-17"
         assert opt_in_payload["last_bar_complete"] is False
+
+
+async def test_vpa_tool_counts_only_labels_in_requested_tail():
+    frame = make_frame().tail(21).copy()
+    frame[["High", "Low", "Close", "Volume"]] = (105.0, 95.0, 100.0, 200)
+    frame.iloc[-2, frame.columns.get_indexer(["High", "Low", "Close", "Volume"])] = (
+        102.0,
+        100.0,
+        101.0,
+        50,
+    )
+    source = InMemoryDataSource({SYMBOL: frame})
+    args = {"symbol": SYMBOL, "limit": 2}
+    result = await dispatch("classify_vpa_bars", args, data_source=source)
+    payload = json.loads(result.content[0].text)
+
+    assert [bar["label"] for bar in payload["bars"]] == ["no_demand", None]
+    assert payload["counts"] == {"no_demand": 1}
+
+    result = await dispatch("classify_vpa_bars", {**args, "limit": 1}, data_source=source)
+    assert json.loads(result.content[0].text)["counts"] == {}

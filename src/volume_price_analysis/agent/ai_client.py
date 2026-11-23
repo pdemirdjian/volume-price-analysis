@@ -100,6 +100,9 @@ the percentile ranks the symbol against its OWN recent history: a low HV
 percentile means volatility is low for that symbol, not that the expected move
 is small in absolute terms.
 
+VPA BARS: Each deep analysis may include "vpa_bars", the last five bar labels in
+chronological order. Cite only labels present for that symbol in the data.
+
 OPTIONS MARKET: A deep analysis may carry an "option_market" block measured
 from the live option chain for the expiry nearest the holding period (only
 expiries 7-45 days out are sampled; otherwise the block is unavailable). It is
@@ -545,6 +548,9 @@ def _project_deep_analysis(analysis: OptionsAnalysis) -> dict:
     headline = analysis.get("headline")
     if headline:
         projected["headline"] = headline
+
+    if "vpa_bars" in analysis:
+        projected["vpa_bars"] = analysis["vpa_bars"]
 
     composite = analysis.get("composite_signal")
     if isinstance(composite, dict):

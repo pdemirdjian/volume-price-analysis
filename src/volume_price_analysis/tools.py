@@ -15,6 +15,7 @@ list-tools response and the dispatcher both derive from it.
 import functools
 import logging
 import math
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,6 +37,7 @@ from .indicators import (
     calculate_rsi_divergence,
     calculate_volume_profile,
     calculate_vwap,
+    classify_vpa_bars,
     trend_verdict,
 )
 from .interpretation import (
@@ -47,8 +49,9 @@ from .output_schemas import (
     COMPREHENSIVE_ANALYSIS_SCHEMA,
     OPTIONS_ANALYSIS_SCHEMA,
     SCAN_RESULT_SCHEMA,
+    VPA_BARS_SCHEMA,
 )
-from .payloads import ComprehensiveAnalysis, OptionsAnalysis, ScanResult
+from .payloads import ComprehensiveAnalysis, OptionsAnalysis, ScanResult, VpaBar, VpaBarsResult
 from .sessions import SessionState, session_state
 
 logger = logging.getLogger(__name__)
@@ -550,6 +553,23 @@ async def _run_calculate_rsi_divergence(ctx: ToolContext) -> dict:
     return {"symbol": symbol, **divergence_result}
 
 
+@_with_session_metadata
+async def _run_classify_vpa_bars(ctx: ToolContext) -> VpaBarsResult:
+    symbol = ctx.require_symbol()
+    data = ctx.fetch()
+    limit = ctx.args.get("limit", 10)
+    labels = classify_vpa_bars(data, ctx.args.get("lookback", 20)).tail(limit)
+    bars: list[VpaBar] = [
+        {"date": date.strftime("%Y-%m-%d"), "label": label}
+        for date, label in zip(data["Date"].tail(limit), labels, strict=True)
+    ]
+    return {
+        "symbol": symbol,
+        "bars": bars,
+        "counts": dict(Counter(label for label in labels if label is not None)),
+    }
+
+
 # --- The registry ------------------------------------------------------------
 
 TOOLS: tuple[ToolSpec, ...] = (
@@ -874,6 +894,35 @@ TOOLS: tuple[ToolSpec, ...] = (
             },
         ),
         run=_run_calculate_rsi_divergence,
+        default_period="3mo",
+    ),
+    ToolSpec(
+        name="classify_vpa_bars",
+        description=(
+            "Classify effort-versus-result anomalies in the most recent bars. "
+            "Returns bars in chronological order and counts of labels in that tail. "
+            "Bars without a classification have a null label."
+        ),
+        input_schema=_single_symbol_schema(
+            period_description="Period if dates not specified (default: '3mo').",
+            period_default="3mo",
+            lookback={
+                "type": "integer",
+                "description": "Trailing bars used for percentile thresholds.",
+                "default": 20,
+                "minimum": 2,
+                "maximum": 200,
+            },
+            limit={
+                "type": "integer",
+                "description": "Number of most recent bars to return.",
+                "default": 10,
+                "minimum": 1,
+                "maximum": 200,
+            },
+        ),
+        run=_run_classify_vpa_bars,
+        output_schema=VPA_BARS_SCHEMA,
         default_period="3mo",
     ),
 )
