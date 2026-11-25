@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.21.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.20.0...v2.21.0) (2026-11-25)
+
+
+### Features
+
+* **PDE-265:** classify VPA bars for effort-vs-result anomalies ([#655](https://github.com/pdemirdjian/volume-price-analysis/issues/655)) ([bc6a493](https://github.com/pdemirdjian/volume-price-analysis/commit/bc6a493f3772a148ad7e6f0e670dafcb5362bdea))
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=2.11.0 ([#653](https://github.com/pdemirdjian/volume-price-analysis/issues/653)) ([ec4970d](https://github.com/pdemirdjian/volume-price-analysis/commit/ec4970dce17c982c0f3425af91618ad9f2e506a6))
+* **deps:** update dependency anthropic to ~=2.12.0 ([#659](https://github.com/pdemirdjian/volume-price-analysis/issues/659)) ([2790b8f](https://github.com/pdemirdjian/volume-price-analysis/commit/2790b8facbcf38de38c0f9701aa2935282582758))
+
 ## [2.20.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.19.1...v2.20.0) (2026-11-22)
 
 
