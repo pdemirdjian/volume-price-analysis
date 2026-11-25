@@ -1209,3 +1209,22 @@ async def test_scan_detects_rate_limit_from_original_exception_before_redaction(
     result = await run_scan(symbols=["AAA"], data_source=source, retry_sleep=lambda _: None)
     assert result["rate_limited"] is True
     assert result["errors"][0]["error"] == "429 from [URL redacted]"
+
+
+def test_options_analysis_vpa_labels_reach_briefing_prompt(sample_stock_data):
+    from volume_price_analysis.agent.ai_client import build_briefing_prompt
+
+    frame = sample_stock_data.copy()
+    frame[["High", "Low", "Close", "Volume"]] = (105.0, 95.0, 100.0, 200)
+    frame.iloc[-1, frame.columns.get_indexer(["High", "Low", "Close", "Volume"])] = (
+        100.0,
+        98.0,
+        99.0,
+        50,
+    )
+
+    analysis = run_options_analysis("TEST", frame)
+    assert analysis["vpa_bars"] == [None, None, None, None, "no_supply"]
+    prompt = build_briefing_prompt({}, [analysis], "")
+    assert '"vpa_bars"' in prompt
+    assert '"no_supply"' in prompt

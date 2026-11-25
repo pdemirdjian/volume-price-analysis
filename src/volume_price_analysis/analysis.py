@@ -39,6 +39,7 @@ from .indicators import (
     calculate_relative_volume,
     calculate_vpt,
     calculate_vwma,
+    classify_vpa_bars,
     composite_adx_period,
     detect_bollinger_squeeze,
     detect_volume_breakout,
@@ -1245,6 +1246,7 @@ def run_options_analysis(
     return {
         "symbol": symbol,
         "analysis_type": f"Options Trading ({holding_period}-Day Optimized)",
+        "vpa_bars": classify_vpa_bars(data).tail(5).tolist(),
         "period": f"{start_dt} to {end_dt}",
         "latest_price": float(latest_close),
         # Additive top-line summary (recommendation/score/1-line rationale).

@@ -411,7 +411,21 @@ class OptionsAnalysisTimeDecay(TypedDict):
     theta_note: str
 
 
+class VpaBar(TypedDict):
+    date: str
+    label: str | None
+
+
+class VpaBarsResult(TypedDict):
+    symbol: str
+    bars: list[VpaBar]
+    counts: dict[str, int]
+    as_of_session: NotRequired[str]
+    last_bar_complete: NotRequired[bool]
+
+
 class OptionsAnalysis(TypedDict):
+    vpa_bars: NotRequired[list[str | None]]
     conviction: NotRequired[str]
     earnings_warning: NotRequired[str]
     option_market: NotRequired[OptionMarket]

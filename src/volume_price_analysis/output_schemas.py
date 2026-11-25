@@ -209,6 +209,17 @@ _COMPREHENSIVE_VOLUME = _object(
     volume_breakout=_VOLUME_BREAKOUT,
 )
 
+_VPA_LABEL = {"type": ["string", "null"]}
+
+VPA_BARS_SCHEMA = _object(
+    ["symbol", "bars", "counts"],
+    symbol=_STRING,
+    bars={"type": "array", "items": _object(["date", "label"], date=_STRING, label=_VPA_LABEL)},
+    counts=_OBJECT,
+    as_of_session=_STRING,
+    last_bar_complete=_BOOLEAN,
+)
+
 OPTIONS_ANALYSIS_SCHEMA = _object(
     [
         "symbol",
@@ -220,6 +231,7 @@ OPTIONS_ANALYSIS_SCHEMA = _object(
         "volume_indicators",
         "volume_profile",
         "options_insights",
+        "vpa_bars",
     ],
     symbol=_STRING,
     latest_price=_NUMBER,
@@ -231,6 +243,7 @@ OPTIONS_ANALYSIS_SCHEMA = _object(
         action=_STRING,
         signal_quality=_STRING,
     ),
+    vpa_bars={"type": "array", "items": _VPA_LABEL, "maxItems": 5},
     trend_analysis=_OPTIONS_TREND,
     volatility_analysis=_OPTIONS_VOLATILITY,
     volume_indicators=_OPTIONS_VOLUME,

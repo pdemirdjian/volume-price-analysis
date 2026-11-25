@@ -139,6 +139,7 @@ def _rsi_divergence_series(df: pd.DataFrame) -> pd.Series:
 
 #: Per-bar functions, called on an OHLCV frame. Keys are ``indicators`` function names.
 SERIES: dict[str, Fn] = {
+    "classify_vpa_bars": indicators.classify_vpa_bars,
     "calculate_obv": indicators.calculate_obv,
     "calculate_vwap": indicators.calculate_vwap,
     "calculate_vpt": indicators.calculate_vpt,

@@ -678,6 +678,65 @@ def calculate_chaikin_money_flow(data: pd.DataFrame, period: int = 20) -> pd.Ser
     return cmf
 
 
+def classify_vpa_bars(df: pd.DataFrame, lookback: int = 20) -> pd.Series:
+    """Label causal effort-versus-result anomalies in chronological OHLCV bars.
+
+    Spread uses the trailing 25th/75th percentiles and volume uses the
+    25th/75th/90th percentiles, including the current bar. Comparing raw values
+    to these percentiles is equivalent to comparing both sides after dividing
+    by the same current rolling median (spread) or mean (volume). Strict
+    inequalities keep ties out of the extreme bands.
+
+    Direction uses the previous close. Upthrusts require a high strictly above
+    the preceding lookback - 1 highs. Climax bars are wide, ultra-volume bars
+    closing in the outer third in the direction of travel. Upthrust takes
+    precedence if it also qualifies as a selling climax. Unclassified bars,
+    including warm-up and invalid bars, carry None.
+    """
+    if lookback < 2:
+        raise ValueError("lookback must be at least 2")
+    labels = pd.Series([None] * len(df), index=df.index, dtype=object, name="vpa_label")
+    if df.empty:
+        return labels
+
+    high, low, close, volume = (df[column] for column in ("High", "Low", "Close", "Volume"))
+    spread = high - low
+    spread_window = spread.rolling(lookback)
+    volume_window = volume.rolling(lookback)
+    narrow = spread < spread_window.quantile(0.25)
+    wide = spread > spread_window.quantile(0.75)
+    low_volume = volume < volume_window.quantile(0.25)
+    high_volume = volume > volume_window.quantile(0.75)
+    ultra = volume > volume_window.quantile(0.90)
+
+    position = (close - low) / spread.where(spread > 0)
+    low_close = position <= 1 / 3
+    high_close = position >= 2 / 3
+    change = close.diff()
+    up, down = change > 0, change < 0
+    new_high = high > high.shift().rolling(lookback - 1).max()
+    valid = (
+        position.between(0, 1)
+        & np.isfinite(change)
+        & spread_window.median().gt(0)
+        & volume_window.mean().gt(0)
+        & volume.ge(0)
+    )
+
+    # Assign broad rules first so the specific reversal patterns take precedence.
+    for label, matches in (
+        ("effort_no_result", narrow & high_volume),
+        ("no_demand", narrow & up & low_volume),
+        ("no_supply", narrow & down & low_volume),
+        ("stopping_volume", down & ultra & ~low_close),
+        ("buying_climax", up & wide & ultra & high_close),
+        ("selling_climax", down & wide & ultra & low_close),
+        ("upthrust", new_high & low_close & high_volume),
+    ):
+        labels.loc[valid & matches] = label
+    return labels
+
+
 def calculate_relative_volume(data: pd.DataFrame, period: int = 20) -> dict[str, Any]:
     """
     Calculate Relative Volume (RVOL).
