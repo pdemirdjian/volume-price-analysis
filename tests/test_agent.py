@@ -2017,6 +2017,18 @@ class TestFindUngroundedTickers:
 
 class TestFindUngroundedLevels:
     @pytest.mark.parametrize(
+        ("briefing", "level"),
+        [
+            ("Stop below 182 low", "182"),
+            ("Break above the 182.50 high", "182.50"),
+            ("Target at 210 high", "210"),
+            ("Retest of the 174.25 low", "174.25"),
+        ],
+    )
+    def test_flags_bare_levels_before_high_or_low(self, briefing, level):
+        assert find_ungrounded_levels(briefing, {}) == [level]
+
+    @pytest.mark.parametrize(
         ("briefing", "expected"),
         [
             ("Stop at 182 — 3.5% risk", ["182"]),
@@ -2024,6 +2036,10 @@ class TestFindUngroundedLevels:
             ("$176.40 — 5 contracts", []),
             ("November 26, 2026 — $176.40 is the stop", []),
             ("Stop at 182 - 3.5% risk", ["182"]),
+            ("Entry 182 – contracts are thin", ["182"]),
+            ("Target 210 – bars show no supply", ["210"]),
+            ("Level 182 – shares rallied", ["182"]),
+            ("Stop at 182 - trades above VWAP", ["182"]),
             ("$176.40 – 5 contracts", []),
             ("Watch $120–$125", ["$125"]),
             ("Watch $120 - $125", ["$125"]),
@@ -2189,6 +2205,15 @@ class TestGenerateBriefingGrounding:
         assert result.ungrounded_tickers == []
         assert result.ungrounded_levels == []
         assert "hallucination" not in caplog.text.lower()
+
+    def test_grounds_projected_breadth_counts(self):
+        scan = self._scan()
+        scan["summary"]["breadth"] = {"new_highs": 9, "new_lows": 31, "net_new_highs": -22}
+        provider = _FakeProvider(text="There were 9 new highs, with net new 20-day highs -22.")
+
+        result = generate_briefing(scan, [], provider, "m", "k")
+
+        assert result.ungrounded_levels == []
 
 
 # ---------------------------------------------------------------------------

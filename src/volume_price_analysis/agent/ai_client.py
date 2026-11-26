@@ -435,7 +435,7 @@ _RANGE_SEPARATOR = r"[-–]"
 _NON_PRICE_UNIT = (
     r"%|\bpercent\b|\b(?:days?|weeks?|months?|years?|sessions?|bars?|"
     r"dte|symbols?|candidates?|picks?|setups?|contracts?|shares?|sectors?|"
-    r"ETFs?|trades?|hits?|highs?|lows?|million|billion|bps)\b|[×σ]"
+    r"ETFs?|million|billion|bps)\b|[×σ]"
 )
 _LEVEL_PATTERN = re.compile(
     rf"(?im)^[ \t]*(?:#{{1,6}}[ \t]+)?[0-9]+[.)][ \t]+"
@@ -448,7 +448,7 @@ _LEVEL_PATTERN = re.compile(
     rf"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
     rf"[ \t]+[0-9]{{1,2}}(?:st|nd|rd|th)?\b"
     rf"|(?<![\w$.,]){_NUMBER}(?:{_RANGE_SEPARATOR}{_NUMBER})?"
-    rf"[ \t]*[-–]?[ \t]*(?:{_NON_PRICE_UNIT})"
+    rf"(?:{_RANGE_SEPARATOR}|[ \t]*)(?:{_NON_PRICE_UNIT})"
     rf"|(?<![\w$.,])(?P<first>{_AMOUNT})(?:{_RANGE_SEPARATOR}(?P<last>{_AMOUNT}))?"
     rf"(?!\w|[.,][0-9])"
 )
