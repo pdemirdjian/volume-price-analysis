@@ -25,6 +25,7 @@ from volume_price_analysis.agent.ai_client import (
     _project_deep_analysis,
     _project_scan_results,
     build_briefing_prompt,
+    find_ungrounded_levels,
     find_ungrounded_tickers,
     format_briefing_date,
     generate_anthropic,
@@ -2014,6 +2015,40 @@ class TestFindUngroundedTickers:
         assert find_ungrounded_tickers("Consider ZZZZ today.", {}, []) == ["ZZZZ"]
 
 
+class TestFindUngroundedLevels:
+    def test_grounded_briefing_returns_empty(self):
+        inputs = {
+            "candidates": [{"stop": 176.40, "target": 195, "atr_multiple": 2}],
+            "analysis": {"vwap": 123.45, "value_area": [120, 125], "pivot": 3.20},
+        }
+        briefing = (
+            "Stop at $176.40 and target 195. VWAP is 123.45. "
+            "Value area is 120-125 and the pivot is $3.24."
+        )
+        assert find_ungrounded_levels(briefing, inputs) == []
+
+    def test_flags_hallucinated_levels_and_each_range_endpoint(self):
+        inputs = {"stop": 176.40, "value_area_low": 120, "poc": 100, "pivot": 3.20}
+        briefing = (
+            "Stop at $182, resistance at 100.51, and watch 120–125 or 118-120. "
+            "The pivot is $3.26. Keep the stop at $182."
+        )
+        assert find_ungrounded_levels(briefing, inputs) == [
+            "$182",
+            "$3.26",
+            "100.51",
+            "118",
+            "125",
+        ]
+
+    def test_skips_percentages_dates_and_counts(self):
+        briefing = (
+            "1. On 11/26, November 26, 2026 (2026-11-26), the scan found 42 candidates. "
+            "Use 14-day calls or 0–5 DTE. Breadth rose 3.5 % with a 2–4% expected move."
+        )
+        assert find_ungrounded_levels(briefing, {}) == []
+
+
 class TestGenerateBriefingGrounding:
     """HOM-45: generate_briefing reports tickers the briefing invented."""
 
@@ -2046,6 +2081,34 @@ class TestGenerateBriefingGrounding:
         assert "ZZZZ" in caplog.text
         assert "hallucination" in caplog.text.lower()
 
+    def test_reports_levels_against_projected_inputs_and_pick_exits(self, caplog):
+        from volume_price_analysis.agent.picks import build_picks
+
+        scan = {
+            "top_bullish": [
+                {
+                    "symbol": "AAPL",
+                    "latest_price": 180,
+                    "composite_score": 4,
+                    "atr": 2,
+                    "key_levels": {"upper_target": 182},
+                }
+            ]
+        }
+        deep = [{"symbol": "AAPL", "volume_profile": {"point_of_control": 174}}]
+        prose = "AAPL stop at $176, target $188, and POC at 174. Watch resistance at $182."
+        provider = _FakeProvider(text=prose)
+
+        result = generate_briefing(
+            scan, deep, provider, "m", "k", picks=iter(build_picks(scan, deep))
+        )
+
+        assert result.text == prose
+        assert result.ungrounded_levels == ["$182"]
+        assert (
+            "price level(s) absent from prompt data (possible hallucination): $182" in caplog.text
+        )
+
     def test_no_warning_when_grounded(self, caplog):
         import logging
 
@@ -2061,6 +2124,7 @@ class TestGenerateBriefingGrounding:
             )
 
         assert result.ungrounded_tickers == []
+        assert result.ungrounded_levels == []
         assert "hallucination" not in caplog.text.lower()
 
 
