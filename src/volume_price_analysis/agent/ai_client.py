@@ -431,14 +431,17 @@ def find_ungrounded_tickers(
 
 _NUMBER = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?"
 _AMOUNT = rf"\$?{_NUMBER}"
-_RANGE_SEPARATOR = r"[ \t]*[-–—][ \t]*"
+_RANGE_SEPARATOR = r"[-–]"
 _NON_PRICE_UNIT = (
     r"%|\bpercent\b|\b(?:days?|weeks?|months?|years?|sessions?|bars?|"
     r"dte|symbols?|candidates?|picks?|setups?|contracts?|shares?|sectors?|"
     r"ETFs?|trades?|hits?|highs?|lows?|million|billion|bps)\b|[×σ]"
 )
 _LEVEL_PATTERN = re.compile(
-    rf"(?im)^[ \t]*[0-9]+[.)][ \t]+"
+    rf"(?im)^[ \t]*(?:#{{1,6}}[ \t]+)?[0-9]+[.)][ \t]+"
+    rf"|(?<=[a-z])\([0-9]+\)"
+    rf"|\bS&P[ \t]+500\b"
+    rf"|(?<![\w$.,]){_NUMBER}(?::[0-9]+|/10)(?![\w/]|[.,][0-9])"
     rf"|(?<![\w$])(?:[0-9]{{4}}-[0-9]{{1,2}}-[0-9]{{1,2}}"
     rf"|[0-9]{{1,2}}/[0-9]{{1,2}}(?:/[0-9]{{2,4}})?)(?![\w/])"
     rf"|\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
@@ -456,7 +459,12 @@ def _numeric_values(value: object) -> Iterable[float]:
     if isinstance(value, bool):
         return
     if isinstance(value, (int, float)) and isfinite(value):
-        yield value
+        yield abs(value)
+    elif isinstance(value, str):
+        for token in re.findall(_NUMBER, value):
+            amount = float(token.replace(",", ""))
+            if isfinite(amount):
+                yield amount
     elif isinstance(value, Mapping):
         for item in value.values():
             yield from _numeric_values(item)
@@ -469,7 +477,7 @@ def find_ungrounded_levels(text: str, inputs: object) -> list[str]:
     """Return sorted, distinct price tokens beyond the tolerance of all input numbers."""
     bounds = []
     for value in set(_numeric_values(inputs)):
-        tolerance = max(abs(value) * 0.005, 0.05)
+        tolerance = max(value * 0.005, 0.05) + 1e-9
         bounds.append((value - tolerance, value + tolerance))
     ungrounded: set[str] = set()
     for match in _LEVEL_PATTERN.finditer(text.replace("*", "")):

@@ -2016,6 +2016,66 @@ class TestFindUngroundedTickers:
 
 
 class TestFindUngroundedLevels:
+    @pytest.mark.parametrize(
+        ("briefing", "expected"),
+        [
+            ("Stop at 182 — 3.5% risk", ["182"]),
+            ("Stop at $176.40 — 3.5% risk", []),
+            ("$176.40 — 5 contracts", []),
+            ("November 26, 2026 — $176.40 is the stop", []),
+            ("Stop at 182 - 3.5% risk", ["182"]),
+            ("$176.40 – 5 contracts", []),
+            ("Watch $120–$125", ["$125"]),
+            ("Watch $120 - $125", ["$125"]),
+        ],
+    )
+    def test_distinguishes_ranges_from_clause_dashes(self, briefing, expected):
+        assert find_ungrounded_levels(briefing, {"stop": 176.40, "support": 120}) == expected
+
+    def test_grounded_negative_metrics(self):
+        inputs = {"composite_score": -4.10, "rs_20d": -0.78, "net_new_highs": -22}
+        briefing = "Score -4.10, relative strength -0.78, net new highs -22."
+        assert find_ungrounded_levels(briefing, inputs) == []
+
+    def test_grounded_values_in_strings(self):
+        inputs = {
+            "atr_daily_range": "±$7.19",
+            "stop_loss": "$177.37 to $180.97",
+            "liquidity_flags": ["Low open interest (<100 per leg)"],
+            "resistance": "$1,234.50",
+        }
+        briefing = "ATR range ±$7.19, stop zone $177.37–$180.97, OI below 100 per leg."
+        briefing += " Resistance at $1,234.50, with the next level at $1,245.50."
+        assert find_ungrounded_levels(briefing, inputs) == ["$1,245.50"]
+
+    @pytest.mark.parametrize("hallucinated", [False, True], ids=["clean", "hallucinated"])
+    def test_golden_briefing(self, hallucinated):
+        inputs = {"entry": 184.40, "stop": 176.40, "target": 200.40}
+        stop = "$182" if hallucinated else "$176.40"
+        target = "$210" if hallucinated else "$200.40"
+        briefing = f"""## 1. Executive Summary
+The S&P 500 backdrop is bullish, with selective strength in technology.
+
+## 2. Top Picks
+- **AAPL** — Conviction: HIGH, bullish, score +4.2/10. Entry $184.40.
+- Stop at {stop} with a target of {target}. The plan uses ATR(14) and 2:1 reward/risk.
+
+## 3. Market Context
+Technology led the scan, with 42 candidates across the universe.
+
+## 4. Risk Warnings
+Use defined-risk structures ahead of earnings. Avoid chasing a gap above entry.
+"""
+        expected = ["$182", "$210"] if hallucinated else []
+        assert find_ungrounded_levels(briefing, inputs) == expected
+
+    def test_includes_exact_absolute_tolerance_boundary(self):
+        assert find_ungrounded_levels("Pivot $3.15, support $3.14.", {"pivot": 3.20}) == ["$3.14"]
+
+    def test_bool_and_nonfinite_values_do_not_ground_prices(self):
+        inputs = [True, False, float("nan"), float("inf"), float("-inf")]
+        assert find_ungrounded_levels("Levels at $0, $1, and $42.", inputs) == ["$0", "$1", "$42"]
+
     def test_grounded_briefing_returns_empty(self):
         inputs = {
             "candidates": [{"stop": 176.40, "target": 195, "atr_multiple": 2}],
@@ -2106,8 +2166,11 @@ class TestGenerateBriefingGrounding:
         assert result.text == prose
         assert result.ungrounded_levels == ["$182"]
         assert (
-            "price level(s) absent from prompt data (possible hallucination): $182" in caplog.text
-        )
+            "volume_price_analysis.agent.ai_client",
+            logging.WARNING,
+            "Briefing references 1 price level(s) absent from prompt data "
+            "(possible hallucination): $182",
+        ) in caplog.record_tuples
 
     def test_no_warning_when_grounded(self, caplog):
         import logging
