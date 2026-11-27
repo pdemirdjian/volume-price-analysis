@@ -23,7 +23,7 @@ MAX_DEEP_ANALYSIS_CAP = 20
 class AgentConfig:
     """Configuration loaded from environment variables."""
 
-    # AI provider ("gemini" or "anthropic")
+    # AI provider ("gemini", "anthropic" or "ollama"; ollama reads OLLAMA_HOST, needs no key)
     ai_provider: str = "gemini"
     ai_provider_api_key: str = ""
     ai_model: str = ""  # Empty = use provider default
@@ -123,11 +123,12 @@ class AgentConfig:
         errors = []
 
         # Validate AI provider
-        if self.ai_provider not in ("gemini", "anthropic"):
+        if self.ai_provider not in ("gemini", "anthropic", "ollama"):
             errors.append(
-                f"AI_PROVIDER={self.ai_provider!r} is invalid. Use 'gemini' or 'anthropic'."
+                f"AI_PROVIDER={self.ai_provider!r} is invalid. "
+                "Use 'gemini', 'anthropic' or 'ollama'."
             )
-        elif not self.ai_provider_api_key:
+        elif self.ai_provider != "ollama" and not self.ai_provider_api_key:
             errors.append("AI_PROVIDER_API_KEY is required")
 
         # Validate email

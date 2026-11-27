@@ -484,8 +484,9 @@ uv run python -m volume_price_analysis.agent.morning_agent --no-ai
 
 | Variable | Default | Description |
 |---|---|---|
-| `AI_PROVIDER` | `gemini` | `gemini` or `anthropic` |
-| `AI_PROVIDER_API_KEY` | (required) | API key for chosen provider |
+| `AI_PROVIDER` | `gemini` | `gemini`, `anthropic` or `ollama` (self-hosted) |
+| `AI_PROVIDER_API_KEY` | (required) | API key for chosen provider (not used by `ollama`) |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL when `AI_PROVIDER=ollama` |
 | `AI_MODEL` | provider default | Override model (e.g., `gemini-2.5-flash`) |
 | `EMAIL_FROM` | (required) | Sender address (Gmail by default) |
 | `EMAIL_PASSWORD` | (required) | SMTP password (a Gmail App Password for Gmail) |

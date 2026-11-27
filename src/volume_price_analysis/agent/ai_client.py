@@ -189,6 +189,7 @@ Keep it concise but thorough. Use bullet points. No fluff."""
 DEFAULT_MODELS = {
     "gemini": "gemini-3.8-flash",
     "anthropic": "claude-sonnet-4-6",
+    "ollama": "qwen3.8:27b",
 }
 
 _TRUNCATION_WARNING = (
@@ -810,6 +811,46 @@ def generate_anthropic(request: BriefingRequest) -> str:
     return briefing
 
 
+def generate_ollama(request: BriefingRequest) -> str:
+    """Generate briefing using a self-hosted Ollama server (no API key)."""
+    import os
+    import urllib.request
+
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    body = {
+        "model": request.model,
+        "stream": False,
+        "think": False,  # the briefing wants the answer, not a reasoning trace
+        "messages": [
+            {"role": "system", "content": request.system_prompt},
+            {"role": "user", "content": request.user_content},
+        ],
+        "options": {"num_predict": request.max_tokens},
+    }
+    logger.info("Sending briefing request to Ollama (%s at %s)", request.model, host)
+    req = urllib.request.Request(
+        f"{host}/api/chat", json.dumps(body).encode(), {"Content-Type": "application/json"}
+    )
+    # A cold model load on a shared GPU box can take minutes, so allow more than the SaaS budget.
+    with urllib.request.urlopen(req, timeout=AI_REQUEST_TIMEOUT_SECONDS * 3) as resp:
+        data = json.load(resp)
+
+    briefing: str = data.get("message", {}).get("content", "")
+    logger.info(
+        "Briefing generated: %d chars, %d input tokens, %d output tokens",
+        len(briefing),
+        data.get("prompt_eval_count", 0),
+        data.get("eval_count", 0),
+    )
+    if data.get("done_reason") == "length":
+        logger.warning("Briefing was TRUNCATED — output hit num_predict limit")
+        # Keep empty model output empty so generate_briefing rejects it.
+        if strip_date_placeholders(briefing).strip():
+            briefing += _TRUNCATION_WARNING
+
+    return briefing
+
+
 def generate_gemini(request: BriefingRequest) -> str:
     """Generate briefing using Google Gemini API."""
     from google import genai
@@ -855,6 +896,7 @@ def generate_gemini(request: BriefingRequest) -> str:
 PROVIDERS: dict[str, BriefingProvider] = {
     "anthropic": generate_anthropic,
     "gemini": generate_gemini,
+    "ollama": generate_ollama,
 }
 
 
@@ -866,10 +908,14 @@ def describe_ai_error(exc: BaseException) -> str:
 
 def is_transient_ai_error(exc: Exception) -> bool:
     """Retry provider rate limits, server errors, and connection failures."""
+    import urllib.error
+
     import anthropic
     import httpx2
     from google.genai.errors import APIError
 
+    if isinstance(exc, urllib.error.HTTPError):  # Ollama; must precede the OSError check
+        return _is_transient_status(exc.code)
     if isinstance(exc, anthropic.APIStatusError):
         return _is_transient_status(exc.status_code)
     if isinstance(exc, APIError):
