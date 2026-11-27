@@ -821,6 +821,7 @@ def generate_ollama(request: BriefingRequest) -> str:
         "model": request.model,
         "stream": False,
         "think": False,  # the briefing wants the answer, not a reasoning trace
+        "truncate": False,  # error out (-> fallback) rather than silently drop scan data
         "messages": [
             {"role": "system", "content": request.system_prompt},
             {"role": "user", "content": request.user_content},
@@ -908,6 +909,7 @@ def describe_ai_error(exc: BaseException) -> str:
 
 def is_transient_ai_error(exc: Exception) -> bool:
     """Retry provider rate limits, server errors, and connection failures."""
+    import http.client
     import urllib.error
 
     import anthropic
@@ -920,7 +922,10 @@ def is_transient_ai_error(exc: Exception) -> bool:
         return _is_transient_status(exc.status_code)
     if isinstance(exc, APIError):
         return _is_transient_status(exc.code)
-    return isinstance(exc, (anthropic.APIConnectionError, httpx2.TransportError, OSError))
+    return isinstance(
+        exc,
+        (anthropic.APIConnectionError, httpx2.TransportError, OSError, http.client.IncompleteRead),
+    )
 
 
 # 408/409 match what the SDKs retried by default before we turned their retries off.

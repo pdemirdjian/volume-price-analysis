@@ -801,7 +801,7 @@ class TestGenerateOllamaAdapter:
         assert text == "brief"
         assert sent.full_url == "http://ollama.test:11434/api/chat"
         body = json.loads(sent.data)
-        assert body["model"] == "m" and body["stream"] is False
+        assert body["model"] == "m" and body["stream"] is False and body["truncate"] is False
         assert body["options"]["num_predict"] == 99
         assert [m["role"] for m in body["messages"]] == ["system", "user"]
 
@@ -820,6 +820,14 @@ def test_ollama_http_error_retry_policy(status, retryable):
 
     error = urllib.error.HTTPError("http://ollama.test", status, "x", {}, None)  # type: ignore[arg-type]
     assert is_transient_ai_error(error) is retryable
+
+
+def test_ollama_dropped_body_is_retried():
+    import http.client
+
+    from volume_price_analysis.agent.ai_client import is_transient_ai_error
+
+    assert is_transient_ai_error(http.client.IncompleteRead(b"partial")) is True
 
 
 class TestGenerateAnthropicAdapter:
