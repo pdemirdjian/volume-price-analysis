@@ -163,6 +163,12 @@ class TestAgentConfig:
         assert len(errors) == 1
         assert "AI_PROVIDER_API_KEY" in errors[0]
 
+    def test_validate_ollama_needs_no_api_key(self):
+        config = AgentConfig(
+            ai_provider="ollama", email_from="a@b.com", email_password="pass", email_to="c@d.com"
+        )
+        assert config.validate() == []
+
     def test_validate_invalid_provider(self):
         config = AgentConfig(
             ai_provider="openai",
@@ -759,14 +765,69 @@ class TestProviderRegistry:
 
     def test_registry_covers_every_valid_config_provider(self):
         # config.AgentConfig.validate() is the single validator of names.
-        assert set(PROVIDERS) == {"gemini", "anthropic"}
+        assert set(PROVIDERS) == {"gemini", "anthropic", "ollama"}
 
     def test_resolve_model_defaults_per_provider(self):
         assert resolve_model("gemini") == "gemini-3.8-flash"
         assert resolve_model("anthropic") == "claude-sonnet-4-6"
+        assert resolve_model("ollama") == "qwen3.8:27b"
 
     def test_resolve_model_honours_explicit_override(self):
         assert resolve_model("gemini", "gemini-flash") == "gemini-flash"
+
+
+class TestGenerateOllamaAdapter:
+    """HTTP-level tests for the Ollama adapter."""
+
+    @staticmethod
+    def _run(mocker, monkeypatch, payload):
+        import io
+
+        from volume_price_analysis.agent.ai_client import BriefingRequest, generate_ollama
+
+        monkeypatch.setenv("OLLAMA_HOST", "http://ollama.test:11434/")
+        urlopen = mocker.patch(
+            "urllib.request.urlopen", return_value=io.BytesIO(json.dumps(payload).encode())
+        )
+        req = BriefingRequest(
+            system_prompt="sys", user_content="data", model="m", api_key="", max_tokens=99
+        )
+        return generate_ollama(req), urlopen.call_args.args[0]
+
+    def test_sends_chat_request_and_returns_text(self, mocker, monkeypatch):
+        text, sent = self._run(
+            mocker, monkeypatch, {"message": {"content": "brief"}, "done_reason": "stop"}
+        )
+        assert text == "brief"
+        assert sent.full_url == "http://ollama.test:11434/api/chat"
+        body = json.loads(sent.data)
+        assert body["model"] == "m" and body["stream"] is False and body["truncate"] is False
+        assert body["options"]["num_predict"] == 99
+        assert [m["role"] for m in body["messages"]] == ["system", "user"]
+
+    def test_length_stop_appends_truncation_warning(self, mocker, monkeypatch):
+        text, _ = self._run(
+            mocker, monkeypatch, {"message": {"content": "brief"}, "done_reason": "length"}
+        )
+        assert text.startswith("brief") and "cut short" in text
+
+
+@pytest.mark.parametrize("status, retryable", [(404, False), (500, True), (503, True)])
+def test_ollama_http_error_retry_policy(status, retryable):
+    import urllib.error
+
+    from volume_price_analysis.agent.ai_client import is_transient_ai_error
+
+    error = urllib.error.HTTPError("http://ollama.test", status, "x", {}, None)  # type: ignore[arg-type]
+    assert is_transient_ai_error(error) is retryable
+
+
+def test_ollama_dropped_body_is_retried():
+    import http.client
+
+    from volume_price_analysis.agent.ai_client import is_transient_ai_error
+
+    assert is_transient_ai_error(http.client.IncompleteRead(b"partial")) is True
 
 
 class TestGenerateAnthropicAdapter:
