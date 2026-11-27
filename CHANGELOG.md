@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.22.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.21.0...v2.22.0) (2026-11-27)
+
+
+### Features
+
+* **agent:** self-hosted Ollama briefing provider ([#664](https://github.com/pdemirdjian/volume-price-analysis/issues/664)) ([1cdde3e](https://github.com/pdemirdjian/volume-price-analysis/commit/1cdde3eadb997a8f05de08a737b229adc7729c62))
+
+
+### Bug Fixes
+
+* **deps:** update dependency anthropic to ~=2.13.0 ([#662](https://github.com/pdemirdjian/volume-price-analysis/issues/662)) ([fd28f11](https://github.com/pdemirdjian/volume-price-analysis/commit/fd28f1100135f5aa4d52180ee3cb78d55ea1f4ad))
+
 ## [2.21.0](https://github.com/pdemirdjian/volume-price-analysis/compare/v2.20.0...v2.21.0) (2026-11-25)
 
 
