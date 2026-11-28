@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from math import isfinite
 from typing import Any, cast
 
 from ..payloads import OptionsAnalysis, ScanResult
@@ -58,12 +59,13 @@ class BriefingResult:
 
     ``ungrounded_tickers`` lists ticker-like tokens the model named that are
     absent from the scan/analysis input (see :func:`find_ungrounded_tickers`).
-    It is advisory: the briefing is returned regardless, and callers decide
-    whether to act on it.
+    ``ungrounded_levels`` lists price tokens without a match in the prompt data.
+    Both checks are advisory.
     """
 
     text: str
     ungrounded_tickers: list[str] = field(default_factory=list)
+    ungrounded_levels: list[str] = field(default_factory=list)
 
 
 SYSTEM_PROMPT = """\
@@ -428,6 +430,68 @@ def find_ungrounded_tickers(
     return sorted(ungrounded)
 
 
+_NUMBER = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?"
+_AMOUNT = rf"\$?{_NUMBER}"
+_RANGE_SEPARATOR = r"[-–]"
+_NON_PRICE_UNIT = (
+    r"%|\bpercent\b|\b(?:days?|weeks?|months?|years?|sessions?|bars?|"
+    r"dte|symbols?|candidates?|picks?|setups?|contracts?|shares?|sectors?|"
+    r"ETFs?|million|billion|bps)\b|[×σ]"
+)
+_LEVEL_PATTERN = re.compile(
+    rf"(?im)^[ \t]*(?:#{{1,6}}[ \t]+)?[0-9]+[.)][ \t]+"
+    rf"|(?<=[a-z])\([0-9]+\)"
+    rf"|\bS&P[ \t]+500\b"
+    rf"|(?<![\w$.,]){_NUMBER}(?::[0-9]+|/10)(?![\w/]|[.,][0-9])"
+    rf"|(?<![\w$])(?:[0-9]{{4}}-[0-9]{{1,2}}-[0-9]{{1,2}}"
+    rf"|[0-9]{{1,2}}/[0-9]{{1,2}}(?:/[0-9]{{2,4}})?)(?![\w/])"
+    rf"|\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    rf"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    rf"[ \t]+[0-9]{{1,2}}(?:st|nd|rd|th)?\b"
+    rf"|(?<![\w$.,]){_NUMBER}(?:{_RANGE_SEPARATOR}{_NUMBER})?"
+    rf"(?:{_RANGE_SEPARATOR}|[ \t]*)(?:{_NON_PRICE_UNIT})"
+    rf"|(?<![\w$.,])(?P<first>{_AMOUNT})(?:{_RANGE_SEPARATOR}(?P<last>{_AMOUNT}))?"
+    rf"(?!\w|[.,][0-9])"
+)
+_YEAR = re.compile(r"(?:19|20)[0-9]{2}")
+
+
+def _numeric_values(value: object) -> Iterable[float]:
+    if isinstance(value, bool):
+        return
+    if isinstance(value, (int, float)) and isfinite(value):
+        yield abs(value)
+    elif isinstance(value, str):
+        for token in re.findall(_NUMBER, value):
+            amount = float(token.replace(",", ""))
+            if isfinite(amount):
+                yield amount
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _numeric_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _numeric_values(item)
+
+
+def find_ungrounded_levels(text: str, inputs: object) -> list[str]:
+    """Return sorted, distinct price tokens beyond the tolerance of all input numbers."""
+    bounds = []
+    for value in set(_numeric_values(inputs)):
+        tolerance = max(value * 0.005, 0.05) + 1e-9
+        bounds.append((value - tolerance, value + tolerance))
+    ungrounded: set[str] = set()
+    for match in _LEVEL_PATTERN.finditer(text.replace("*", "")):
+        first, last = match.group("first", "last")
+        if first is None or (last is None and _YEAR.fullmatch(first)):
+            continue
+        for token in (first, last) if last else (first,):
+            amount = float(token.lstrip("$").replace(",", ""))
+            if not any(low <= amount <= high for low, high in bounds):
+                ungrounded.add(token)
+    return sorted(ungrounded)
+
+
 def resolve_model(provider_name: str, model: str = "") -> str:
     """Return ``model`` if set, else the default model for ``provider_name``."""
     return model or DEFAULT_MODELS.get(provider_name, DEFAULT_MODELS["gemini"])
@@ -462,10 +526,11 @@ def generate_briefing(
         max_tokens: Output-token budget carried on the provider request.
 
     Returns:
-        A BriefingResult carrying the markdown briefing and any ungrounded tickers.
+        A BriefingResult carrying the markdown briefing and any ungrounded symbols or price levels.
     """
-    user_content = build_briefing_prompt(
-        scan_results, deep_analyses, earnings_preamble, briefing_date=briefing_date, picks=picks
+    projected_scan, projected_deep = _project_briefing_inputs(scan_results, deep_analyses, picks)
+    user_content = _render_briefing_prompt(
+        projected_scan, projected_deep, earnings_preamble, briefing_date
     )
 
     request = BriefingRequest(
@@ -492,7 +557,18 @@ def generate_briefing(
             ", ".join(ungrounded),
         )
 
-    return BriefingResult(text=briefing, ungrounded_tickers=ungrounded)
+    ungrounded_levels = find_ungrounded_levels(briefing, (projected_scan, projected_deep))
+    if ungrounded_levels:
+        logger.warning(
+            "Briefing references %d price level(s) absent from prompt data "
+            "(possible hallucination): %s",
+            len(ungrounded_levels),
+            ", ".join(ungrounded_levels),
+        )
+
+    return BriefingResult(
+        text=briefing, ungrounded_tickers=ungrounded, ungrounded_levels=ungrounded_levels
+    )
 
 
 # Curated scan-result keys passed to the model. The candidate setups are already
@@ -746,9 +822,26 @@ def build_briefing_prompt(
     ``picks`` supplies every candidate's conviction label: it is derived once,
     by ``picks.build_picks``, and read here rather than re-derived (PDE-150).
     """
+    projected_scan, projected_deep = _project_briefing_inputs(scan_results, deep_analyses, picks)
+    return _render_briefing_prompt(projected_scan, projected_deep, earnings_preamble, briefing_date)
+
+
+def _project_briefing_inputs(
+    scan_results: ScanResult, deep_analyses: Sequence[OptionsAnalysis], picks: Iterable[Pick]
+) -> tuple[dict, list[dict]]:
     projected_scan = _project_scan_results(scan_results)
     projected_scan = _drop_superseded_scan_fields(projected_scan, deep_analyses)
-    projected_scan = _apply_pick_fields(projected_scan, picks)
+    return _apply_pick_fields(projected_scan, picks), [
+        _project_deep_analysis(analysis) for analysis in deep_analyses
+    ]
+
+
+def _render_briefing_prompt(
+    projected_scan: dict,
+    projected_deep: list[dict],
+    earnings_preamble: str,
+    briefing_date: date | None,
+) -> str:
     user_content = "Generate a morning options trading briefing from this data:\n\n"
     if briefing_date is not None:
         user_content += (
@@ -760,10 +853,9 @@ def build_briefing_prompt(
     user_content += "## Scan Results\n"
     user_content += f"```json\n{json.dumps(projected_scan, indent=2, default=str)}\n```\n\n"
 
-    if deep_analyses:
+    if projected_deep:
         user_content += "## Deep Analysis (Top Candidates)\n"
-        for analysis in deep_analyses:
-            projected = _project_deep_analysis(analysis)
+        for projected in projected_deep:
             symbol = projected.get("symbol", "Unknown")
             user_content += f"### {symbol}\n"
             user_content += f"```json\n{json.dumps(projected, indent=2, default=str)}\n```\n\n"
